@@ -9,8 +9,14 @@ import os
 import subprocess
 import json
 import time
+import MusicPlayer
 from pathlib import Path
 
+
+
+
+def yo():
+    print("works!")
 # ==============================================================================
 # 1. SYNTAX HIGHLIGHTER UTILITIES
 # ==============================================================================
@@ -124,7 +130,7 @@ class LSPReaderWorker(QThread):
 class EditorBackend(QObject):
     completionsReceived  = Signal(list)
     fileOpened = Signal(str,str)
-    explorerContent = Signal(list)
+    explorerContent = Signal(list,str)
 
     def __init__(self):
         super().__init__()
@@ -262,30 +268,30 @@ class EditorBackend(QObject):
     @Slot(str)
     def open_file(self, filePath):
 
-
-        if filePath.startswith("file:///"):
-                parsed = urlparse(filePath)
-                filePath = url2pathname(parsed.path)
-
-
-        self.folder_path = filePath
+        print(filePath)
 
         with open(filePath, "r", encoding="utf-8") as f:
             content = f.read()
 
-
-        print(self.folder_path, "fsdfgsd")
-        c = len(self.folder_path) - 2
-
-        while self.folder_path[c] != "\\":
-            c -= 1
-
-
-        self.folder_path =  self.folder_path[:c] + "\\"
-        print(self.folder_path, " folder path")
         self.fileOpened.emit(filePath,content)
-        self.somethin()
 
+
+    @Slot(str)
+    def open_Workspace(self,path):
+
+        if path.startswith("file:///"):
+            parsed = urlparse(path)
+            path = url2pathname(parsed.path)
+
+
+
+        self.folder_path = path
+        print(path)
+       # self.folder_path =  self.folder_path[:c] + "\\"
+        root , arr =  self.search_folder_items(self.folder_path)
+
+        result = self.explorerList(arr, root)
+        self.explorerContent.emit(result,self.folder_path)
 
 
     def search_folder_items(self, path):
@@ -304,74 +310,38 @@ class EditorBackend(QObject):
             else:
                 ls.append(file.name)
 
+
         return root_folder, ls
 
 
-    def somethin(self):
+    def explorerList(self,arry,pid):
         depth = 0
-
         final_list = []
-        root , arr =  self.search_folder_items(self.folder_path)
-        print(root,arr)
-        node = {}
-
-        for item in arr:
+        for item in arry:
             node = {}
             if isinstance(item, list):
-                for a in item:
-                    print(a, " a")
-                    node = {}
-                    p_root = a[0]
-                    if "." not in str(a):
-                        node["filename"] =  a
-                        node["folderId"] =  a
-                        node["ftype"] =  "folder"
-                        node["parentId"] =  root
-                        node["isExpanded"] =  True
-                        node["depth"] =  0
-                        print("here ",node)
 
-                    else:
-                        node["filename"] =  str(a)
-                        node["folderId"] =  str(a)
-                        node["ftype"] =  "file"
-                        node["parentId"] = ""
-                        node["isExpanded"] =  False
-                        node["depth"] =  0
-                    final_list.append(node)
-            else:
-                print(item)
-                if "." not in str(item):
-                    node["filename"] =  item
-                    node["folderId"] =  item
-                    node["ftype"] =  "folder"
-                    node["parentId"] =  root
-                    node["isExpanded"] =  True
-                    node["depth"] =  0
-                else:
-                    node["filename"] =  item
-                    node["folderId"] =  item
-                    node["ftype"] =  "file"
-                    node["parentId"] = ""
-                    node["isExpanded"] =  False
-                    node["depth"] =  0
-
+                folder_name = item[0]
+                li = item[1]
+                node["name"] = folder_name
+                node["parentId"] = pid
+                node["type"] = "Folder"
 
                 final_list.append(node)
 
-        print("Final: ",final_list)
+                final_list.extend(self.explorerList(li,folder_name))
+            else:
+                if "." not in item:
+                    node["name"] = item
+                    node["parentId"] = pid
+                    node["type"] = "Folder"
+                else:
+                    node["name"] = item
+                    node["parentId"] = pid
+                    node["type"] = "File"
+                final_list.append(node)
 
-
-
-
-
-
-
-
-
-
-
-
+        return final_list
 
 
 

@@ -4,6 +4,7 @@ import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
 import QtQuick.Dialogs
 
+
 Window {
     Component.onCompleted: {
         throw new Error("QML IS RUNNING")
@@ -54,7 +55,16 @@ Window {
         }
 
         function onFileOpened(path, content) {
-                codeTextArea.text = content
+            codeTextArea.text = content
+        }
+
+        function onExplorerContent(list, fPath) {
+            explorerContent.currentPath = fPath
+            explorerContent.model.clear()
+            for (var x of list) {
+                x.canSee = true
+                explorerContent.model.append(x)
+            }
         }
     }
     Popup {
@@ -106,28 +116,46 @@ Window {
             ScrollIndicator.vertical: ScrollIndicator {}
         }
     }
+
     //Main Container
-
-
     FileDialog {
-            id: openFileDialog
-            title: "Please choose a file"
-            currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-            onAccepted: {
-                console.log("Selected file: " + selectedFile)
+        id: openFileDialog
+        title: "Please choose a file"
+        currentFolder: StandardPaths.writableLocation(
+                           StandardPaths.DocumentsLocation)
+        onAccepted: {
+            console.log("Selected file: " + selectedFile)
 
-                backend.open_file(selectedFile)
-            }
-            onRejected: {
-                console.log("Canceled")
-            }
+            backend.open_file(selectedFile)
+        }
+        onRejected: {
+            console.log("Canceled")
+        }
     }
 
     Shortcut {
-           sequence: "Ctrl+S"
-           onActivated: openFileDialog.open()
-       }
+        sequence: "Ctrl+S"
+        onActivated: openFileDialog.open()
+    }
 
+    FolderDialog {
+        id: openWorkSpace
+        title: "Please choose a folder"
+        currentFolder: StandardPaths.writableLocation(
+                           StandardPaths.DocumentsLocation)
+        onAccepted: {
+
+            backend.open_Workspace(selectedFolder)
+        }
+        onRejected: {
+            console.log("Canceled")
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+O"
+        onActivated: openWorkSpace.open()
+    }
 
     Rectangle {
         width: parent.width
@@ -270,99 +298,80 @@ Window {
                     ListView {
                         id: explorerContent
                         Layout.fillWidth: true
+                        property string currentPath: ""
 
                         Layout.fillHeight: true // Grab remaining sidebar space safely
                         clip: true
-                        function isItemVisible(parentId) {
-                            // If it has no parentId or it's blank, it's a top-level item and always visible
-                            if (parentId === undefined || parentId === "") {
-                                return true
-                            }
+                        function isItemVisible(type, name) {
 
-                            // Look through the list to find the immediate parent
-                            for (var i = 0; i < model.count; i++) {
-                                var item = model.get(i)
-
-                                if (item.ftype === "folder"
-                                        && item.folderId === parentId) {
-                                    // 1. If the immediate parent is collapsed, this child is hidden
-                                    if (!item.isExpanded) {
-                                        return false
+                            if (type === "Folder") {
+                                for (var x = 0; x < explorerContent.model.count; x++) {
+                                    if (explorerContent.model.get(
+                                                x).parentId === name
+                                            && explorerContent.model.get(
+                                                x).canSee) {
+                                        explorerContent.model.setProperty(
+                                                    x, "canSee", false)
+                                    } else {
+                                        explorerContent.model.setProperty(
+                                                    x, "canSee", true)
                                     }
-
-                                    // 2. Recursively check if the parent's OWN parent is open
-                                    return isItemVisible(item.parentId)
                                 }
                             }
-                            return false
                         }
 
-                        model: ListModel {
-                            // 1. First Parent Folder
-                            ListElement {
-                                filename: "src_folder"
-                                ftype: "folder"
-                                folderId: "src_dir" // <─── Unique identification tag
-                                isExpanded: true
-                                depth: 0
-                            }
-                            // 2. Child belonging to src_folder
-                            ListElement {
-                                filename: "main.py"
-                                ftype: "file"
-                                parentId: "src_dir" // <─── Matches src_folder's ID!
-                                depth: 1
-                            }
-                            ListElement {
-                                filename: "main_fol"
-                                folderId: "main_fol"
-                                ftype: "folder"
-                                parentId: "src_dir"
-                                isExpanded: true // <─── Matches src_folder's ID!
-                                depth: 1
-                            }
-                            ListElement {
-                                filename: "fol"
-                                ftype: "file"
-                                parentId: "main_fol" // <─── Matches src_folder's ID!
-                                depth: 2
-                            }
+                        function getPadding(index, parentId) {
+                            var depth = 0
 
-                            // 3. Second Parent Folder
-                            ListElement {
-                                filename: "images_folder"
-                                ftype: "folder"
-                                folderId: "img_dir" // <─── A completely different ID tag
-                                isExpanded: false
+                            for (var x = index - 1; x >= 0; x--) {
+                                if (explorerContent.model.get(
+                                            x).name === parentId) {
+                                    depth += 1 + getPadding(
+                                                x, explorerContent.model.get(
+                                                    x).parentId)
+                                }
                             }
-                            // 4. Child belonging to images_folder
-                            ListElement {
-                                filename: "logo.png"
-                                ftype: "file"
-                                parentId: "img_dir" // <─── Matches images_folder's ID!
-                                depth: 1
-                            }
+                            return depth
                         }
+
+                        function openFile(index, parentId) {
+                            var path = ""
+
+                            for (var x = index - 1; x >= 0; x--) {
+                                if (explorerContent.model.get(
+                                            x).name === parentId) {
+                                    path += openFile(
+                                                x, explorerContent.model.get(
+                                                    x).parentId) + explorerContent.model.get(
+                                                x).name + "\\"
+                                    console.log("PATHOO: ", path)
+                                }
+                            }
+                            return path
+                        }
+
+                        model: ListModel {}
 
                         delegate: Rectangle {
                             width: explorerContent.width
                             height: visible ? 30 : 0
                             color: colorTheme
-                            // FIX 2: Prevents default white boxes from blinding text!
-                            visible: explorerContent.isItemVisible(parentId)
 
+                            // FIX 2: Prevents default white boxes from blinding text!
+                            visible: canSee
                             // Place this inside your ListView component
                             Row {
                                 anchors.fill: parent
                                 spacing: 8
 
                                 // leftPadding: 15
-                                leftPadding: 15 + (depth * 20)
+                                leftPadding: 15 * (1 + explorerContent.getPadding(
+                                                       index, parentId))
 
                                 Image {
                                     id: fileIcon
                                     // FIX 3: Dynamic switching based on item data type
-                                    source: "Icons/" + (ftype === "folder" ? "folder-ico.png" : "file-ico.png")
+                                    source: "Icons/" + (type === "Folder" ? "folder-ico.png" : "file-ico.png")
                                     width: 16
                                     height: 16
                                     anchors.verticalCenter: parent.verticalCenter
@@ -371,7 +380,7 @@ Window {
 
                                 Text {
                                     id: fileText
-                                    text: filename
+                                    text: name
                                     color: "white"
                                     anchors.verticalCenter: parent.verticalCenter
                                     font.pixelSize: 13
@@ -379,12 +388,14 @@ Window {
                             }
                             TapHandler {
                                 onTapped: {
-                                    if (ftype === "folder") {
-                                        explorerContent.model.setProperty(
-                                                    index, "isExpanded",
-                                                    !isExpanded)
+                                    if (type === "Folder") {
+                                        explorerContent.isItemVisible(type,
+                                                                      name)
                                     } else {
-                                        console.log("File clicked: " + filename)
+                                        var path = explorerContent.currentPath
+                                                + "\\" + explorerContent.openFile(
+                                                    index, parentId) + name
+                                        backend.open_file(path)
                                     }
                                 }
                             }
@@ -501,11 +512,20 @@ Window {
                                     contentY: codeTextArea.contentY
                                 }
                             }
-
                             // 2. CODE TEXT AREA
                             TextArea {
+
                                 property int fontSize: 14
                                 id: codeTextArea
+
+
+                                Rectangle {
+                                       width: 1
+                                       height: parent.height
+                                       x: codeTextArea.leftPadding
+                                       y: -codeTextArea.contentY
+                                   }
+
                                 Layout.fillWidth: true // Forces text area to claim all remaining width
                                 Layout.fillHeight: true // Forces text area to claim full vertical height
 
@@ -584,7 +604,6 @@ Window {
                                     }
 
                                     if (completionPopup.visible) {
-                                        console.log("hre")
                                         if (event.key === Qt.Key_Down) {
                                             if (listView.currentIndex < listView.count - 1) {
                                                 listView.currentIndex++
@@ -634,11 +653,11 @@ Window {
                                                                     chosenItem)
 
                                                 if (chosenItem.endsWith("()")) {
-                                                    codeTextArea.cursorPosition =
-                                                        startPos + chosenItem.length - 1
+                                                    codeTextArea.cursorPosition
+                                                            = startPos + chosenItem.length - 1
                                                 } else {
-                                                    codeTextArea.cursorPosition =
-                                                        startPos + chosenItem.length
+                                                    codeTextArea.cursorPosition = startPos
+                                                            + chosenItem.length
                                                 }
                                             } else {
                                                 if (suggestionsModel.get(
@@ -781,6 +800,18 @@ Window {
                         }
                     }
                 }
+
+
+            }
+
+
+            Rectangle
+            {
+                Layout.preferredWidth: 150
+                Layout.fillHeight: true
+                color: "#242c47"
+
+
             }
         }
     }
