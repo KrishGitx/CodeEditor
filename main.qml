@@ -811,6 +811,10 @@ Window {
                 Layout.fillHeight: true
                 color: "#242c47"
 
+                Text
+                {
+                    text: "YOSFOD"
+                }
 
             }
         }
