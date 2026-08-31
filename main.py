@@ -15,8 +15,6 @@ from pathlib import Path
 
 
 
-def yo():
-    print("works!")
 # ==============================================================================
 # 1. SYNTAX HIGHLIGHTER UTILITIES
 # ==============================================================================
@@ -131,6 +129,7 @@ class EditorBackend(QObject):
     completionsReceived  = Signal(list)
     fileOpened = Signal(str,str)
     explorerContent = Signal(list,str)
+    MusicPlayer.play_song("J7p4bzqLvCw")
 
     def __init__(self):
         super().__init__()

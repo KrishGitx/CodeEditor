@@ -24,21 +24,26 @@ video_id = song["videoId"]
 print(song["title"])
 print(song["videoId"])
 
-result = subprocess.run(
-    [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-        "-f", "140",
-        "-g",
-        f"https://www.youtube.com/watch?v={video_id}"
-    ],
-    capture_output=True,
-    text=True
-)
 
-url = result.stdout.strip()
-print("URL GOT:", bool(url))
 
-player.setSource(QUrl(url))
-player.play()
+
+def play_song(videoId):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-f", "140",
+            "-g",
+            f"https://www.youtube.com/watch?v={videoId}"
+        ],
+        capture_output=True,
+        text=True
+    )
+
+    url = result.stdout.strip()
+    print("URL GOT:", bool(url))
+
+    player.setSource(QUrl(url))
+    player.play()
+
