@@ -9,10 +9,10 @@ import os
 import subprocess
 import json
 import time
-import MusicPlayer
+from MusicPlayer import MusicPlayer
 from pathlib import Path
 
-
+musicPlayer = MusicPlayer()
 
 
 # ==============================================================================
@@ -129,7 +129,6 @@ class EditorBackend(QObject):
     completionsReceived  = Signal(list)
     fileOpened = Signal(str,str)
     explorerContent = Signal(list,str)
-    MusicPlayer.play_song("J7p4bzqLvCw")
 
     def __init__(self):
         super().__init__()
@@ -139,6 +138,7 @@ class EditorBackend(QObject):
         self.doc_version = 1
         self.start_lsp_server()
         self.folder_path = ""
+
 
     @Slot(QObject)
     def register_text_area(self, qml_text_area):
@@ -356,6 +356,7 @@ if __name__ == "__main__":
     engine = QQmlApplicationEngine()
     backend = EditorBackend()
     engine.rootContext().setContextProperty("backend", backend)
+    engine.rootContext().setContextProperty("musicPlayer", musicPlayer)
 
     engine.load("main.qml")
     if not engine.rootObjects(): sys.exit(-1)

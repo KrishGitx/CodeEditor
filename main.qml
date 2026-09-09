@@ -4,7 +4,6 @@ import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
 import QtQuick.Dialogs
 
-
 Window {
     Component.onCompleted: {
         throw new Error("QML IS RUNNING")
@@ -67,6 +66,17 @@ Window {
             }
         }
     }
+
+    Connections {
+        target: musicPlayer
+        function onSearchResults(list) {
+            songModel.clear()
+            for (var x of list) {
+                songModel.append(x)
+            }
+        }
+    }
+
     Popup {
         id: completionPopup
         z: 9999
@@ -518,13 +528,12 @@ Window {
                                 property int fontSize: 14
                                 id: codeTextArea
 
-
                                 Rectangle {
-                                       width: 1
-                                       height: parent.height
-                                       x: codeTextArea.leftPadding
-                                       y: -codeTextArea.contentY
-                                   }
+                                    width: 1
+                                    height: parent.height
+                                    x: codeTextArea.leftPadding
+                                    y: -codeTextArea.contentY
+                                }
 
                                 Layout.fillWidth: true // Forces text area to claim all remaining width
                                 Layout.fillHeight: true // Forces text area to claim full vertical height
@@ -800,22 +809,90 @@ Window {
                         }
                     }
                 }
-
-
             }
 
-
-            Rectangle
-            {
+            Rectangle {
                 Layout.preferredWidth: 150
                 Layout.fillHeight: true
                 color: "#242c47"
 
-                Text
-                {
-                    text: "YOSFOD"
-                }
+                ColumnLayout {
+                    anchors.fill: parent
+                    Layout.alignment: Qt.AlignTop
+                    spacing: 15
+                    Rectangle {
+                        color: "white"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 550
+                        Text {
+                            text: "fgsdfd"
+                        }
+                    }
+                    Rectangle {
+                        color: "gray"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 350
 
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 5
+                            Layout.alignment: Qt.AlignTop
+                            TextField {
+                                id: searchField
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 40
+
+                                placeholderText: "Search music..."
+
+                                onAccepted: {
+                                    musicPlayer.search_music(text)
+                                }
+                            }
+                            Dial {
+                                Layout.preferredWidth :50
+                                Layout.preferredHeight:50
+                                from: 0
+                                to: 1
+
+                                onValueChanged: {
+                                    musicPlayer.volume_change(value)
+                                }
+                            }
+
+                            ListView {
+                                id: songResults
+
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 250
+
+                                clip: true
+
+                                model: ListModel
+                                {
+                                    id:songModel
+                                }
+
+                                delegate: Rectangle {
+                                    width: songResults.width
+                                    height: 20
+
+                                    Text {
+                                        text: title
+                                    }
+
+                                    TapHandler
+                                    {
+                                        onTapped:
+                                        {
+                                            console.log("Playing:", title,videoId)
+                                            musicPlayer.play_song(videoId)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
