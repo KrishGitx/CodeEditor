@@ -5,47 +5,55 @@ import QtQuick.Controls 2.15
 import QtQuick.Dialogs
 import QtCore
 
-import "qml"
-import "qml/components"
-import "qml/ai"
-import "qml/music"
+import "components"
+import "ai"
+import "music"
 
 Window {
     id: mainWindow
     width: 1440
     height: 900
-    minimumWidth: 800
+    minimumWidth: 1000
     minimumHeight: 600
     visible: true
-    focus: true
     title: qsTr("DGX Studio")
     flags: Qt.Window | Qt.FramelessWindowHint
     color: theme.bgRoot
 
-    Theme { id: theme }
+    // ─── Global Theme Engine ───
+    Theme {
+        id: theme
+    }
 
+    // ─── Panel Size State ───
     property real explorerWidth: 250
     property real rightPanelWidth: 320
     property real terminalHeight: 180
-    property real aiMusicSplit: 0.55
+    property real aiMusicSplit: 0.55  // fraction of right panel for AI
 
+    // ─── Panel Visibility ───
     property bool explorerVisible: true
     property bool rightPanelVisible: true
     property bool terminalVisible: true
     property bool aiVisible: true
     property bool musicVisible: true
 
+    // ─── Focus / Zen Mode ───
     property bool zenMode: false
 
+    // ─── Panel Size Constraints ───
     readonly property real explorerMin: 180
     readonly property real explorerMax: 440
     readonly property real rightPanelMin: 260
     readonly property real rightPanelMax: 540
     readonly property real terminalMin: 80
     readonly property real terminalMax: 440
-    readonly property real headerHeight: 38
+    readonly property real editorMinWidth: 420
+    readonly property real editorMinHeight: 240
+    readonly property real headerHeight: 34
     readonly property real statusBarHeight: 24
 
+    // ─── Computed Positions ───
     readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode) ? explorerWidth : 0
     readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && (aiVisible || musicVisible)) ? rightPanelWidth : 0
     readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode) ? terminalHeight : 0
@@ -56,6 +64,25 @@ Window {
                                               - effectiveTerminalHeight
                                               - (effectiveTerminalHeight > 0 ? 5 : 0)
 
+    function syncRightPanelVisibility() {
+        rightPanelVisible = aiVisible || musicVisible
+    }
+
+    function constrainPanelSizes() {
+        // Preserve a usable editing surface before growing secondary panels.
+        var maxRight = width - explorerWidth - editorMinWidth - 10
+        rightPanelWidth = Math.max(rightPanelMin, Math.min(rightPanelMax, maxRight, rightPanelWidth))
+        var maxExplorer = width - rightPanelWidth - editorMinWidth - 10
+        explorerWidth = Math.max(explorerMin, Math.min(explorerMax, maxExplorer, explorerWidth))
+        var maxTerminal = height - headerHeight - statusBarHeight - editorMinHeight - 5
+        terminalHeight = Math.max(terminalMin, Math.min(terminalMax, maxTerminal, terminalHeight))
+    }
+
+    Component.onCompleted: constrainPanelSizes()
+    onWidthChanged: constrainPanelSizes()
+    onHeightChanged: constrainPanelSizes()
+
+    // ─── Backend Signal Connections ───
     Connections {
         target: backend
 
@@ -72,28 +99,15 @@ Window {
             explorerPanel.populateModel(list, fPath)
             appHeader.activeProjectName = fPath.split("/").pop().split("\\").pop()
         }
-
     }
+
+    // ─── Dialogs ───
     FileDialog {
         id: openFileDialog
         title: "Choose a file to open"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        onAccepted: backend.open_file(selectedFile.toString())
-    }
-
-    FileDialog {
-        id: saveAsDialog
-        title: "Save As"
-        fileMode: FileDialog.SaveFile
-        currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-
         onAccepted: {
-            console.log("DGX SAVE AS: dialog accepted:", selectedFile.toString())
-            editorArea.saveAsCurrentFile(selectedFile.toString())
-        }
-
-        onRejected: {
-            console.log("DGX SAVE AS: dialog rejected")
+            backend.open_file(selectedFile.toString())
         }
     }
 
@@ -101,15 +115,16 @@ Window {
         id: openWorkspaceDialog
         title: "Choose a workspace folder"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        onAccepted: backend.open_Workspace(selectedFolder.toString())
+        onAccepted: {
+            backend.open_Workspace(selectedFolder.toString())
+        }
     }
 
-     Shortcut {
-       sequence: "Ctrl+S"
-         onActivated: editorArea.saveCurrentFile()
-     }
-
-
+    // ─── Global Keyboard Shortcuts ───
+    Shortcut {
+        sequence: "Ctrl+S"
+        onActivated: editorArea.saveCurrentFile()
+    }
     Shortcut {
         sequence: "Ctrl+N"
         onActivated: editorArea.newBlankTab()
@@ -147,7 +162,11 @@ Window {
         onActivated: editorArea.toggleFindBar()
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  MAIN LAYOUT — Manual coordinate positioning with 4 draggable splitters
+    // ═══════════════════════════════════════════════════════════════
 
+    // ─── 1. App Header ───
     AppHeader {
         id: appHeader
         x: 0; y: 0
@@ -159,20 +178,15 @@ Window {
         onOpenWorkspaceDialogRequested: openWorkspaceDialog.open()
         onSettingsRequested: settingsDialog.open()
         onToggleTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
-        onToggleMusicRequested: {
-            mainWindow.musicVisible = !mainWindow.musicVisible
-            mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
-        }
-        onToggleAIRequested: {
-            mainWindow.aiVisible = !mainWindow.aiVisible
-            mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
-        }
+        onToggleMusicRequested: { mainWindow.musicVisible = !mainWindow.musicVisible; mainWindow.syncRightPanelVisibility() }
+        onToggleAIRequested: { mainWindow.aiVisible = !mainWindow.aiVisible; mainWindow.syncRightPanelVisibility() }
         onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
         onSaveRequested: editorArea.saveCurrentFile()
         onNewFileRequested: editorArea.newBlankTab()
         onPresetRequested: (preset) => mainWindow.applyPreset(preset)
     }
 
+    // ─── 2. Explorer Panel (Left) ───
     ExplorerPanel {
         id: explorerPanel
         x: 0
@@ -183,10 +197,13 @@ Window {
 
         Behavior on width { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
 
-        onFileSelected: (filePath, fileName) => backend.open_file(filePath)
+        onFileSelected: (filePath, fileName) => {
+            backend.open_file(filePath)
+        }
         onOpenWorkspaceRequested: openWorkspaceDialog.open()
     }
 
+    // ─── Splitter 1: Explorer ↔ Editor ───
     SplitHandle {
         id: explorerSplitter
         orientation: "horizontal"
@@ -197,15 +214,17 @@ Window {
         z: 20
 
         onDragged: function(delta) {
-            mainWindow.explorerWidth = Math.max(explorerMin, Math.min(explorerMax, explorerWidth + delta))
+            var maxForEditor = mainWindow.width - mainWindow.rightPanelWidth - mainWindow.editorMinWidth - 10
+            mainWindow.explorerWidth = Math.max(explorerMin, Math.min(explorerMax, maxForEditor, explorerWidth + delta))
         }
     }
 
+    // ─── 3. Code Editor (Center & Largest) ───
     EditorArea {
         id: editorArea
         x: effectiveExplorerWidth + (effectiveExplorerWidth > 0 ? 5 : 0)
         y: headerHeight
-        width: Math.max(300, editorAreaWidth)
+        width: Math.max(editorMinWidth, editorAreaWidth)
         height: mainContentHeight
 
         Behavior on x { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
@@ -219,13 +238,9 @@ Window {
             statusBar.cursorLine = line
             statusBar.cursorCol = col
         }
-
-        onSaveAsRequested: {
-            console.log("DGX SAVE AS: main.qml received signal")
-            saveAsDialog.open()
-        }
     }
 
+    // ─── Splitter 2: Editor ↔ Right Sidebar ───
     SplitHandle {
         id: rightSplitter
         orientation: "horizontal"
@@ -236,10 +251,12 @@ Window {
         z: 20
 
         onDragged: function(delta) {
-            mainWindow.rightPanelWidth = Math.max(rightPanelMin, Math.min(rightPanelMax, rightPanelWidth - delta))
+            var maxForEditor = mainWindow.width - mainWindow.explorerWidth - mainWindow.editorMinWidth - 10
+            mainWindow.rightPanelWidth = Math.max(rightPanelMin, Math.min(rightPanelMax, maxForEditor, rightPanelWidth - delta))
         }
     }
 
+    // ─── 4. Right Sidebar (AI Workspace Upper-Right + Music Player Lower-Right) ───
     Item {
         id: rightPanel
         x: mainWindow.width - effectiveRightWidth
@@ -252,25 +269,36 @@ Window {
         Behavior on width { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
 
         property real aiHeight: {
-            if (aiVisible && musicVisible) return Math.round(rightPanel.height * aiMusicSplit)
-            else if (aiVisible) return rightPanel.height
-            else return 0
+            if (aiVisible && musicVisible) {
+                return Math.round(rightPanel.height * aiMusicSplit)
+            } else if (aiVisible) {
+                return rightPanel.height
+            } else {
+                return 0
+            }
         }
         property real musicY: aiVisible ? (aiHeight + (aiVisible && musicVisible ? 5 : 0)) : 0
         property real musicHeight: {
-            if (aiVisible && musicVisible) return rightPanel.height - aiHeight - 5
-            else if (musicVisible) return rightPanel.height
-            else return 0
+            if (aiVisible && musicVisible) {
+                return rightPanel.height - aiHeight - 5
+            } else if (musicVisible) {
+                return rightPanel.height
+            } else {
+                return 0
+            }
         }
 
+        // Upper-Right: AI Workspace
         AIWorkspace {
             id: aiWorkspace
             x: 0; y: 0
             width: rightPanel.width
             height: rightPanel.aiHeight
             visible: mainWindow.aiVisible
+            onCloseRequested: { mainWindow.aiVisible = false; mainWindow.syncRightPanelVisibility() }
         }
 
+        // Splitter 3: AI ↔ Music
         SplitHandle {
             id: aiMusicSplitter
             orientation: "vertical"
@@ -286,6 +314,7 @@ Window {
             }
         }
 
+        // Lower-Right: Music Player
         MusicPlayerPanel {
             id: musicPlayerPanel
             x: 0
@@ -293,9 +322,11 @@ Window {
             width: rightPanel.width
             height: rightPanel.musicHeight
             visible: mainWindow.musicVisible
+            onCloseRequested: { mainWindow.musicVisible = false; mainWindow.syncRightPanelVisibility() }
         }
     }
 
+    // ─── Splitter 4: Workspace ↔ Terminal ───
     SplitHandle {
         id: terminalSplitter
         orientation: "vertical"
@@ -310,6 +341,7 @@ Window {
         }
     }
 
+    // ─── 5. Terminal Panel (Bottom) ───
     TerminalPanel {
         id: terminalPanel
         x: 0
@@ -324,6 +356,7 @@ Window {
         onCloseRequested: mainWindow.terminalVisible = false
     }
 
+    // ─── 6. Status Bar ───
     StatusBar {
         id: statusBar
         x: 0
@@ -339,6 +372,7 @@ Window {
         }
     }
 
+    // ─── Radial Menu Contextual Overlay ───
     RadialMenu {
         id: radialMenu
         z: 10000
@@ -371,11 +405,13 @@ Window {
         }
     }
 
+    // ─── Settings Dialog Modal ───
     SettingsDialog {
         id: settingsDialog
         z: 9999
     }
 
+    // ─── Workspace Presets Engine ───
     function applyPreset(presetName) {
         switch (presetName) {
             case "Coding":

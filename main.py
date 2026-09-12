@@ -1,76 +1,29 @@
 import sys
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QSyntaxHighlighter, QTextCharFormat, QColor, QFont
+import os
+from pathlib import Path
+
+# Add current directory to sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import Qt, QObject, Slot, QRegularExpression, QThread, Signal
+from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread
 from PySide6.QtQuick import QQuickTextDocument
+from PySide6.QtQuickControls2 import QQuickStyle
 from urllib.parse import urlparse
 from urllib.request import url2pathname
-import os
 import subprocess
 import json
 import time
+
 from MusicPlayer import MusicPlayer
-from pathlib import Path
-
-musicPlayer = MusicPlayer()
-
-
-# ==============================================================================
-# 1. SYNTAX HIGHLIGHTER UTILITIES
-# ==============================================================================
-ALL_KEYWORDS_PATTERN = (
-    r"\b("
-    r"def|class|return|import|from|if|else|elif|while|for|try|except|print|with|as|"
-    r"function|const|let|var|switch|case|export|console|"
-    r"int|float|double|char|void|struct|public|private"
-    r")\b|"
-    r"(#include|#define|#ifdef|#ifndef|#endif)"
-)
-ALL_COMMENTS_PATTERN = r"(#.*|//.*)"
-
-THEMES = {
-    "one_dark": {
-        "keywords": "#c678dd", "functions": "#61afef", "strings": "#98c379", "comments": "#5c6370"
-    }
-}
-
-class highlighter(QSyntaxHighlighter):
-    def __init__(self, parent_document, theme_name="one_dark"):
-        super().__init__(parent_document)
-        self.rules = []
-        self.current_theme = THEMES.get(theme_name, THEMES["one_dark"])
-        self.setup_rules()
-
-    def setup_rules(self):
-        self.rules.clear()
-        keyword_format = QTextCharFormat()
-        keyword_format.setForeground(QColor(self.current_theme["keywords"]))
-        keyword_format.setFontWeight(QFont.Bold)
-        function_format = QTextCharFormat()
-        function_format.setForeground(QColor(self.current_theme["functions"]))
-        string_format = QTextCharFormat()
-        string_format.setForeground(QColor(self.current_theme["strings"]))
-        comment_format = QTextCharFormat()
-        comment_format.setForeground(QColor(self.current_theme["comments"]))
-
-        self.rules = [
-            (QRegularExpression(ALL_COMMENTS_PATTERN), comment_format),
-            (QRegularExpression(r"(\".*?\"|'.*?')"), string_format),
-            (QRegularExpression(ALL_KEYWORDS_PATTERN), keyword_format),
-            (QRegularExpression(r"\b[A-Za-z0-9_]+(?=\()"), function_format)
-        ]
-        self.rehighlight()
-
-    def highlightBlock(self, text):
-        for pattern, text_format in self.rules:
-            match_iterator = pattern.globalMatch(text)
-            while match_iterator.hasNext():
-                match = match_iterator.next()
-                self.setFormat(match.capturedStart(), match.capturedLength(), text_format)
+from HighlighterEngine import MultiLanguageHighlighter
+from AIBackend import AIBackend
+from TerminalBackend import TerminalBackend
 
 
 # ==============================================================================
-# 2. BACKGROUND LSP THREAD WORKER
+# 1. BACKGROUND LSP THREAD WORKER
 # ==============================================================================
 class LSPReaderWorker(QThread):
     message_received = Signal(dict)
@@ -87,7 +40,8 @@ class LSPReaderWorker(QThread):
             try:
                 chunk = self.process.stdout.read(1)
                 if not chunk:
-                    if self.process.poll() is not None: break
+                    if self.process.poll() is not None:
+                        break
                     continue
                 buffer += chunk
 
@@ -104,7 +58,8 @@ class LSPReaderWorker(QThread):
 
                         while len(remaining) < length:
                             next_byte = self.process.stdout.read(1)
-                            if not next_byte: break
+                            if not next_byte:
+                                break
                             remaining += next_byte
 
                         msg_body_bytes = remaining[:length]
@@ -123,12 +78,14 @@ class LSPReaderWorker(QThread):
 
 
 # ==============================================================================
-# 3. LSP BACKEND ENGINE
+# 2. LSP & CODE EDITOR BACKEND ENGINE
 # ==============================================================================
 class EditorBackend(QObject):
-    completionsReceived  = Signal(list)
-    fileOpened = Signal(str,str)
-    explorerContent = Signal(list,str)
+    completionsReceived = Signal(list)
+    fileOpened = Signal(str, str)
+    fileSaved = Signal(str, bool)
+    explorerContent = Signal(list, str)
+    currentLanguageChanged = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -136,67 +93,91 @@ class EditorBackend(QObject):
         self.lsp_process = None
         self.msg_id = 1
         self.doc_version = 1
+        self.current_file = ""
+        self.folder_path = os.getcwd()
         self.start_lsp_server()
-        self.folder_path = ""
-
 
     @Slot(QObject)
     def register_text_area(self, qml_text_area):
         qml_doc = qml_text_area.property("textDocument")
-        self.highlighter = highlighter(qml_doc.textDocument())
+        if qml_doc:
+            self.highlighter = MultiLanguageHighlighter(qml_doc.textDocument())
+            initial_text = qml_text_area.property("text") or ""
+            initial_path = self.current_file or "main.py"
+            self.highlighter.set_language_for_file(initial_path)
+            self.currentLanguageChanged.emit(self.highlighter.language)
+            self.initial_file_open(initial_path, initial_text)
 
-        # Trigger an initial open sequence now that we have the text document area context mapping
-        initial_text = qml_text_area.property("text") or ""
-        self.initial_file_open("C:/Users/amazi/OneDrive/Documents/DGX/test.py", initial_text)
+    @Slot(str)
+    def set_theme(self, theme_name):
+        if self.highlighter:
+            self.highlighter.set_theme(theme_name.lower())
 
     def start_lsp_server(self):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        server_path = r"C:\Users\amazi/OneDrive/Documents/DGX/.qtcreator/Python_3_14_3venv/Scripts/pylsp.exe"
 
-        self.lsp_process = subprocess.Popen(
-            [server_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=False, bufsize=0, env=env
-        )
+        # Look for pylsp in local venv or system PATH
+        venv_pylsp = Path(__file__).parent / ".qtcreator" / "Python_3_14_3venv" / "Scripts" / "pylsp.exe"
+        server_path = str(venv_pylsp) if venv_pylsp.exists() else "pylsp"
 
-        if self.lsp_process.poll() is None:
-            print("LSP STARTED")
-            self.reader_thread = LSPReaderWorker(self.lsp_process)
-            self.reader_thread.message_received.connect(self.handle_lsp_message)
-            self.reader_thread.start()
+        try:
+            self.lsp_process = subprocess.Popen(
+                [server_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=False, bufsize=0, env=env
+            )
 
-            # Capability announcement tells pylsp to calculate autocomplete items
-            self.send_lsp_request("initialize", {
-                "processId": os.getpid(),
-                "rootUri": "file:///C:/Users/amazi/OneDrive/Documents/DGX",
-                "capabilities": {
-                    "textDocument": {
-                        "completion": {
-                            "completionItem": {"snippetSupport": True},
-                            "contextSupport": True
+            if self.lsp_process.poll() is None:
+                print("LSP STARTED:", server_path)
+                self.reader_thread = LSPReaderWorker(self.lsp_process)
+                self.reader_thread.message_received.connect(self.handle_lsp_message)
+                self.reader_thread.start()
+
+                root_uri = Path(self.folder_path).as_uri()
+                self.send_lsp_request("initialize", {
+                    "processId": os.getpid(),
+                    "rootUri": root_uri,
+                    "capabilities": {
+                        "textDocument": {
+                            "completion": {
+                                "completionItem": {"snippetSupport": True},
+                                "contextSupport": True
+                            }
                         }
                     }
-                }
-            })
+                })
+        except Exception as e:
+            print("LSP could not be started:", e)
 
     def send_lsp_request(self, method, dic):
-        js = {"jsonrpc": "2.0", "id": self.msg_id, "method": method, "params": dic}
-        self.msg_id += 1
-        json_string = json.dumps(js)
-        header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
-        self.lsp_process.stdin.write(header.encode('utf-8'))
-        self.lsp_process.stdin.flush()
+        if not self.lsp_process or self.lsp_process.poll() is not None:
+            return
+        try:
+            js = {"jsonrpc": "2.0", "id": self.msg_id, "method": method, "params": dic}
+            self.msg_id += 1
+            json_string = json.dumps(js)
+            header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
+            self.lsp_process.stdin.write(header.encode('utf-8'))
+            self.lsp_process.stdin.flush()
+        except Exception as e:
+            print("LSP request error:", e)
 
     def send_lsp_notification(self, method, dic):
-        js = {"jsonrpc": "2.0", "method": method, "params": dic}
-        json_string = json.dumps(js)
-        header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
-        self.lsp_process.stdin.write(header.encode('utf-8'))
-        self.lsp_process.stdin.flush()
+        if not self.lsp_process or self.lsp_process.poll() is not None:
+            return
+        try:
+            js = {"jsonrpc": "2.0", "method": method, "params": dic}
+            json_string = json.dumps(js)
+            header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
+            self.lsp_process.stdin.write(header.encode('utf-8'))
+            self.lsp_process.stdin.flush()
+        except Exception as e:
+            print("LSP notification error:", e)
 
     def initial_file_open(self, filepath, current_text):
         clean_path = filepath.replace("\\", "/")
-        if not clean_path.startswith("file:///"): clean_path = "file:///" + clean_path
+        if not clean_path.startswith("file:///"):
+            clean_path = "file:///" + clean_path
 
         open_payload = {
             "textDocument": {
@@ -207,12 +188,12 @@ class EditorBackend(QObject):
             }
         }
         self.send_lsp_notification("textDocument/didOpen", open_payload)
-        print(f"LSP LIFECYCLE: Registered open path context for {clean_path}")
 
     @Slot(str, str)
     def notify_change(self, filepath, full_text):
         clean_path = filepath.replace("\\", "/")
-        if not clean_path.startswith("file:///"): clean_path = "file:///" + clean_path
+        if not clean_path.startswith("file:///"):
+            clean_path = "file:///" + clean_path
 
         self.doc_version += 1
         payload = {
@@ -224,7 +205,8 @@ class EditorBackend(QObject):
     @Slot(str, int, int, str)
     def request_completion(self, filepath, line, character, current_text):
         clean_path = filepath.replace("\\", "/")
-        if not clean_path.startswith("file:///"): clean_path = "file:///" + clean_path
+        if not clean_path.startswith("file:///"):
+            clean_path = "file:///" + clean_path
 
         completion_payload = {
             "textDocument": {"uri": clean_path},
@@ -249,117 +231,164 @@ class EditorBackend(QObject):
             elif isinstance(result_data, list):
                 items_list = result_data
 
-
-            for item in items_list:
-                print(item)
-                break
             suggestions = [
                 {
                     "label": item.get("label", ""),
                     "insertText": item.get("insertText", item.get("label", "")),
-                    "type": item.get("kind","")
+                    "type": item.get("kind", "")
                 }
                 for item in items_list
             ]
-            self.completionsReceived .emit(suggestions)
-            print(f"--- AUTOCOMPLETE DATAPACK RECEIVED: Emitted {len(suggestions)} items ---")
+            self.completionsReceived.emit(suggestions)
 
     @Slot(str)
     def open_file(self, filePath):
+        if filePath.startswith("file:///"):
+            parsed = urlparse(filePath)
+            filePath = url2pathname(parsed.path)
 
-        print(filePath)
+        clean_path = os.path.normpath(filePath)
+        if not os.path.exists(clean_path):
+            print("File not found:", clean_path)
+            return
 
-        with open(filePath, "r", encoding="utf-8") as f:
-            content = f.read()
+        self.current_file = clean_path
+        try:
+            with open(clean_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
 
-        self.fileOpened.emit(filePath,content)
+            if self.highlighter:
+                self.highlighter.set_language_for_file(clean_path)
+                self.currentLanguageChanged.emit(self.highlighter.language)
 
+            self.fileOpened.emit(clean_path, content)
+        except Exception as e:
+            print(f"Error opening file {clean_path}:", e)
+
+    @Slot(str, str)
+    def save_file(self, filePath, content):
+        if not filePath:
+            self.fileSaved.emit("", False)
+            return
+
+        # QML can pass either a normal Windows path or a file:// URL.
+        if filePath.startswith("file:///"):
+            parsed = urlparse(filePath)
+            filePath = url2pathname(parsed.path)
+
+        clean_path = os.path.abspath(os.path.normpath(filePath))
+
+        try:
+            # Make sure the parent directory exists for newly-created files.
+            parent = os.path.dirname(clean_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+
+            # newline="" prevents Python from unexpectedly translating
+            # line endings while saving editor content.
+            with open(clean_path, "w", encoding="utf-8", newline="") as f:
+                f.write(content)
+
+            self.current_file = clean_path
+            self.fileSaved.emit(clean_path, True)
+            print(f"File saved successfully: {clean_path}")
+
+        except (OSError, UnicodeError) as e:
+            print(f"Error saving file {clean_path}: {e}")
+            self.fileSaved.emit(clean_path, False)
 
     @Slot(str)
-    def open_Workspace(self,path):
-
+    def open_Workspace(self, path):
         if path.startswith("file:///"):
             parsed = urlparse(path)
             path = url2pathname(parsed.path)
 
+        self.folder_path = os.path.normpath(path)
+        print("Opening workspace:", self.folder_path)
 
-
-        self.folder_path = path
-        print(path)
-       # self.folder_path =  self.folder_path[:c] + "\\"
-        root , arr =  self.search_folder_items(self.folder_path)
-
-        result = self.explorerList(arr, root)
-        self.explorerContent.emit(result,self.folder_path)
-
+        try:
+            root, arr = self.search_folder_items(self.folder_path)
+            result = self.explorerList(arr, root)
+            self.explorerContent.emit(result, self.folder_path)
+        except Exception as e:
+            print("Error loading workspace tree:", e)
 
     def search_folder_items(self, path):
-        path = Path(path)
+        p = Path(path)
+        try:
+            files = list(p.iterdir())
+        except PermissionError:
+            return p.name, []
 
-        files = list(path.iterdir())
-
-        root_folder = path.name
+        root_folder = p.name
         ls = []
 
-        for file in files:
-            if file.is_dir():
-              root,childs =  self.search_folder_items(file)
-              arr = [root,childs]
-              ls.append(arr)
-            else:
-                ls.append(file.name)
+        # Sort folders first, then files alphabetically
+        dirs = [f for f in files if f.is_dir() and not f.name.startswith(".")]
+        nondirs = [f for f in files if not f.is_dir()]
 
+        for d in sorted(dirs, key=lambda x: x.name.lower()):
+            root, childs = self.search_folder_items(d)
+            ls.append([root, childs])
+
+        for f in sorted(nondirs, key=lambda x: x.name.lower()):
+            ls.append(f.name)
 
         return root_folder, ls
 
-
-    def explorerList(self,arry,pid):
-        depth = 0
+    def explorerList(self, arry, pid):
         final_list = []
         for item in arry:
             node = {}
             if isinstance(item, list):
-
                 folder_name = item[0]
                 li = item[1]
                 node["name"] = folder_name
                 node["parentId"] = pid
                 node["type"] = "Folder"
-
                 final_list.append(node)
-
-                final_list.extend(self.explorerList(li,folder_name))
+                final_list.extend(self.explorerList(li, folder_name))
             else:
-                if "." not in item:
-                    node["name"] = item
-                    node["parentId"] = pid
-                    node["type"] = "Folder"
-                else:
-                    node["name"] = item
-                    node["parentId"] = pid
-                    node["type"] = "File"
+                node["name"] = item
+                node["parentId"] = pid
+                node["type"] = "Folder" if "." not in item else "File"
                 final_list.append(node)
-
         return final_list
 
 
-
 # ==============================================================================
-# 4. APPLICATION ENTRY POINT
+# 3. APPLICATION ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
     app = QGuiApplication(sys.argv)
+    app.setApplicationName("DGX Studio")
+    app.setOrganizationName("DGX")
+
     fmt = QSurfaceFormat()
     fmt.setAlphaBufferSize(8)
     QSurfaceFormat.setDefaultFormat(fmt)
+    QQuickStyle.setStyle("Basic")
 
     engine = QQmlApplicationEngine()
+
+    # Initialize backend singleton services
     backend = EditorBackend()
+    musicPlayer = MusicPlayer()
+    aiBackend = AIBackend()
+    terminalBackend = TerminalBackend()
+
+    # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("musicPlayer", musicPlayer)
+    engine.rootContext().setContextProperty("aiBackend", aiBackend)
+    engine.rootContext().setContextProperty("terminalBackend", terminalBackend)
 
-    engine.load("main.qml")
-    if not engine.rootObjects(): sys.exit(-1)
+    engine.load("qml/main.qml")
+    if not engine.rootObjects():
+        # Fallback to main.qml in root if qml/ directory isn't used
+        engine.load("main.qml")
+        if not engine.rootObjects():
+            sys.exit(-1)
 
     root_window = engine.rootObjects()[0]
     root_window.setFlags(Qt.Window | Qt.FramelessWindowHint)
