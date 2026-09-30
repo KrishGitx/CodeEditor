@@ -1,223 +1,55 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import "."
 
 Rectangle {
-    id: statusBarRoot
-    height: 24
-    color: theme.bgHeader
+    id: root
 
-    signal toggleTerminal()
-    signal toggleMusic()
-
+    property string currentLanguage: "Plain Text"
     property int cursorLine: 1
-    property int cursorCol: 1
-    property string activeLanguage: "Python"
-    property string currentSongTitle: "No Track Playing"
-    property string musicPlaybackState: "stopped"
+    property int cursorColumn: 1
 
-    Connections {
-        target: backend
-        function onCurrentLanguageChanged(lang) {
-            statusBarRoot.activeLanguage = lang.charAt(0).toUpperCase() + lang.slice(1)
-        }
-    }
+    signal languageSelected(string lang)
+    signal settingsRequested()
+    signal themeSelected(string themeName)
 
-    Connections {
-        target: musicPlayer
-        function onCurrentSongChanged(title, artist, videoId) {
-            statusBarRoot.currentSongTitle = title
-        }
-        function onPlaybackStateChanged(state) {
-            statusBarRoot.musicPlaybackState = state
-        }
+    height: 22
+    color: theme ? theme.bgHeader : "#181818"
+
+    // Single 1px top border line separating workspace from status bar
+    Rectangle {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 1
+        color: theme ? theme.borderSubtle : "#282828"
     }
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 10
-        anchors.rightMargin: 10
-        spacing: 10
+        anchors.leftMargin: 8
+        anchors.rightMargin: 8
+        spacing: 14
 
-        // Git Branch Indicator
-        Row {
-            spacing: 4
-            Layout.alignment: Qt.AlignVCenter
-
-            Text {
-                text: "⎇"
-                color: theme.accentColor
-                font.pixelSize: 11
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-                text: "main"
-                color: theme.textSecondary
-                font.pixelSize: 10
-                font.family: theme.monoFont
-                anchors.verticalCenter: parent.verticalCenter
-            }
-        }
-
-        // Terminal Toggle Button
+        // 1. Language Pill / Selector
         Rectangle {
-            width: termRow.implicitWidth + 12
             height: 18
+            width: langText.contentWidth + 8
             radius: 2
-            color: termMouse.containsMouse ? theme.bgHover : "transparent"
-
-            Row {
-                id: termRow
-                anchors.centerIn: parent
-                spacing: 4
-
-                Text {
-                    text: "⌸"
-                    color: theme.accentColor
-                    font.pixelSize: 10
-                }
-
-                Text {
-                    text: "Terminal"
-                    color: theme.textSecondary
-                    font.pixelSize: 10
-                    font.family: theme.uiFont
-                }
-            }
-
-            MouseArea {
-                id: termMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: statusBarRoot.toggleTerminal()
-            }
-        }
-
-        // Mini Music Widget with reactive equalizer
-        Rectangle {
-            width: Math.min(220, musicRow.implicitWidth + 16)
-            height: 18
-            radius: 2
-            color: musicMouse.containsMouse ? theme.bgHover : "transparent"
-
-            Row {
-                id: musicRow
-                anchors.centerIn: parent
-                spacing: 6
-
-                // Mini Animated Equalizer bars
-                Row {
-                    spacing: 2
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: statusBarRoot.musicPlaybackState === "playing"
-
-                    Repeater {
-                        model: 3
-                        Rectangle {
-                            width: 2
-                            height: 6 + (index * 2)
-                            color: theme.accentColor
-                            radius: 1
-                            SequentialAnimation on height {
-                                running: statusBarRoot.musicPlaybackState === "playing" && theme.animationsEnabled
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 10 - (index * 2); duration: 250 + (index * 80) }
-                                NumberAnimation { to: 4 + (index * 2); duration: 250 + (index * 80) }
-                            }
-                        }
-                    }
-                }
-
-                Text {
-                    visible: statusBarRoot.musicPlaybackState !== "playing"
-                    text: "💿"
-                    font.pixelSize: 10
-                }
-
-                Text {
-                    text: statusBarRoot.currentSongTitle
-                    color: statusBarRoot.musicPlaybackState === "playing" ? theme.accentColor : theme.textMuted
-                    font.pixelSize: 10
-                    font.family: theme.uiFont
-                    elide: Text.ElideRight
-                    width: 140
-                }
-            }
-
-            MouseArea {
-                id: musicMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: statusBarRoot.toggleMusic()
-            }
-        }
-
-        Item { Layout.fillWidth: true }
-
-        // Cursor Position
-        Text {
-            text: "Ln " + statusBarRoot.cursorLine + ", Col " + statusBarRoot.cursorCol
-            color: theme.textSecondary
-            font.pixelSize: 10
-            font.family: theme.monoFont
-        }
-
-        // Indentation
-        Text {
-            text: "Spaces: 4"
-            color: theme.textSecondary
-            font.pixelSize: 10
-            font.family: theme.uiFont
-        }
-
-        // Encoding
-        Text {
-            text: "UTF-8"
-            color: theme.textSecondary
-            font.pixelSize: 10
-            font.family: theme.uiFont
-        }
-
-        // Active Theme Indicator
-        Rectangle {
-            height: 16
-            width: themeNameText.implicitWidth + 10
-            radius: 3
-            color: "transparent"
-
-            Text {
-                id: themeNameText
-                text: theme.currentTheme
-                color: theme.textSecondary
-                font.pixelSize: 9
-                font.family: theme.uiFont
-                anchors.centerIn: parent
-            }
-        }
-
-        // Language Selector Pill
-        Rectangle {
-            id: langPill
-            height: 16
-            width: langText.implicitWidth + 12
-            radius: 2
-            color: langMouse.containsMouse ? theme.bgActive : "transparent"
+            color: langMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
             Text {
                 id: langText
-                text: statusBarRoot.activeLanguage
-                color: theme.accentColor
-                font.pixelSize: 9
-                font.bold: true
-                font.family: theme.monoFont
                 anchors.centerIn: parent
+                text: root.currentLanguage
+                color: theme ? theme.textPrimary : "#cccccc"
+                font.pixelSize: 11
+                font.family: theme ? theme.fontFamilyUi : "sans-serif"
             }
 
             MouseArea {
-                id: langMouse
+                id: langMa
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
@@ -226,33 +58,86 @@ Rectangle {
 
             Menu {
                 id: langMenu
-                y: -contentHeight - 4
+                y: -contentHeight - 2
                 background: Rectangle {
-                    implicitWidth: 140
-                    color: theme.bgCard
-                    border.color: theme.borderSubtle
-                    radius: 6
+                    implicitWidth: 150
+                    color: theme ? theme.bgPopup : "#252526"
+                    border.color: theme ? theme.borderNormal : "#333333"
+                    radius: theme ? theme.radiusSm : 3
                 }
 
-                Repeater {
-                    model: ["Python", "JavaScript", "TypeScript", "C++", "C", "Rust", "HTML", "CSS", "JSON", "Markdown", "QML", "Go", "SQL", "Shell"]
-                    delegate: Action {
-                        text: modelData
-                        onTriggered: {
-                            statusBarRoot.activeLanguage = modelData
-                            backend.set_theme(theme.highlighterThemeName())
-                        }
+                Action { text: "Python"; onTriggered: root.languageSelected("Python") }
+                Action { text: "JavaScript"; onTriggered: root.languageSelected("JavaScript") }
+                Action { text: "TypeScript"; onTriggered: root.languageSelected("TypeScript") }
+                Action { text: "C++"; onTriggered: root.languageSelected("C++") }
+                Action { text: "C"; onTriggered: root.languageSelected("C") }
+                Action { text: "HTML"; onTriggered: root.languageSelected("HTML") }
+                Action { text: "CSS"; onTriggered: root.languageSelected("CSS") }
+                Action { text: "JSON"; onTriggered: root.languageSelected("JSON") }
+                Action { text: "QML"; onTriggered: root.languageSelected("QML") }
+                Action { text: "Plain Text"; onTriggered: root.languageSelected("Plain Text") }
+
+                delegate: MenuItem {
+                    id: langItm
+                    implicitHeight: 24
+                    contentItem: Text {
+                        text: langItm.text
+                        color: langItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                        font.pixelSize: 11
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 6
+                    }
+                    background: Rectangle {
+                        color: langItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
                     }
                 }
             }
         }
-    }
 
-    // Top subtle divider
-    Rectangle {
-        color: theme.borderSubtle
-        height: 1
-        width: parent.width
-        anchors.top: parent.top
+        // 2. Cursor Position
+        Text {
+            text: "Ln " + root.cursorLine + ", Col " + root.cursorColumn
+            color: theme ? theme.textSecondary : "#858585"
+            font.pixelSize: 11
+            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+        }
+
+        // 3. Encoding & Spaces
+        Text {
+            text: "UTF-8"
+            color: theme ? theme.textMuted : "#656565"
+            font.pixelSize: 11
+            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+        }
+
+        Text {
+            text: "Spaces: " + (theme ? theme.tabSize : 4)
+            color: theme ? theme.textMuted : "#656565"
+            font.pixelSize: 11
+            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+        }
+
+        Item {
+            Layout.fillWidth: true
+        }
+
+        // 4. Quick Notification / Ready State
+        RowLayout {
+            spacing: 4
+
+            Rectangle {
+                width: 6
+                height: 6
+                radius: 3
+                color: theme ? theme.success : "#4ec9b0"
+            }
+
+            Text {
+                text: "Ready"
+                color: theme ? theme.textMuted : "#656565"
+                font.pixelSize: 11
+                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+            }
+        }
     }
 }

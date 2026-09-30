@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PySide6.QtGui import QGuiApplication, QSurfaceFormat
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread
+from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread, QEvent
 from PySide6.QtQuick import QQuickTextDocument
 from PySide6.QtQuickControls2 import QQuickStyle
 from urllib.parse import urlparse
@@ -20,6 +20,17 @@ from MusicPlayer import MusicPlayer
 from HighlighterEngine import MultiLanguageHighlighter
 from AIBackend import AIBackend
 from TerminalBackend import TerminalBackend
+from SettingsBackend import SettingsBackend
+
+
+# ==============================================================================
+# GLOBAL CONTEXT MENU FILTER (Blocks Native OS QMenu from Popping Up)
+# ==============================================================================
+class GlobalContextMenuFilter(QObject):
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ContextMenu:
+            return True  # Suppress native Windows context menu
+        return super().eventFilter(obj, event)
 
 
 # ==============================================================================
@@ -101,11 +112,13 @@ class EditorBackend(QObject):
     def register_text_area(self, qml_text_area):
         qml_doc = qml_text_area.property("textDocument")
         if qml_doc:
-            self.highlighter = MultiLanguageHighlighter(qml_doc.textDocument())
-            initial_text = qml_text_area.property("text") or ""
+            doc = qml_doc.textDocument()
+            if not self.highlighter:
+                self.highlighter = MultiLanguageHighlighter(doc)
             initial_path = self.current_file or "main.py"
             self.highlighter.set_language_for_file(initial_path)
             self.currentLanguageChanged.emit(self.highlighter.language)
+            initial_text = qml_text_area.property("text") or ""
             self.initial_file_open(initial_path, initial_text)
 
     @Slot(str)
@@ -364,6 +377,10 @@ if __name__ == "__main__":
     app.setApplicationName("DGX Studio")
     app.setOrganizationName("DGX")
 
+    # Install context menu blocker application-wide
+    context_menu_filter = GlobalContextMenuFilter()
+    app.installEventFilter(context_menu_filter)
+
     fmt = QSurfaceFormat()
     fmt.setAlphaBufferSize(8)
     QSurfaceFormat.setDefaultFormat(fmt)
@@ -376,12 +393,14 @@ if __name__ == "__main__":
     musicPlayer = MusicPlayer()
     aiBackend = AIBackend()
     terminalBackend = TerminalBackend()
+    settingsBackend = SettingsBackend()
 
     # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("musicPlayer", musicPlayer)
     engine.rootContext().setContextProperty("aiBackend", aiBackend)
     engine.rootContext().setContextProperty("terminalBackend", terminalBackend)
+    engine.rootContext().setContextProperty("settingsBackend", settingsBackend)
 
     engine.load("qml/main.qml")
     if not engine.rootObjects():
@@ -391,5 +410,40 @@ if __name__ == "__main__":
             sys.exit(-1)
 
     root_window = engine.rootObjects()[0]
-    root_window.setFlags(Qt.Window | Qt.FramelessWindowHint)
+    root_window.setFlags(
+        Qt.Window
+        | Qt.FramelessWindowHint
+        | Qt.WindowMinimizeButtonHint
+        | Qt.WindowMaximizeButtonHint
+        | Qt.WindowSystemMenuHint
+    )
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = int(root_window.winId())
+            GWL_STYLE = -16
+            WS_THICKFRAME = 0x00040000
+            WS_MINIMIZEBOX = 0x00020000
+            WS_MAXIMIZEBOX = 0x00010000
+            WS_SYSMENU = 0x00080000
+
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+            style |= (WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
+
+            class MARGINS(ctypes.Structure):
+                _fields_ = [
+                    ("cxLeftWidth", ctypes.c_int),
+                    ("cxRightWidth", ctypes.c_int),
+                    ("cyTopHeight", ctypes.c_int),
+                    ("cyBottomHeight", ctypes.c_int)
+                ]
+            margins = MARGINS(1, 1, 1, 1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        except Exception as e:
+            print("Native window setup warning:", e)
+
     sys.exit(app.exec())

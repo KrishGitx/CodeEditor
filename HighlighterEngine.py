@@ -183,7 +183,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             return fmt
 
         t = self.current_theme
-        self.formats["keyword"] = make_fmt(t["keywords"], bold=True)
+        self.formats["keyword"] = make_fmt(t["keywords"], bold=False)
         self.formats["function"] = make_fmt(t["functions"])
         self.formats["string"] = make_fmt(t["strings"])
         self.formats["number"] = make_fmt(t["numbers"])
@@ -272,12 +272,27 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         # C / C++ / C# / Java rules
         elif lang in ("c", "cpp", "csharp", "java"):
             keywords = [
-                r"\b(int|float|double|char|void|long|short|unsigned|signed|bool|struct|class|union|"
-                r"enum|typedef|auto|const|static|extern|register|volatile|inline|virtual|override|"
-                r"public|private|protected|friend|namespace|using|template|typename|new|delete|"
-                r"if|else|switch|case|default|while|do|for|break|continue|return|goto|try|catch|"
-                r"throw|sizeof|decltype|constexpr|nullptr|this|package|import|interface|extends|"
-                r"implements|abstract|final|finally|synchronized|native|transient|var|async|await)\b"
+                r"\b(int|float|double|char|void|long|short|unsigned|signed|bool|string|String|"
+                r"struct|class|union|enum|typedef|auto|const|static|extern|register|volatile|inline|"
+                r"virtual|override|public|private|protected|friend|namespace|using|template|typename|"
+                r"new|delete|if|else|switch|case|default|while|do|for|break|continue|return|goto|"
+                r"try|catch|throw|sizeof|decltype|constexpr|nullptr|this|package|import|interface|"
+                r"extends|implements|abstract|final|finally|synchronized|native|transient|var|async|await)\b"
+            ]
+            types = [
+                r"\b(string|String|std|vector|map|set|pair|unordered_map|unordered_set|queue|stack|"
+                r"size_t|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t|"
+                r"cout|cin|endl|cerr|printf|scanf|malloc|free|memcpy|memset|NULL|List|Dictionary|"
+                r"ArrayList|HashMap|HashSet|System|Console|Object|Boolean|Integer|Double|"
+                r"MonoBehaviour|ScriptableObject|GameObject|Transform|RectTransform|Component|"
+                r"Vector2|Vector3|Vector4|Quaternion|Matrix4x4|Color|Color32|Mathf|Bounds|Rect|"
+                r"Ray|RaycastHit|RaycastHit2D|Rigidbody|Rigidbody2D|Collider|Collider2D|BoxCollider|"
+                r"SphereCollider|CapsuleCollider|MeshCollider|CharacterController|Physics|Physics2D|"
+                r"Camera|Light|AudioSource|AudioClip|Renderer|MeshRenderer|MeshFilter|Material|Shader|"
+                r"Texture|Texture2D|Sprite|SpriteRenderer|Canvas|CanvasGroup|Time|Input|Debug|"
+                r"SceneManager|Scene|Application|Screen|PlayerPrefs|Resources|Gizmos|Random|TMP_Text|"
+                r"TextMeshPro|TextMeshProUGUI|Button|Image|Text|Slider|Toggle|Animation|Animator|"
+                r"NavMesh|NavMeshAgent|SerializeField|HideInInspector|Header|Tooltip|RequireComponent)\b"
             ]
             self.rules.append((QRegularExpression(r"//.*"), self.formats["comment"]))
             self.rules.append((QRegularExpression(r"/\*.*?\*/"), self.formats["comment"]))
@@ -285,6 +300,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             self.rules.append((QRegularExpression(r"#[a-zA-Z_]\w*"), self.formats["preprocessor"]))
             self.rules.append((QRegularExpression(r"\b\d+(\.\d+)?[fFlLuU]?\b"), self.formats["number"]))
             self.rules.append((QRegularExpression(keywords[0]), self.formats["keyword"]))
+            self.rules.append((QRegularExpression(types[0]), self.formats["type"]))
             self.rules.append((QRegularExpression(r"\b[A-Za-z0-9_]+(?=\s*\()"), self.formats["function"]))
 
         # JavaScript / TypeScript / QML rules
@@ -298,11 +314,16 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"Component|Item|Rectangle|Text|ListView|MouseArea|TapHandler|ColumnLayout|"
                 r"RowLayout|GridLayout|ScrollView|Window|Popup|Timer)\b"
             ]
+            types = [
+                r"\b(string|number|boolean|any|unknown|never|void|object|Promise|Array|Record|"
+                r"Map|Set|String|Number|Boolean|Object|Math|JSON|Date|RegExp|console|document|window)\b"
+            ]
             self.rules.append((QRegularExpression(r"//.*"), self.formats["comment"]))
             self.rules.append((QRegularExpression(r"/\*.*?\*/"), self.formats["comment"]))
             self.rules.append((QRegularExpression(r'(".*?"|\'.*?\'|`.*?`)'), self.formats["string"]))
             self.rules.append((QRegularExpression(r"\b\d+(\.\d+)?\b"), self.formats["number"]))
             self.rules.append((QRegularExpression(keywords[0]), self.formats["keyword"]))
+            self.rules.append((QRegularExpression(types[0]), self.formats["type"]))
             self.rules.append((QRegularExpression(r"\b[A-Za-z0-9_]+(?=\s*[\(:])"), self.formats["function"]))
 
         # Rust rules

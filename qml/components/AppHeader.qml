@@ -1,472 +1,529 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
-import QtQuick.Window 2.15
+import QtQuick.Layouts 1.15
+import "."
 
 Rectangle {
-    id: appHeaderRoot
+    id: root
 
-    height: 34
-    color: theme.bgHeader
-
-    // -------------------------------------------------------------------------
-    // Public API — preserved for main.qml
-    // -------------------------------------------------------------------------
-    signal openFileDialogRequested()
-    signal openWorkspaceDialogRequested()
-    signal settingsRequested()
-    signal toggleTerminalRequested()
-    signal toggleMusicRequested()
-    signal toggleAIRequested()
-    signal toggleZenRequested()
-    signal saveRequested()
-    signal newFileRequested()
-    signal presetRequested(string preset)
-
+    property string activeProjectName: ""
     property string activeFilePath: ""
-    property string activeProjectName: "DGX Studio"
+    property string activeFileName: ""
+    property bool isDirty: false
+    property bool isMaximized: false
 
-    // -------------------------------------------------------------------------
-    // Frameless-window dragging
-    // -------------------------------------------------------------------------
+    signal newFileRequested()
+    signal openFileRequested()
+    signal openFolderRequested()
+    signal saveRequested()
+    signal saveAsRequested()
+    signal closeTabRequested()
+    signal toggleExplorerRequested()
+    signal toggleTerminalRequested()
+    signal toggleAiRequested()
+    signal toggleMusicRequested()
+    signal toggleZenRequested()
+    signal findRequested()
+    signal replaceRequested()
+    signal formatRequested()
+    signal undoRequested()
+    signal redoRequested()
+    signal settingsRequested()
+    signal openWebPreviewRequested()
+    signal openColorPickerRequested()
+    signal toggleWhiteboardRequested()
+    signal runFileRequested()
+    signal presetSelected(string presetName)
+    signal themeSelected(string themeName)
+
+    height: 32
+    color: theme ? theme.bgHeader : "#181818"
+
+    // Bottom single border line separating header from workspace
+    Rectangle {
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 1
+        color: theme ? theme.borderSubtle : "#282828"
+    }
+
+    // Window Dragging Handling with Native Windows Aero Snap
     MouseArea {
-        id: windowDragArea
-
+        id: dragArea
         anchors.fill: parent
-        anchors.rightMargin: 120
+        acceptedButtons: Qt.LeftButton
 
-        property point clickPos: Qt.point(0, 0)
-
-        onPressed: {
-            clickPos = Qt.point(mouse.x, mouse.y)
-        }
-
-        onPositionChanged: {
-            var delta = Qt.point(
-                mouse.x - clickPos.x,
-                mouse.y - clickPos.y
-            )
-
-            var newX = mainWindow.x + delta.x
-            var newY = mainWindow.y + delta.y
-
-            if (newY <= 0) {
-                mainWindow.visibility = Window.Maximized
-            } else {
-                if (mainWindow.visibility === Window.Maximized)
-                    mainWindow.visibility = Window.Windowed
-
-                mainWindow.x = newX
-                mainWindow.y = newY
+        onPressed: function(mouse) {
+            var win = root.Window.window;
+            if (win && win.startSystemMove) {
+                win.startSystemMove();
             }
         }
 
-        onDoubleClicked: {
-            if (mainWindow.visibility === Window.Maximized)
-                mainWindow.visibility = Window.Windowed
-            else
-                mainWindow.visibility = Window.Maximized
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Header content
-    // -------------------------------------------------------------------------
-    RowLayout {
-        anchors.fill: parent
-        spacing: 0
-
-        // Small DGX mark.
-        Item {
-            Layout.preferredWidth: 42
-            Layout.fillHeight: true
-
-            Rectangle {
-                width: 20
-                height: 20
-                radius: 5
-                anchors.centerIn: parent
-                color: theme.accentColor
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "D"
-                    color: "#ffffff"
-                    font.family: theme.uiFont
-                    font.pixelSize: 11
-                    font.bold: true
+        onDoubleClicked: function(mouse) {
+            var win = root.Window.window;
+            if (win) {
+                if (win.visibility === Window.Maximized) {
+                    win.showNormal();
+                    root.isMaximized = false;
+                } else {
+                    win.showMaximized();
+                    root.isMaximized = true;
                 }
             }
         }
+    }
 
-        // ---------------------------------------------------------------------
-        // Menus
-        // ---------------------------------------------------------------------
+    RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: 8
+        anchors.rightMargin: 0
+        spacing: 4
+
+        // 1. DGX Studio Branding
+        Text {
+            text: "DGX Studio"
+            color: theme ? theme.textPrimary : "#cccccc"
+            font.pixelSize: 12
+            font.bold: true
+            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+            Layout.rightMargin: 6
+        }
+
+        // 2. Main Desktop Menu Bar
         Row {
-            Layout.fillHeight: true
-            spacing: 1
+            spacing: 2
+            z: 10
 
-            Repeater {
-                model: [
-                    { label: "File", menu: "file" },
-                    { label: "Edit", menu: "edit" },
-                    { label: "View", menu: "view" },
-                    { label: "Presets", menu: "presets" }
-                ]
+            // File Menu
+            Rectangle {
+                id: fileBtn
+                width: fileText.contentWidth + 14
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: fileMenu.visible ? (theme ? theme.bgSurfaceActive : "#37373d") : (fileMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
 
-                delegate: Rectangle {
-                    id: menuButton
+                Text {
+                    id: fileText
+                    anchors.centerIn: parent
+                    text: "File"
+                    color: theme ? theme.textPrimary : "#cccccc"
+                    font.pixelSize: 12
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                }
 
-                    width: menuLabel.implicitWidth + 20
-                    height: parent.height
-                    radius: 4
-                    color: menuMouse.containsMouse
-                           ? theme.bgHover
-                           : "transparent"
+                MouseArea {
+                    id: fileMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: fileMenu.open()
+                }
 
-                    Text {
-                        id: menuLabel
-
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        color: menuMouse.containsMouse
-                               ? theme.textPrimary
-                               : theme.textSecondary
-                        font.family: theme.uiFont
-                        font.pixelSize: 11
+                Menu {
+                    id: fileMenu
+                    y: fileBtn.height + 2
+                    background: Rectangle {
+                        implicitWidth: 230
+                        color: theme ? theme.bgPopup : "#252526"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        radius: theme ? theme.radiusSm : 3
                     }
 
-                    MouseArea {
-                        id: menuMouse
+                    Action { text: "New File\tCtrl+N"; onTriggered: root.newFileRequested() }
+                    Action { text: "Open File...\tCtrl+O"; onTriggered: root.openFileRequested() }
+                    Action { text: "Open Folder...\tCtrl+Shift+O"; onTriggered: root.openFolderRequested() }
+                    MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
+                    Action { text: "Save\tCtrl+S"; onTriggered: root.saveRequested() }
+                    Action { text: "Save As...\tCtrl+Shift+S"; onTriggered: root.saveAsRequested() }
+                    MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
+                    Action { text: "Close Tab\tCtrl+W"; onTriggered: root.closeTabRequested() }
+                    Action { text: "Exit\tAlt+F4"; onTriggered: Qt.quit() }
 
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-
-                        onClicked: {
-                            // Menus are Popup/Overlay items, so calculate the
-                            // clicked button's real position in the overlay.
-                            var p = menuButton.mapToItem(Overlay.overlay, 0, menuButton.height)
-
-                            if (modelData.menu === "file") {
-                                fileMenu.x = p.x
-                                fileMenu.y = p.y
-                                fileMenu.open()
-                            } else if (modelData.menu === "edit") {
-                                editMenu.x = p.x
-                                editMenu.y = p.y
-                                editMenu.open()
-                            } else if (modelData.menu === "view") {
-                                viewMenu.x = p.x
-                                viewMenu.y = p.y
-                                viewMenu.open()
-                            } else if (modelData.menu === "presets") {
-                                presetsMenu.x = p.x
-                                presetsMenu.y = p.y
-                                presetsMenu.open()
+                    delegate: MenuItem {
+                        id: fileItm
+                        implicitHeight: 28
+                        implicitWidth: 230
+                        contentItem: RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: fileItm.text.split("\t")[0]
+                                color: fileItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                font.pixelSize: 12
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
                             }
+                            Text {
+                                text: fileItm.text.indexOf("\t") !== -1 ? fileItm.text.split("\t")[1] : ""
+                                color: fileItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
+                                font.pixelSize: 11
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                                visible: text.length > 0
+                            }
+                        }
+                        background: Rectangle {
+                            color: fileItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
+                        }
+                    }
+                }
+            }
+
+            // Edit Menu
+            Rectangle {
+                id: editBtn
+                width: editText.contentWidth + 14
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: editMenu.visible ? (theme ? theme.bgSurfaceActive : "#37373d") : (editMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+                Text {
+                    id: editText
+                    anchors.centerIn: parent
+                    text: "Edit"
+                    color: theme ? theme.textPrimary : "#cccccc"
+                    font.pixelSize: 12
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                }
+
+                MouseArea {
+                    id: editMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: editMenu.open()
+                }
+
+                Menu {
+                    id: editMenu
+                    y: editBtn.height + 2
+                    background: Rectangle {
+                        implicitWidth: 230
+                        color: theme ? theme.bgPopup : "#252526"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        radius: theme ? theme.radiusSm : 3
+                    }
+
+                    Action { text: "Undo\tCtrl+Z"; onTriggered: root.undoRequested() }
+                    Action { text: "Redo\tCtrl+Y"; onTriggered: root.redoRequested() }
+                    MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
+                    Action { text: "Find\tCtrl+F"; onTriggered: root.findRequested() }
+                    Action { text: "Replace\tCtrl+H"; onTriggered: root.replaceRequested() }
+                    Action { text: "Format Document\tShift+Alt+F"; onTriggered: root.formatRequested() }
+
+                    delegate: MenuItem {
+                        id: editItm
+                        implicitHeight: 28
+                        implicitWidth: 230
+                        contentItem: RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: editItm.text.split("\t")[0]
+                                color: editItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                font.pixelSize: 12
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            Text {
+                                text: editItm.text.indexOf("\t") !== -1 ? editItm.text.split("\t")[1] : ""
+                                color: editItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
+                                font.pixelSize: 11
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                                visible: text.length > 0
+                            }
+                        }
+                        background: Rectangle {
+                            color: editItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
+                        }
+                    }
+                }
+            }
+
+            // View Menu
+            Rectangle {
+                id: viewBtn
+                width: viewText.contentWidth + 14
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: viewMenu.visible ? (theme ? theme.bgSurfaceActive : "#37373d") : (viewMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+                Text {
+                    id: viewText
+                    anchors.centerIn: parent
+                    text: "View"
+                    color: theme ? theme.textPrimary : "#cccccc"
+                    font.pixelSize: 12
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                }
+
+                MouseArea {
+                    id: viewMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: viewMenu.open()
+                }
+
+                Menu {
+                    id: viewMenu
+                    y: viewBtn.height + 2
+                    background: Rectangle {
+                        implicitWidth: 230
+                        color: theme ? theme.bgPopup : "#252526"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        radius: theme ? theme.radiusSm : 3
+                    }
+
+                    Action { text: "Live Web & Markdown Preview\tCtrl+Shift+V"; onTriggered: root.openWebPreviewRequested() }
+                    Action { text: "Architecture Whiteboard\tCtrl+Alt+W"; onTriggered: root.toggleWhiteboardRequested() }
+                    Action { text: "Inline Color Picker\tCtrl+Shift+C"; onTriggered: root.openColorPickerRequested() }
+                    MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
+                    Action { text: "Toggle Explorer\tCtrl+B"; onTriggered: root.toggleExplorerRequested() }
+                    Action { text: "Toggle Terminal\tCtrl+`"; onTriggered: root.toggleTerminalRequested() }
+                    Action { text: "Toggle AI Panel\t"; onTriggered: root.toggleAiRequested() }
+                    Action { text: "Toggle Music Panel\t"; onTriggered: root.toggleMusicRequested() }
+                    Action { text: "Zen Mode\tCtrl+Shift+Z"; onTriggered: root.toggleZenRequested() }
+                    MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
+
+                    Action { text: "Preferences...\tCtrl+,"; onTriggered: root.settingsRequested() }
+
+                    delegate: MenuItem {
+                        id: viewItm
+                        implicitHeight: 28
+                        implicitWidth: 230
+                        contentItem: RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: viewItm.text.split("\t")[0]
+                                color: viewItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                font.pixelSize: 12
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            Text {
+                                text: viewItm.text.indexOf("\t") !== -1 ? viewItm.text.split("\t")[1] : ""
+                                color: viewItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
+                                font.pixelSize: 11
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                                visible: text.length > 0
+                            }
+                        }
+                        background: Rectangle {
+                            color: viewItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
+                        }
+                    }
+                }
+            }
+
+            // Run Menu
+            Rectangle {
+                id: runBtn
+                width: runText.contentWidth + 14
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: runMenu.visible ? (theme ? theme.bgSurfaceActive : "#37373d") : (runMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+                Text {
+                    id: runText
+                    anchors.centerIn: parent
+                    text: "Run"
+                    color: theme ? theme.textPrimary : "#cccccc"
+                    font.pixelSize: 12
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                }
+
+                MouseArea {
+                    id: runMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: runMenu.open()
+                }
+
+                Menu {
+                    id: runMenu
+                    y: runBtn.height + 2
+                    background: Rectangle {
+                        implicitWidth: 220
+                        color: theme ? theme.bgPopup : "#252526"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        radius: theme ? theme.radiusSm : 3
+                    }
+
+                    Action { text: "Run Active File\tF5"; onTriggered: root.runFileRequested() }
+                    Action { text: "Open Terminal\tCtrl+`"; onTriggered: root.toggleTerminalRequested() }
+
+                    delegate: MenuItem {
+                        id: runItm
+                        implicitHeight: 28
+                        implicitWidth: 220
+                        contentItem: RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 8
+                            Text {
+                                Layout.fillWidth: true
+                                text: runItm.text.split("\t")[0]
+                                color: runItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                font.pixelSize: 12
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            Text {
+                                text: runItm.text.indexOf("\t") !== -1 ? runItm.text.split("\t")[1] : ""
+                                color: runItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
+                                font.pixelSize: 11
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                verticalAlignment: Text.AlignVCenter
+                                visible: text.length > 0
+                            }
+                        }
+                        background: Rectangle {
+                            color: runItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
                         }
                     }
                 }
             }
         }
 
-        // ---------------------------------------------------------------------
-        // Center workspace identity
-        // ---------------------------------------------------------------------
+        // Center Title (Active file or empty)
         Item {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            height: parent.height
 
-            Row {
+            Text {
                 anchors.centerIn: parent
-                spacing: 7
-
-                Text {
-                    text: appHeaderRoot.activeProjectName
-                    color: theme.textMuted
-                    font.family: theme.uiFont
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                Text {
-                    visible: appHeaderRoot.activeFilePath.length > 0
-                    text: "›"
-                    color: theme.textMuted
-                    font.pixelSize: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                Text {
-                    visible: appHeaderRoot.activeFilePath.length > 0
-                    text: appHeaderRoot.activeFilePath
-                          .split("/")
-                          .pop()
-                          .split("\\")
-                          .pop()
-                    color: theme.textSecondary
-                    font.family: theme.monoFont
-                    font.pixelSize: 11
-                    elide: Text.ElideMiddle
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+                text: root.activeFileName ? (root.activeFileName + (root.isDirty ? " •" : "") + " — DGX Studio") : "DGX Studio"
+                color: theme ? theme.textMuted : "#656565"
+                font.pixelSize: 11
+                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                elide: Text.ElideMiddle
             }
         }
 
-        // ---------------------------------------------------------------------
-        // Window controls
-        // ---------------------------------------------------------------------
-        Row {
-            Layout.preferredWidth: 120
-            Layout.fillHeight: true
-            spacing: 0
+        // 3. Right Header Actions & Window Controls
+        RowLayout {
+            spacing: 2
+            z: 10
 
+            // Settings Button
             Rectangle {
-                width: 40
-                height: parent.height
-                color: minMouse.containsMouse
-                       ? theme.bgHover
-                       : "transparent"
+                width: 26
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: settingsMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                Text {
+                VectorIcon {
                     anchors.centerIn: parent
-                    text: "—"
-                    color: theme.textSecondary
-                    font.pixelSize: 10
+                    name: "settings"
+                    size: 13
+                    color: theme ? theme.textSecondary : "#858585"
                 }
 
-                MouseArea {
-                    id: minMouse
+                ToolTip.visible: settingsMa.containsMouse
+                ToolTip.text: "Settings (Ctrl+,)"
 
+                MouseArea {
+                    id: settingsMa
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-
-                    onClicked:
-                        mainWindow.visibility = Window.Minimized
+                    onClicked: root.settingsRequested()
                 }
             }
 
+            // Minimize
             Rectangle {
-                width: 40
-                height: parent.height
-                color: maxMouse.containsMouse
-                       ? theme.bgHover
-                       : "transparent"
+                width: 32
+                height: 32
+                color: minMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                Text {
+                VectorIcon {
                     anchors.centerIn: parent
-                    text: mainWindow.visibility === Window.Maximized
-                          ? "❐"
-                          : "□"
-                    color: theme.textSecondary
-                    font.pixelSize: 11
+                    name: "minimize"
+                    size: 10
+                    color: theme ? theme.textSecondary : "#858585"
                 }
 
                 MouseArea {
-                    id: maxMouse
-
+                    id: minMa
                     anchors.fill: parent
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-
                     onClicked: {
-                        if (mainWindow.visibility === Window.Maximized)
-                            mainWindow.visibility = Window.Windowed
-                        else
-                            mainWindow.visibility = Window.Maximized
+                        var win = root.Window.window;
+                        if (win) win.showMinimized();
                     }
                 }
             }
 
+            // Maximize / Restore
             Rectangle {
-                width: 40
-                height: parent.height
-                color: closeMouse.containsMouse
-                       ? "#ef4444"
-                       : "transparent"
+                width: 32
+                height: 32
+                color: maxMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                Text {
+                VectorIcon {
                     anchors.centerIn: parent
-                    text: "×"
-                    color: closeMouse.containsMouse
-                           ? "#ffffff"
-                           : theme.textSecondary
-                    font.pixelSize: 15
+                    name: root.isMaximized ? "restore" : "maximize"
+                    size: 10
+                    color: theme ? theme.textSecondary : "#858585"
                 }
 
                 MouseArea {
-                    id: closeMouse
-
+                    id: maxMa
                     anchors.fill: parent
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var win = root.Window.window;
+                        if (win) {
+                            if (win.visibility === Window.Maximized) {
+                                win.showNormal();
+                                root.isMaximized = false;
+                            } else {
+                                win.showMaximized();
+                                root.isMaximized = true;
+                            }
+                        }
+                    }
+                }
+            }
 
-                    onClicked: mainWindow.close()
+            // Close Application
+            Rectangle {
+                width: 36
+                height: 32
+                color: closeAppMa.containsMouse ? (theme ? theme.error : "#f14c4c") : "transparent"
+
+                VectorIcon {
+                    anchors.centerIn: parent
+                    name: "close"
+                    size: 11
+                    color: closeAppMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                }
+
+                MouseArea {
+                    id: closeAppMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: Qt.quit()
                 }
             }
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Shared popup styling
-    // -------------------------------------------------------------------------
-    component HeaderMenu: Menu {
-        id: menuRoot
-
-        background: Rectangle {
-            implicitWidth: 220
-            color: theme.bgCard
-            radius: 8
-            opacity: 0.98
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // File
-    // -------------------------------------------------------------------------
-    HeaderMenu {
-        id: fileMenu
-
-        Action {
-            text: "New File    Ctrl+N"
-            onTriggered: appHeaderRoot.newFileRequested()
-        }
-
-        Action {
-            text: "Open File    Ctrl+O"
-            onTriggered: appHeaderRoot.openFileDialogRequested()
-        }
-
-        Action {
-            text: "Open Folder    Ctrl+Shift+O"
-            onTriggered: appHeaderRoot.openWorkspaceDialogRequested()
-        }
-
-        Action {
-            text: "Save File    Ctrl+S"
-            onTriggered: appHeaderRoot.saveRequested()
-        }
-
-        MenuSeparator {}
-
-        Action {
-            text: "Preferences    Ctrl+,"
-            onTriggered: appHeaderRoot.settingsRequested()
-        }
-
-        Action {
-            text: "Exit DGX Studio"
-            onTriggered: mainWindow.close()
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Edit
-    // -------------------------------------------------------------------------
-    HeaderMenu {
-        id: editMenu
-
-        Action {
-            text: "Find & Replace    Ctrl+F"
-            onTriggered: editorArea.toggleFindBar()
-        }
-
-        Action {
-            text: "Save File    Ctrl+S"
-            onTriggered: appHeaderRoot.saveRequested()
-        }
-
-        MenuSeparator {}
-
-        Action {
-            text: "Command Menu    Ctrl+M"
-            onTriggered:
-                radialMenu.openAt(
-                    mainWindow.width / 2,
-                    mainWindow.height / 2
-                )
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // View
-    // -------------------------------------------------------------------------
-    HeaderMenu {
-        id: viewMenu
-
-        Action {
-            text: "File Explorer    Ctrl+B"
-            onTriggered:
-                mainWindow.explorerVisible =
-                    !mainWindow.explorerVisible
-        }
-
-        Action {
-            text: "AI Assistant"
-            onTriggered: appHeaderRoot.toggleAIRequested()
-        }
-
-        Action {
-            text: "Music Player"
-            onTriggered: appHeaderRoot.toggleMusicRequested()
-        }
-
-        Action {
-            text: "Terminal    Ctrl+`"
-            onTriggered: appHeaderRoot.toggleTerminalRequested()
-        }
-
-        MenuSeparator {}
-
-        Action {
-            text: "Zen Mode    Ctrl+Shift+Z"
-            onTriggered: appHeaderRoot.toggleZenRequested()
-        }
-
-        Action {
-            text: "Preferences    Ctrl+,"
-            onTriggered: appHeaderRoot.settingsRequested()
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Workspace presets
-    // -------------------------------------------------------------------------
-    HeaderMenu {
-        id: presetsMenu
-
-        Action {
-            text: "Full Studio"
-            onTriggered: appHeaderRoot.presetRequested("Full")
-        }
-
-        Action {
-            text: "Coding"
-            onTriggered: appHeaderRoot.presetRequested("Coding")
-        }
-
-        Action {
-            text: "AI Assistant"
-            onTriggered: appHeaderRoot.presetRequested("AI")
-        }
-
-        Action {
-            text: "Music"
-            onTriggered: appHeaderRoot.presetRequested("Music")
-        }
-
-        Action {
-            text: "Debugging"
-            onTriggered: appHeaderRoot.presetRequested("Debugging")
-        }
-
-        Action {
-            text: "Focus / Zen"
-            onTriggered: appHeaderRoot.presetRequested("Focus")
-        }
-    }
-
 }

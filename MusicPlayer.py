@@ -170,8 +170,14 @@ class MusicPlayer(QObject):
 
     def _stream_song(self, videoId):
         if videoId.startswith("demo_"):
-            print("Demo song simulation active")
-            return
+            # Map demo fallback IDs to reliable streaming tracks so sound always plays
+            demo_map = {
+                "demo_1": "suxP321fM5s",
+                "demo_2": "jfKfPfyJRdk",
+                "demo_3": "5qap5aO4i9A",
+                "demo_4": "DWcJFNfaw90"
+            }
+            videoId = demo_map.get(videoId, "suxP321fM5s")
 
         url = f"https://www.youtube.com/watch?v={videoId}"
         print("Getting audio stream for:", url)
@@ -270,6 +276,8 @@ class MusicPlayer(QObject):
             self.resume()
         elif self._current_video:
             self.play_song(self._current_video)
+        elif hasattr(self, "_last_video") and self._last_video:
+            self.play_song(self._last_video)
 
     @Slot()
     def stop(self):
@@ -277,6 +285,8 @@ class MusicPlayer(QObject):
         self._set_state("stopped")
 
     def _stop_stream(self):
+        if self._current_video:
+            self._last_video = self._current_video
         self._current_video = None
         if self._download_process:
             try:

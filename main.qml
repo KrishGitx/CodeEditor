@@ -1,6 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Window 2.15
-import QtQuick.Layouts 1.3
+import QtQuick.Layouts 1.15
 import QtQuick.Controls 2.15
 import QtQuick.Dialogs
 import QtCore
@@ -12,73 +12,97 @@ import "qml/music"
 
 Window {
     id: mainWindow
+
     width: 1440
     height: 900
     minimumWidth: 800
     minimumHeight: 600
     visible: true
-    focus: true
     title: qsTr("DGX Studio")
-    flags: Qt.Window | Qt.FramelessWindowHint
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
     color: theme.bgRoot
 
-    Theme { id: theme }
+    Theme {
+        id: theme
+    }
 
-    property real explorerWidth: 250
-    property real rightPanelWidth: 320
-    property real terminalHeight: 180
-    property real aiMusicSplit: 0.55
+    onVisibilityChanged: {
+        if (visibility === Window.Maximized) {
+            appHeader.isMaximized = true;
+        } else if (visibility === Window.Windowed) {
+            appHeader.isMaximized = false;
+        }
+    }
 
+    // Panel Resizing & Layout Properties
+    property real explorerWidth: 220
+    property real rightPanelWidth: 300
+    property real terminalHeight: 160
+    property real aiMusicSplitRatio: 0.55
+
+    // Visibility States
     property bool explorerVisible: true
     property bool rightPanelVisible: true
     property bool terminalVisible: true
     property bool aiVisible: true
     property bool musicVisible: true
-
     property bool zenMode: false
+    property bool whiteboardVisible: false
 
-    readonly property real explorerMin: 180
-    readonly property real explorerMax: 440
-    readonly property real rightPanelMin: 260
-    readonly property real rightPanelMax: 540
-    readonly property real terminalMin: 80
-    readonly property real terminalMax: 440
-    readonly property real headerHeight: 38
-    readonly property real statusBarHeight: 24
+    // Presets
+    property string currentPreset: "Full"
 
+    // Clamping Limits
+    readonly property real explorerMinWidth: 160
+    readonly property real explorerMaxWidth: 440
+    readonly property real rightPanelMinWidth: 200
+    readonly property real rightPanelMaxWidth: 520
+    readonly property real terminalMinHeight: 60
+    readonly property real terminalMaxHeight: 440
+
+    // Dynamic Layout Dimensions
     readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode) ? explorerWidth : 0
     readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && (aiVisible || musicVisible)) ? rightPanelWidth : 0
     readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode) ? terminalHeight : 0
-    readonly property real editorAreaWidth: mainWindow.width - effectiveExplorerWidth - effectiveRightWidth
-                                           - (effectiveExplorerWidth > 0 ? 5 : 0)
-                                           - (effectiveRightWidth > 0 ? 5 : 0)
-    readonly property real mainContentHeight: mainWindow.height - headerHeight - statusBarHeight
-                                              - effectiveTerminalHeight
-                                              - (effectiveTerminalHeight > 0 ? 5 : 0)
 
+    // Connect to Python Backend Services
     Connections {
-        target: backend
+        target: typeof backend !== "undefined" ? backend : null
+        ignoreUnknownSignals: true
 
         function onCompletionsReceived(suggestions) {
-            editorArea.showCompletions(suggestions)
+            editorArea.showCompletions(suggestions);
         }
 
         function onFileOpened(path, content) {
-            editorArea.loadFile(path, content)
-            appHeader.activeFilePath = path
+            editorArea.loadFile(path, content);
+            appHeader.activeFilePath = path;
         }
 
-        function onExplorerContent(list, fPath) {
-            explorerPanel.populateModel(list, fPath)
-            appHeader.activeProjectName = fPath.split("/").pop().split("\\").pop()
+        function onFileSaved(path, success) {
+            editorArea.fileSaved(path, success);
         }
 
+        function onExplorerContent(list, folderPath) {
+            explorerPanel.populateModel(list, folderPath);
+            appHeader.activeProjectName = folderPath.split("/").pop().split("\\").pop();
+        }
+
+        function onCurrentLanguageChanged(lang) {
+            statusBar.currentLanguage = lang;
+        }
     }
+
+    // Native File Dialogs
     FileDialog {
         id: openFileDialog
-        title: "Choose a file to open"
+        title: "Open File in DGX Studio"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        onAccepted: backend.open_file(selectedFile.toString())
+        onAccepted: {
+            if (typeof backend !== "undefined" && backend && backend.open_file) {
+                backend.open_file(selectedFile.toString());
+            }
+        }
     }
 
     FileDialog {
@@ -86,327 +110,466 @@ Window {
         title: "Save As"
         fileMode: FileDialog.SaveFile
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-
         onAccepted: {
-            console.log("DGX SAVE AS: dialog accepted:", selectedFile.toString())
-            editorArea.saveAsCurrentFile(selectedFile.toString())
-        }
-
-        onRejected: {
-            console.log("DGX SAVE AS: dialog rejected")
+            editorArea.saveAsCurrentFile(selectedFile.toString());
         }
     }
 
     FolderDialog {
-        id: openWorkspaceDialog
-        title: "Choose a workspace folder"
+        id: openFolderDialog
+        title: "Open Workspace Folder"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        onAccepted: backend.open_Workspace(selectedFolder.toString())
+        onAccepted: {
+            if (typeof backend !== "undefined" && backend && backend.open_Workspace) {
+                backend.open_Workspace(selectedFolder.toString());
+            }
+        }
     }
 
-     Shortcut {
-       sequence: "Ctrl+S"
-         onActivated: editorArea.saveCurrentFile()
-     }
-
-
+    // =========================================================================
+    // SINGLE OWNER KEYBOARD SHORTCUTS (DYNAMICALLY CUSTOMIZABLE)
+    // =========================================================================
     Shortcut {
-        sequence: "Ctrl+N"
-        onActivated: editorArea.newBlankTab()
+        sequence: (theme && theme.shortcutNewFile) ? theme.shortcutNewFile : "Ctrl+N"
+        onActivated: editorArea.createNewFile()
     }
     Shortcut {
-        sequence: "Ctrl+O"
+        sequence: (theme && theme.shortcutOpenFile) ? theme.shortcutOpenFile : "Ctrl+O"
         onActivated: openFileDialog.open()
     }
     Shortcut {
-        sequence: "Ctrl+Shift+O"
-        onActivated: openWorkspaceDialog.open()
+        sequence: (theme && theme.shortcutOpenFolder) ? theme.shortcutOpenFolder : "Ctrl+Shift+O"
+        onActivated: openFolderDialog.open()
     }
     Shortcut {
-        sequence: "Ctrl+`"
-        onActivated: mainWindow.terminalVisible = !mainWindow.terminalVisible
+        sequence: (theme && theme.shortcutSave) ? theme.shortcutSave : "Ctrl+S"
+        onActivated: {
+            var saved = editorArea.saveCurrentFile();
+            if (!saved) {
+                saveAsDialog.open();
+            }
+        }
     }
     Shortcut {
-        sequence: "Ctrl+,"
-        onActivated: settingsDialog.open()
+        sequence: (theme && theme.shortcutSaveAs) ? theme.shortcutSaveAs : "Ctrl+Shift+S"
+        onActivated: saveAsDialog.open()
     }
     Shortcut {
-        sequence: "Ctrl+M"
-        onActivated: radialMenu.openAt(mainWindow.width / 2, mainWindow.height / 2)
+        sequence: (theme && theme.shortcutCloseTab) ? theme.shortcutCloseTab : "Ctrl+W"
+        onActivated: editorArea.closeTab(editorArea.activeTabIndex)
     }
     Shortcut {
-        sequence: "Ctrl+B"
+        sequence: (theme && theme.shortcutFind) ? theme.shortcutFind : "Ctrl+F"
+        onActivated: editorArea.showFind(false)
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutReplace) ? theme.shortcutReplace : "Ctrl+H"
+        onActivated: editorArea.showFind(true)
+    }
+    Shortcut {
+        sequence: "Ctrl+Z"
+        onActivated: editorArea.undo()
+    }
+    Shortcut {
+        sequence: "Ctrl+Y"
+        onActivated: editorArea.redo()
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutFormat) ? theme.shortcutFormat : "Shift+Alt+F"
+        onActivated: editorArea.formatDocument()
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutRun) ? theme.shortcutRun : "F5"
+        onActivated: mainWindow.runActiveFile()
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutToggleExplorer) ? theme.shortcutToggleExplorer : "Ctrl+B"
         onActivated: mainWindow.explorerVisible = !mainWindow.explorerVisible
     }
     Shortcut {
-        sequence: "Ctrl+Shift+Z"
+        sequence: (theme && theme.shortcutToggleTerminal) ? theme.shortcutToggleTerminal : "Ctrl+`"
+        onActivated: mainWindow.terminalVisible = !mainWindow.terminalVisible
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+Shift+Z"
         onActivated: mainWindow.zenMode = !mainWindow.zenMode
     }
     Shortcut {
-        sequence: "Ctrl+F"
-        onActivated: editorArea.toggleFindBar()
+        sequence: (theme && theme.shortcutSettings) ? theme.shortcutSettings : "Ctrl+,"
+        onActivated: settingsOverlay.visible = true
     }
-
-
-    AppHeader {
-        id: appHeader
-        x: 0; y: 0
-        width: mainWindow.width
-        height: headerHeight
-        z: 10
-
-        onOpenFileDialogRequested: openFileDialog.open()
-        onOpenWorkspaceDialogRequested: openWorkspaceDialog.open()
-        onSettingsRequested: settingsDialog.open()
-        onToggleTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
-        onToggleMusicRequested: {
-            mainWindow.musicVisible = !mainWindow.musicVisible
-            mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
+    Shortcut {
+        sequence: (theme && theme.shortcutToggleAI) ? theme.shortcutToggleAI : "Ctrl+Shift+A"
+        onActivated: {
+            if (!mainWindow.rightPanelVisible) {
+                mainWindow.rightPanelVisible = true;
+                mainWindow.aiVisible = true;
+            } else {
+                mainWindow.aiVisible = !mainWindow.aiVisible;
+            }
         }
-        onToggleAIRequested: {
-            mainWindow.aiVisible = !mainWindow.aiVisible
-            mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
+    }
+    Shortcut {
+        sequence: (theme && theme.shortcutToggleMusic) ? theme.shortcutToggleMusic : "Ctrl+Shift+M"
+        onActivated: {
+            if (!mainWindow.rightPanelVisible) {
+                mainWindow.rightPanelVisible = true;
+                mainWindow.musicVisible = true;
+            } else {
+                mainWindow.musicVisible = !mainWindow.musicVisible;
+            }
         }
-        onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
-        onSaveRequested: editorArea.saveCurrentFile()
-        onNewFileRequested: editorArea.newBlankTab()
-        onPresetRequested: (preset) => mainWindow.applyPreset(preset)
     }
-
-    ExplorerPanel {
-        id: explorerPanel
-        x: 0
-        y: headerHeight
-        width: effectiveExplorerWidth
-        height: mainContentHeight
-        visible: explorerVisible && !zenMode
-
-        Behavior on width { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-
-        onFileSelected: (filePath, fileName) => backend.open_file(filePath)
-        onOpenWorkspaceRequested: openWorkspaceDialog.open()
+    Shortcut {
+        sequence: (theme && theme.shortcutComment) ? theme.shortcutComment : "Ctrl+/"
+        onActivated: editorArea.toggleComment()
     }
-
-    SplitHandle {
-        id: explorerSplitter
-        orientation: "horizontal"
-        x: effectiveExplorerWidth
-        y: headerHeight
-        height: mainContentHeight
-        visible: explorerVisible && !zenMode
-        z: 20
-
-        onDragged: function(delta) {
-            mainWindow.explorerWidth = Math.max(explorerMin, Math.min(explorerMax, explorerWidth + delta))
+    Shortcut {
+        sequence: (theme && theme.shortcutWhiteboard) ? theme.shortcutWhiteboard : "Ctrl+Alt+W"
+        onActivated: editorArea.openWhiteboardTab()
+    }
+    Shortcut {
+        sequence: "Escape"
+        onActivated: {
+            if (settingsOverlay.visible) {
+                settingsOverlay.visible = false;
+            }
         }
     }
 
-    EditorArea {
-        id: editorArea
-        x: effectiveExplorerWidth + (effectiveExplorerWidth > 0 ? 5 : 0)
-        y: headerHeight
-        width: Math.max(300, editorAreaWidth)
-        height: mainContentHeight
+    // =========================================================================
+    // MAIN LAYOUT
+    // =========================================================================
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
 
-        Behavior on x { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
+        // 1. Top Header
+        AppHeader {
+            id: appHeader
+            Layout.fillWidth: true
+            activeProjectName: explorerPanel.workspaceName
+            activeFileName: editorArea.activeFileName
+            activeFilePath: editorArea.activeFilePath
+            isDirty: editorArea.isCurrentFileDirty
 
-        onRequestRadialMenu: (posX, posY) => {
-            radialMenu.openAt(editorArea.x + posX, editorArea.y + posY)
+            onNewFileRequested: editorArea.createNewFile()
+            onOpenFileRequested: openFileDialog.open()
+            onOpenFolderRequested: openFolderDialog.open()
+            onSaveRequested: {
+                var s = editorArea.saveCurrentFile();
+                if (!s) saveAsDialog.open();
+            }
+            onSaveAsRequested: saveAsDialog.open()
+            onCloseTabRequested: editorArea.closeTab(editorArea.activeTabIndex)
+            onToggleExplorerRequested: mainWindow.explorerVisible = !mainWindow.explorerVisible
+            onToggleTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
+            onToggleAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
+            onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+            onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
+            onToggleWhiteboardRequested: editorArea.openWhiteboardTab()
+            onOpenWebPreviewRequested: editorArea.openWebPreviewTab()
+            onOpenColorPickerRequested: editorArea.openColorPickerAtCursor()
+            onFindRequested: editorArea.showFind(false)
+            onReplaceRequested: editorArea.showFind(true)
+            onFormatRequested: editorArea.formatDocument()
+            onUndoRequested: editorArea.undo()
+            onRedoRequested: editorArea.redo()
+            onSettingsRequested: settingsOverlay.visible = true
+            onRunFileRequested: mainWindow.runActiveFile()
+            onPresetSelected: function(preset) { mainWindow.applyPreset(preset); }
+            onThemeSelected: function(tName) { theme.setTheme(tName); }
         }
 
-        onCursorPositionChanged: (line, col) => {
-            statusBar.cursorLine = line
-            statusBar.cursorCol = col
+        // 2. Main Middle Workspace
+        Item {
+            id: middleWorkspaceArea
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+
+            RowLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                // Left: Explorer Panel
+                ExplorerPanel {
+                    id: explorerPanel
+                    Layout.preferredWidth: mainWindow.effectiveExplorerWidth
+                    Layout.fillHeight: true
+                    visible: mainWindow.effectiveExplorerWidth > 0
+
+                    onFileClicked: function(path) {
+                        if (typeof backend !== "undefined" && backend && backend.open_file) {
+                            backend.open_file(path);
+                        }
+                    }
+                    onOpenFolderRequested: openFolderDialog.open()
+                    onNewFileRequested: editorArea.createNewFile()
+                    onNewFolderRequested: openFolderDialog.open()
+                    onRefreshRequested: {
+                        if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
+                            backend.open_Workspace(explorerPanel.workspacePath);
+                        }
+                    }
+                }
+
+                // Explorer SplitHandle (Single 1px divider between Explorer and Editor)
+                SplitHandle {
+                    Layout.fillHeight: true
+                    orientation: Qt.Horizontal
+                    visible: mainWindow.effectiveExplorerWidth > 0
+                    enabled: mainWindow.effectiveExplorerWidth > 0
+
+                    onMoved: function(delta) {
+                        var newW = mainWindow.explorerWidth + delta;
+                        mainWindow.explorerWidth = Math.max(mainWindow.explorerMinWidth, Math.min(mainWindow.explorerMaxWidth, newW));
+                    }
+                }
+
+                // Center: Code Editor Area & Tabbed Whiteboard Workspace
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    EditorArea {
+                        id: editorArea
+                        anchors.fill: parent
+
+                        onRequestOpenFile: openFileDialog.open()
+                        onRequestOpenFolder: openFolderDialog.open()
+                        onRequestRunFile: mainWindow.runActiveFile()
+
+                        onActiveFileChanged: function(path, name, lang, dirty) {
+                            appHeader.activeFileName = name;
+                            appHeader.activeFilePath = path;
+                            appHeader.isDirty = dirty;
+                            statusBar.currentLanguage = lang;
+                        }
+
+                        onCursorPositionChanged: function(line, col) {
+                            statusBar.cursorLine = line;
+                            statusBar.cursorColumn = col;
+                        }
+                    }
+                }
+
+                // Right Sidebar SplitHandle (Single 1px divider between Editor and Right Sidebar)
+                SplitHandle {
+                    Layout.fillHeight: true
+                    orientation: Qt.Horizontal
+                    visible: mainWindow.effectiveRightWidth > 0
+                    enabled: mainWindow.effectiveRightWidth > 0
+
+                    onMoved: function(delta) {
+                        var newW = mainWindow.rightPanelWidth - delta;
+                        mainWindow.rightPanelWidth = Math.max(mainWindow.rightPanelMinWidth, Math.min(mainWindow.rightPanelMaxWidth, newW));
+                    }
+                }
+
+                // Right Sidebar (AI top, Music bottom)
+                Item {
+                    id: rightSidebar
+                    Layout.preferredWidth: mainWindow.effectiveRightWidth
+                    Layout.fillHeight: true
+                    visible: mainWindow.effectiveRightWidth > 0
+                    clip: true
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        // AI Workspace
+                        AIWorkspace {
+                            id: aiWorkspace
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: (mainWindow.aiVisible && mainWindow.musicVisible) ? (rightSidebar.height * mainWindow.aiMusicSplitRatio) : (mainWindow.aiVisible ? rightSidebar.height : 0)
+                            visible: mainWindow.aiVisible
+
+                            onInsertCodeRequested: function(code) {
+                                editorArea.insertSnippet(code);
+                            }
+                            onCloseRequested: mainWindow.aiVisible = false
+                        }
+
+                        // AI / Music Vertical SplitHandle (Single 1px divider between AI and Music)
+                        SplitHandle {
+                            Layout.fillWidth: true
+                            orientation: Qt.Vertical
+                            visible: mainWindow.aiVisible && mainWindow.musicVisible
+                            enabled: mainWindow.aiVisible && mainWindow.musicVisible
+
+                            onMoved: function(delta) {
+                                var currentH = rightSidebar.height * mainWindow.aiMusicSplitRatio;
+                                var newH = currentH + delta;
+                                var newRatio = newH / Math.max(1, rightSidebar.height);
+                                mainWindow.aiMusicSplitRatio = Math.max(0.25, Math.min(0.75, newRatio));
+                            }
+                        }
+
+                        // Music Player Panel
+                        MusicPlayerPanel {
+                            id: musicPlayerPanel
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            visible: mainWindow.musicVisible
+
+                            onCloseRequested: mainWindow.musicVisible = false
+                        }
+                    }
+                }
+            }
         }
 
-        onSaveAsRequested: {
-            console.log("DGX SAVE AS: main.qml received signal")
-            saveAsDialog.open()
-        }
-    }
-
-    SplitHandle {
-        id: rightSplitter
-        orientation: "horizontal"
-        x: mainWindow.width - effectiveRightWidth - 5
-        y: headerHeight
-        height: mainContentHeight
-        visible: rightPanelVisible && (aiVisible || musicVisible) && !zenMode
-        z: 20
-
-        onDragged: function(delta) {
-            mainWindow.rightPanelWidth = Math.max(rightPanelMin, Math.min(rightPanelMax, rightPanelWidth - delta))
-        }
-    }
-
-    Item {
-        id: rightPanel
-        x: mainWindow.width - effectiveRightWidth
-        y: headerHeight
-        width: effectiveRightWidth
-        height: mainContentHeight
-        visible: rightPanelVisible && (aiVisible || musicVisible) && !zenMode
-
-        Behavior on x { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-
-        property real aiHeight: {
-            if (aiVisible && musicVisible) return Math.round(rightPanel.height * aiMusicSplit)
-            else if (aiVisible) return rightPanel.height
-            else return 0
-        }
-        property real musicY: aiVisible ? (aiHeight + (aiVisible && musicVisible ? 5 : 0)) : 0
-        property real musicHeight: {
-            if (aiVisible && musicVisible) return rightPanel.height - aiHeight - 5
-            else if (musicVisible) return rightPanel.height
-            else return 0
-        }
-
-        AIWorkspace {
-            id: aiWorkspace
-            x: 0; y: 0
-            width: rightPanel.width
-            height: rightPanel.aiHeight
-            visible: mainWindow.aiVisible
-        }
-
+        // Workspace <-> Terminal SplitHandle (Single 1px divider between Workspace and Terminal)
         SplitHandle {
-            id: aiMusicSplitter
-            orientation: "vertical"
-            x: 0
-            y: rightPanel.aiHeight
-            width: rightPanel.width
-            visible: mainWindow.aiVisible && mainWindow.musicVisible
-            z: 20
+            Layout.fillWidth: true
+            orientation: Qt.Vertical
+            visible: mainWindow.effectiveTerminalHeight > 0
+            enabled: mainWindow.effectiveTerminalHeight > 0
 
-            onDragged: function(delta) {
-                var newFrac = (rightPanel.aiHeight + delta) / rightPanel.height
-                mainWindow.aiMusicSplit = Math.max(0.25, Math.min(0.8, newFrac))
+            onMoved: function(delta) {
+                var newH = mainWindow.terminalHeight - delta;
+                mainWindow.terminalHeight = Math.max(mainWindow.terminalMinHeight, Math.min(mainWindow.terminalMaxHeight, newH));
             }
         }
 
-        MusicPlayerPanel {
-            id: musicPlayerPanel
-            x: 0
-            y: rightPanel.musicY
-            width: rightPanel.width
-            height: rightPanel.musicHeight
-            visible: mainWindow.musicVisible
+        // 3. Bottom Terminal Panel (VS Code Style)
+        TerminalPanel {
+            id: terminalPanel
+            Layout.fillWidth: true
+            Layout.preferredHeight: mainWindow.effectiveTerminalHeight
+            visible: mainWindow.effectiveTerminalHeight > 0
+
+            onCloseRequested: mainWindow.terminalVisible = false
+        }
+
+        // 4. Status Bar
+        StatusBar {
+            id: statusBar
+            Layout.fillWidth: true
+            currentLanguage: editorArea.currentLanguage
+            cursorLine: editorArea.cursorLine
+            cursorColumn: editorArea.cursorColumn
+
+            onLanguageSelected: function(lang) {
+                if (editorArea.currentTab) {
+                    editorArea.currentTab.languageName = lang;
+                }
+                statusBar.currentLanguage = lang;
+            }
+
+            onSettingsRequested: settingsOverlay.visible = true
+            onThemeSelected: function(tName) { theme.setTheme(tName); }
         }
     }
 
-    SplitHandle {
-        id: terminalSplitter
-        orientation: "vertical"
-        x: 0
-        y: headerHeight + mainContentHeight
-        width: mainWindow.width
-        visible: terminalVisible && !zenMode
-        z: 20
+    // =========================================================================
+    // SETTINGS MODAL OVERLAY
+    // =========================================================================
+    Rectangle {
+        id: settingsOverlay
+        anchors.fill: parent
+        color: "#00000066"
+        visible: false
+        z: 210
 
-        onDragged: function(delta) {
-            mainWindow.terminalHeight = Math.max(terminalMin, Math.min(terminalMax, terminalHeight - delta))
+        MouseArea {
+            anchors.fill: parent
+            onClicked: settingsOverlay.visible = false
         }
-    }
 
-    TerminalPanel {
-        id: terminalPanel
-        x: 0
-        y: headerHeight + mainContentHeight + (terminalVisible && !zenMode ? 5 : 0)
-        width: mainWindow.width
-        height: effectiveTerminalHeight
-        visible: terminalVisible && !zenMode
+        SettingsDialog {
+            anchors.centerIn: parent
 
-        Behavior on y { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-        Behavior on height { NumberAnimation { duration: theme.animNormal; easing.type: Easing.OutCubic } }
-
-        onCloseRequested: mainWindow.terminalVisible = false
-    }
-
-    StatusBar {
-        id: statusBar
-        x: 0
-        y: mainWindow.height - statusBarHeight
-        width: mainWindow.width
-        height: statusBarHeight
-        z: 10
-
-        onToggleTerminal: mainWindow.terminalVisible = !mainWindow.terminalVisible
-        onToggleMusic: {
-            mainWindow.musicVisible = !mainWindow.musicVisible
-            mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
-        }
-    }
-
-    RadialMenu {
-        id: radialMenu
-        z: 10000
-
-        onActionTriggered: action => {
-            if (action === "save") {
-                editorArea.saveCurrentFile()
-            } else if (action === "run") {
-                mainWindow.terminalVisible = true
-                terminalBackend.send_command("python main.py")
-            } else if (action === "undo") {
-                editorArea.textAreaItem.undo()
-            } else if (action === "redo") {
-                editorArea.textAreaItem.redo()
-            } else if (action === "format") {
-                editorArea.saveCurrentFile()
-            } else if (action === "find") {
-                editorArea.toggleFindBar()
-            } else if (action === "zen") {
-                mainWindow.zenMode = !mainWindow.zenMode
-            } else if (action === "settings") {
-                settingsDialog.open()
-            } else if (action === "ai") {
-                mainWindow.aiVisible = !mainWindow.aiVisible
-                mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
-            } else if (action === "music") {
-                mainWindow.musicVisible = !mainWindow.musicVisible
-                mainWindow.rightPanelVisible = mainWindow.aiVisible || mainWindow.musicVisible
+            onCloseRequested: settingsOverlay.visible = false
+            onThemeSelected: function(tName) {
+                theme.setTheme(tName);
             }
         }
     }
 
-    SettingsDialog {
-        id: settingsDialog
-        z: 9999
-    }
-
+    // =========================================================================
+    // WORKSPACE PRESETS LOGIC
+    // =========================================================================
     function applyPreset(presetName) {
-        switch (presetName) {
-            case "Coding":
-                explorerVisible = true; aiVisible = false; musicVisible = false
-                rightPanelVisible = false; terminalVisible = true
-                zenMode = false
-                break
-            case "AI":
-                explorerVisible = false; aiVisible = true; musicVisible = false
-                rightPanelVisible = true; terminalVisible = false
-                zenMode = false
-                break
-            case "Music":
-                explorerVisible = false; aiVisible = false; musicVisible = true
-                rightPanelVisible = true; terminalVisible = false
-                zenMode = false
-                break
-            case "Debugging":
-                explorerVisible = true; aiVisible = false; musicVisible = false
-                rightPanelVisible = false; terminalVisible = true
-                terminalHeight = 300
-                zenMode = false
-                break
-            case "Focus":
-                zenMode = true
-                break
-            case "Full":
-                explorerVisible = true; aiVisible = true; musicVisible = true
-                rightPanelVisible = true; terminalVisible = true
-                zenMode = false
-                break
+        mainWindow.currentPreset = presetName;
+        mainWindow.zenMode = false;
+
+        if (presetName === "Full") {
+            mainWindow.explorerVisible = true;
+            mainWindow.rightPanelVisible = true;
+            mainWindow.aiVisible = true;
+            mainWindow.musicVisible = true;
+            mainWindow.terminalVisible = true;
+        } else if (presetName === "Coding") {
+            mainWindow.explorerVisible = true;
+            mainWindow.rightPanelVisible = false;
+            mainWindow.terminalVisible = true;
+        } else if (presetName === "AI") {
+            mainWindow.explorerVisible = false;
+            mainWindow.rightPanelVisible = true;
+            mainWindow.aiVisible = true;
+            mainWindow.musicVisible = false;
+            mainWindow.terminalVisible = false;
+        } else if (presetName === "Music") {
+            mainWindow.explorerVisible = false;
+            mainWindow.rightPanelVisible = true;
+            mainWindow.aiVisible = false;
+            mainWindow.musicVisible = true;
+            mainWindow.terminalVisible = false;
+        } else if (presetName === "Focus") {
+            mainWindow.zenMode = true;
         }
+    }
+
+    function runActiveFile() {
+        if (!editorArea.activeFilePath) {
+            terminalPanel.executeCommand("Write-Host 'Please save the file first before running.' -ForegroundColor Yellow");
+            return;
+        }
+        mainWindow.terminalVisible = true;
+        var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
+        var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
+        var cmd = "";
+
+        if (ext === "py" || ext === "pyw") {
+            cmd = 'python "' + rawPath + '"';
+        } else if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") {
+            cmd = 'g++ -std=c++17 "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
+        } else if (ext === "c") {
+            cmd = 'gcc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
+        } else if (ext === "js" || ext === "mjs" || ext === "cjs") {
+            cmd = 'node "' + rawPath + '"';
+        } else if (ext === "ts" || ext === "tsx") {
+            cmd = 'npx tsx "' + rawPath + '"';
+        } else if (ext === "java") {
+            cmd = 'java "' + rawPath + '"';
+        } else if (ext === "rs") {
+            cmd = 'rustc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
+        } else if (ext === "go") {
+            cmd = 'go run "' + rawPath + '"';
+        } else if (ext === "cs") {
+            cmd = 'dotnet run';
+        } else if (ext === "ps1") {
+            cmd = 'powershell -ExecutionPolicy Bypass -File "' + rawPath + '"';
+        } else if (ext === "sh" || ext === "bash") {
+            cmd = 'bash "' + rawPath + '"';
+        } else if (ext === "html" || ext === "htm") {
+            var target = (theme && theme.htmlRunTarget) ? theme.htmlRunTarget : "built_in";
+            if (target === "built_in") {
+                editorArea.openWebPreviewTab();
+                return;
+            } else {
+                mainWindow.terminalVisible = true;
+                terminalPanel.executeCommand('Start-Process "' + rawPath + '"');
+                return;
+            }
+        } else {
+            mainWindow.terminalVisible = true;
+            cmd = 'Write-Host "No runner configured for .' + ext + ' files." -ForegroundColor Yellow';
+        }
+
+        terminalPanel.executeCommand(cmd);
     }
 }

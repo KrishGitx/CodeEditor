@@ -1,65 +1,145 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import "../components"
 
 Rectangle {
-    id: aiWorkspaceRoot
-    color: theme.bgPanelRight
+    id: root
 
-    signal closeRequested()
     property string aiStatus: "idle" // "idle", "thinking", "streaming", "error"
 
-    Connections {
-        target: aiBackend
+    signal insertCodeRequested(string code)
+    signal closeRequested()
 
-        function onMessageReceived(msgId, role, content) {
-            // Check if this message was already streaming and update it, or append
-            var found = false
-            for (var i = 0; i < chatModel.count; i++) {
-                if (chatModel.get(i).msgId === msgId) {
-                    chatModel.setProperty(i, "content", content)
-                    found = true
-                    break
+    color: theme ? theme.bgSidebar : "#181818"
+
+    // Disabled Overlay when AI Assistant is turned off in Settings
+    Rectangle {
+        anchors.fill: parent
+        color: theme ? theme.bgSidebar : "#181818"
+        visible: theme ? !theme.enableAI : false
+        z: 20
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            width: parent.width - 32
+            spacing: 12
+
+            VectorIcon {
+                Layout.alignment: Qt.AlignHCenter
+                name: "sparkles"
+                size: 24
+                color: theme ? theme.textMuted : "#656565"
+            }
+
+            Text {
+                text: "AI Assistant (Beta) Disabled"
+                color: theme ? theme.textBright : "#ffffff"
+                font.pixelSize: 13
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                Layout.fillWidth: true
+            }
+
+            Text {
+                text: "AI features are currently turned off in Settings. You can enable them anytime in Preferences."
+                color: theme ? theme.textSecondary : "#858585"
+                font.pixelSize: 11
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+                Layout.fillWidth: true
+            }
+
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter
+                width: 110
+                height: 28
+                radius: 4
+                color: enableAiMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Turn On AI"
+                    color: "#ffffff"
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+
+                MouseArea {
+                    id: enableAiMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (theme) {
+                            theme.enableAI = true;
+                            theme.saveSettings();
+                        }
+                    }
                 }
             }
-            if (!found) {
-                var now = new Date()
-                var timeStr = now.toLocaleTimeString(Qt.locale(), "hh:mm")
-                chatModel.append({
-                    msgId: msgId,
-                    role: role,
-                    content: content,
-                    timestamp: timeStr
-                })
+        }
+    }
+
+    ListModel {
+        id: chatHistoryModel
+
+        Component.onCompleted: {
+            append({
+                msgId: "welcome_1",
+                role: "assistant",
+                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
+            });
+        }
+    }
+
+    Connections {
+        target: typeof aiBackend !== "undefined" ? aiBackend : null
+        ignoreUnknownSignals: true
+
+        function onMessageReceived(msgId, role, content) {
+            for (var i = 0; i < chatHistoryModel.count; i++) {
+                if (chatHistoryModel.get(i).msgId === msgId) {
+                    chatHistoryModel.setProperty(i, "content", content);
+                    return;
+                }
             }
-            chatListView.positionViewAtEnd()
+            chatHistoryModel.append({
+                msgId: msgId,
+                role: role,
+                content: content
+            });
+            chatListView.positionViewAtEnd();
         }
 
         function onChunkReceived(msgId, chunk) {
-            var found = false
-            for (var i = 0; i < chatModel.count; i++) {
-                if (chatModel.get(i).msgId === msgId) {
-                    var curr = chatModel.get(i).content
-                    chatModel.setProperty(i, "content", curr + chunk)
-                    found = true
-                    break
+            for (var i = 0; i < chatHistoryModel.count; i++) {
+                if (chatHistoryModel.get(i).msgId === msgId) {
+                    var current = chatHistoryModel.get(i).content;
+                    chatHistoryModel.setProperty(i, "content", current + chunk);
+                    chatListView.positionViewAtEnd();
+                    return;
                 }
             }
-            if (!found) {
-                var now = new Date()
-                var timeStr = now.toLocaleTimeString(Qt.locale(), "hh:mm")
-                chatModel.append({
-                    msgId: msgId,
-                    role: "assistant",
-                    content: chunk,
-                    timestamp: timeStr
-                })
-            }
-            chatListView.positionViewAtEnd()
+            chatHistoryModel.append({
+                msgId: msgId,
+                role: "assistant",
+                content: chunk
+            });
+            chatListView.positionViewAtEnd();
         }
 
         function onStatusChanged(status) {
-            aiWorkspaceRoot.aiStatus = status
+            root.aiStatus = status;
+        }
+
+        function onErrorOccurred(err) {
+            chatHistoryModel.append({
+                msgId: "err_" + Date.now(),
+                role: "assistant",
+                content: "Error: " + err
+            });
+            root.aiStatus = "idle";
         }
     }
 
@@ -67,222 +147,176 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // 1. AI Header
+        // 1. Header with Clear and Close Buttons
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 34
-            color: theme.bgHeader
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 12
-                anchors.rightMargin: 8
-
-                // Status pulse dot
-                Rectangle {
-                    width: 8
-                    height: 8
-                    radius: 4
-                    color: {
-                        if (aiWorkspaceRoot.aiStatus === "thinking" || aiWorkspaceRoot.aiStatus === "streaming") {
-                            return theme.accentWarning
-                        } else if (aiWorkspaceRoot.aiStatus === "error") {
-                            return theme.accentError
-                        } else {
-                            return theme.accentSuccess
-                        }
-                    }
-                }
-
-                Text {
-                    text: "AI WORKSPACE"
-                    color: theme.textSecondary
-                    font.bold: true
-                    font.pixelSize: 11
-                    font.family: theme.uiFont
-                    font.letterSpacing: 1.0
-                    Layout.fillWidth: true
-                }
-
-                // Clear Conversation Button
-                Rectangle {
-                    Layout.preferredWidth: 24
-                    Layout.preferredHeight: 24
-                    radius: 3
-                    color: clearMouse.containsMouse ? theme.bgHover : "transparent"
-
-                    Text {
-                        text: "🗑"
-                        font.pixelSize: 11
-                        anchors.centerIn: parent
-                    }
-
-                    MouseArea {
-                        id: clearMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            chatModel.clear()
-                            aiBackend.clear_chat()
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 24
-                    Layout.preferredHeight: 24
-                    radius: 3
-                    color: closeMouse.containsMouse ? theme.bgHover : "transparent"
-
-                    Text {
-                        text: "×"
-                        color: closeMouse.containsMouse ? theme.textPrimary : theme.textMuted
-                        font.pixelSize: 18
-                        anchors.centerIn: parent
-                    }
-
-                    MouseArea {
-                        id: closeMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: aiWorkspaceRoot.closeRequested()
-                    }
-                }
-            }
-
-            Rectangle {
-                color: theme.borderSubtle
-                height: 1
-                width: parent.width
-                anchors.bottom: parent.bottom
-            }
-        }
-
-        // 2. Chat Conversation View
-        ListView {
-            id: chatListView
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.margins: 10
-            spacing: 10
-            clip: true
-
-            model: ListModel {
-                id: chatModel
-                Component.onCompleted: {
-                    chatModel.append({
-                        msgId: "welcome_0",
-                        role: "assistant",
-                        content: "👋 Welcome to **DGX Studio AI**! How can I assist with your code today?",
-                        timestamp: "Now"
-                    })
-                }
-            }
-
-            delegate: ChatMessage {
-                width: chatListView.width
-                role: model.role
-                content: model.content
-                timestamp: model.timestamp
-            }
-        }
-
-        // 3. Status indicator banner (when generating)
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: (aiWorkspaceRoot.aiStatus === "thinking" || aiWorkspaceRoot.aiStatus === "streaming") ? 22 : 0
-            visible: (aiWorkspaceRoot.aiStatus === "thinking" || aiWorkspaceRoot.aiStatus === "streaming")
-            color: theme.bgCard
-
-            Row {
-                anchors.centerIn: parent
-                spacing: 6
-
-                Text {
-                    text: aiWorkspaceRoot.aiStatus === "thinking" ? "Thinking..." : "Generating response..."
-                    color: theme.accentColor
-                    font.pixelSize: 10
-                    font.family: theme.uiFont
-                }
-            }
-        }
-
-        // 4. Prompt Input Area
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.max(68, promptInput.contentHeight + 30)
-            color: theme.bgPanelRight
-
-            Rectangle {
-                color: theme.borderSubtle
-                height: 1
-                width: parent.width
-                anchors.top: parent.top
-            }
+            height: 28
+            color: theme ? theme.bgHeader : "#181818"
 
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 10
-                anchors.rightMargin: 10
-                anchors.topMargin: 8
-                anchors.bottomMargin: 10
-                spacing: 8
+                anchors.rightMargin: 6
+                spacing: 4
 
-                ScrollView {
+                Text {
+                    text: "AI ASSISTANT"
+                    color: theme ? theme.textSecondary : "#858585"
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.letterSpacing: 0.5
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
+                }
 
-                    TextArea {
-                        id: promptInput
-                        placeholderText: "Ask AI or generate code... (Enter to send)"
-                        placeholderTextColor: theme.textMuted
-                        color: theme.textPrimary
-                        font.pixelSize: 12
-                        font.family: theme.uiFont
-                        wrapMode: TextArea.Wrap
-                        background: Rectangle {
-                            color: theme.bgInput
-                            border.color: promptInput.activeFocus ? theme.accentColor : theme.borderSubtle
-                            radius: theme.radiusMd
-                        }
-                        selectByMouse: true
+                // Clear Chat
+                Rectangle {
+                    width: 20
+                    height: 20
+                    radius: 2
+                    color: clearMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                        Keys.onPressed: function(event) {
-                            if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
-                                event.accepted = true
-                                sendPrompt()
+                    VectorIcon {
+                        anchors.centerIn: parent
+                        name: "refresh"
+                        size: 10
+                        color: theme ? theme.textSecondary : "#858585"
+                    }
+
+                    ToolTip.visible: clearMa.containsMouse
+                    ToolTip.text: "Clear Chat"
+
+                    MouseArea {
+                        id: clearMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            chatHistoryModel.clear();
+                            // TODO: Connect CustomApi.py here.
+                            // TODO: Connect AIBackend.py here.
+                            if (typeof aiBackend !== "undefined" && aiBackend) {
+                                aiBackend.clear_chat();
                             }
                         }
                     }
                 }
 
-                // Send / Stop button
+                // Close Button (x)
                 Rectangle {
-                    Layout.preferredWidth: 32
-                    Layout.preferredHeight: 32
-                    Layout.alignment: Qt.AlignBottom
-                    radius: theme.radiusMd
-                    color: sendMouse.containsMouse ? theme.accentColor : theme.bgHover
+                    width: 20
+                    height: 20
+                    radius: 2
+                    color: closeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                    Text {
-                        text: (aiWorkspaceRoot.aiStatus === "thinking" || aiWorkspaceRoot.aiStatus === "streaming") ? "⏹" : "➤"
-                        color: sendMouse.containsMouse ? "#ffffff" : theme.textPrimary
-                        font.pixelSize: 12
+                    VectorIcon {
                         anchors.centerIn: parent
+                        name: "close"
+                        size: 9
+                        color: theme ? theme.textSecondary : "#858585"
                     }
 
                     MouseArea {
-                        id: sendMouse
+                        id: closeMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.closeRequested()
+                    }
+                }
+            }
+        }
+
+        // 2. Chat Conversation
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            ListView {
+                id: chatListView
+                anchors.fill: parent
+                anchors.margins: 6
+                model: chatHistoryModel
+                spacing: 8
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+
+                delegate: ChatMessageItem {
+                    role: model.role
+                    contentText: model.content
+                    width: chatListView.width
+
+                    onInsertCodeRequested: function(code) {
+                        root.insertCodeRequested(code);
+                    }
+                }
+            }
+        }
+
+        // 3. Input Area
+        Rectangle {
+            Layout.fillWidth: true
+            height: Math.max(38, Math.min(80, inputTextArea.contentHeight + 14))
+            color: theme ? theme.bgPanel : "#181818"
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 4
+
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+
+                    TextArea {
+                        id: inputTextArea
+                        placeholderText: "Ask AI..."
+                        placeholderTextColor: theme ? theme.textMuted : "#656565"
+                        color: theme ? theme.textPrimary : "#cccccc"
+                        font.pixelSize: 12
+                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                        wrapMode: TextArea.Wrap
+                        selectByMouse: true
+                        background: null
+
+                        Keys.onPressed: function(event) {
+                            if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier)) {
+                                root.submitPrompt();
+                                event.accepted = true;
+                            }
+                        }
+                    }
+                }
+
+                // Send Button
+                Rectangle {
+                    width: 24
+                    height: 24
+                    radius: 2
+                    color: sendMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+
+                    VectorIcon {
+                        anchors.centerIn: parent
+                        name: root.aiStatus === "thinking" || root.aiStatus === "streaming" ? "stop" : "next"
+                        size: 11
+                        color: theme ? theme.accent : "#0078d4"
+                    }
+
+                    MouseArea {
+                        id: sendMa
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if (aiWorkspaceRoot.aiStatus === "thinking" || aiWorkspaceRoot.aiStatus === "streaming") {
-                                aiBackend.cancel()
+                            if (root.aiStatus === "thinking" || root.aiStatus === "streaming") {
+                                // TODO: Connect CustomApi.py here.
+                                // TODO: Connect AIBackend.py here.
+                                if (typeof aiBackend !== "undefined" && aiBackend) {
+                                    aiBackend.cancel();
+                                }
+                                root.aiStatus = "idle";
                             } else {
-                                sendPrompt()
+                                root.submitPrompt();
                             }
                         }
                     }
@@ -291,18 +325,42 @@ Rectangle {
         }
     }
 
-    function sendPrompt() {
-        var text = promptInput.text.trim()
-        if (text.length === 0) return
-        promptInput.text = ""
-        aiBackend.send_message(text)
+    function submitPrompt() {
+        var query = inputTextArea.text.trim();
+        if (!query) return;
+
+        inputTextArea.text = "";
+
+        // TODO: Connect CustomApi.py here.
+        // TODO: Connect AIBackend.py here.
+        if (typeof aiBackend !== "undefined" && aiBackend && aiBackend.send_message) {
+            aiBackend.send_message(query);
+        } else {
+            chatHistoryModel.append({
+                msgId: "usr_" + Date.now(),
+                role: "user",
+                content: query
+            });
+
+            root.aiStatus = "thinking";
+            simTimer.targetQuery = query;
+            simTimer.restart();
+        }
     }
 
-    // Left dividing border
-    Rectangle {
-        color: theme.borderSubtle
-        width: 1
-        height: parent.height
-        anchors.left: parent.left
+    Timer {
+        id: simTimer
+        interval: 400
+        repeat: false
+        property string targetQuery: ""
+        onTriggered: {
+            root.aiStatus = "idle";
+            chatHistoryModel.append({
+                msgId: "ai_" + Date.now(),
+                role: "assistant",
+                content: "DGX AI response for: " + simTimer.targetQuery
+            });
+            chatListView.positionViewAtEnd();
+        }
     }
 }

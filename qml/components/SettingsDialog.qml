@@ -1,954 +1,1448 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.3
 import QtQuick.Controls 2.15
+import QtQuick.Layouts 1.15
+import "."
 
-Popup {
-    id: settingsRoot
+Rectangle {
+    id: root
 
-    width: Math.min(820, parent ? parent.width - 80 : 820)
-    height: Math.min(620, parent ? parent.height - 80 : 620)
+    property int activeCategoryIndex: 0
+    property string searchQuery: ""
 
-    anchors.centerIn: parent
-    modal: true
-    focus: true
-    padding: 0
-
-    property string selectedCategory: "Appearance"
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    function categoryVisible(category) {
-        return selectedCategory === category
+    function matchesSearch(title, subtitle) {
+        if (!root.searchQuery || !root.searchQuery.trim()) return true;
+        var q = root.searchQuery.toLowerCase().trim();
+        var t = (title || "").toLowerCase();
+        var s = (subtitle || "").toLowerCase();
+        return t.indexOf(q) !== -1 || s.indexOf(q) !== -1;
     }
 
-    function setAccent(value) {
-        theme.accentColor = value
-    }
+    signal closeRequested()
+    signal themeSelected(string themeName)
 
-    background: Rectangle {
-        color: theme.bgCard
-        radius: theme.radiusLg
-        border.color: theme.borderSubtle
-        border.width: 1
+    width: 760
+    height: 560
+    radius: theme ? theme.radiusMd : 6
+    color: theme ? theme.bgPopup : "#252526"
+    border.color: theme ? theme.borderNormal : "#333333"
+    border.width: 1
 
-        // Soft inner edge
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 1
-            color: "transparent"
-            radius: theme.radiusLg - 1
-            border.color: Qt.rgba(
-                Qt.color(theme.textPrimary).r,
-                Qt.color(theme.textPrimary).g,
-                Qt.color(theme.textPrimary).b,
-                0.035
-            )
-            border.width: 1
-        }
-    }
+    property var categories: [
+        { name: "General", icon: "settings" },
+        { name: "Appearance", icon: "sparkles" },
+        { name: "Editor", icon: "file" },
+        { name: "Terminal", icon: "code" },
+        { name: "Shortcuts", icon: "keyboard" }
+    ]
 
-    contentItem: ColumnLayout {
+    property var themeList: [
+        { id: "obsidian", name: "Obsidian Dark", color: "#181818" },
+        { id: "midnight", name: "Midnight Navy", color: "#0f131a" },
+        { id: "dracula", name: "Dracula", color: "#282a36" },
+        { id: "nord", name: "Nord Arctic", color: "#2e3440" },
+        { id: "monokai", name: "Monokai Pro", color: "#272822" },
+        { id: "light", name: "Clean Light", color: "#f8f9fa" },
+        { id: "paper", name: "Paper Warm", color: "#f5f2eb" },
+        { id: "glass", name: "Frosted Glass", color: "#141822" }
+    ]
+
+    ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ═════════════════════════════════════════════════════════════════════
-        // HEADER
-        // ═════════════════════════════════════════════════════════════════════
-
+        // 1. Settings Header Bar (Draggable)
         Rectangle {
+            id: headerRect
             Layout.fillWidth: true
-            Layout.preferredHeight: 68
-            color: theme.bgHeader
+            height: 42
+            color: theme ? theme.bgHeader : "#181818"
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 24
-                anchors.rightMargin: 18
-                spacing: 14
+                anchors.leftMargin: 16
+                anchors.rightMargin: 12
+                spacing: 8
+                z: 0
 
-                Rectangle {
-                    width: 34
-                    height: 34
-                    radius: 9
-                    color: theme.bgActive
-                    border.color: theme.borderSubtle
-                    border.width: 1
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "⚙"
-                        color: theme.accentColor
-                        font.pixelSize: 17
-                    }
+                VectorIcon {
+                    name: "settings"
+                    size: 14
+                    color: theme ? theme.accent : "#0078d4"
                 }
 
-                ColumnLayout {
+                Text {
+                    text: "Preferences"
+                    color: theme ? theme.textBright : "#ffffff"
+                    font.pixelSize: 13
+                    font.bold: true
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
                     Layout.fillWidth: true
-                    spacing: 2
-
-                    Text {
-                        text: "Settings"
-                        color: theme.textPrimary
-                        font.family: theme.uiFont
-                        font.pixelSize: 16
-                        font.bold: true
-                    }
-
-                    Text {
-                        text: "Customize your DGX Studio workspace"
-                        color: theme.textMuted
-                        font.family: theme.uiFont
-                        font.pixelSize: 10
-                    }
                 }
 
-                Rectangle {
-                    width: 32
-                    height: 32
-                    radius: 8
-                    color: closeMouse.containsMouse
-                           ? theme.bgHover
-                           : "transparent"
+                Item {
+                    width: 26
+                    height: 26
+                    z: 10
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: "×"
-                        color: theme.textSecondary
-                        font.pixelSize: 20
-                        font.family: theme.uiFont
-                    }
-
-                    MouseArea {
-                        id: closeMouse
+                    Rectangle {
                         anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
+                        radius: 3
+                        color: closeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
 
-                        onClicked: settingsRoot.close()
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: "close"
+                            size: 10
+                            color: theme ? theme.textSecondary : "#858585"
+                        }
+
+                        MouseArea {
+                            id: closeMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.closeRequested()
+                        }
                     }
                 }
             }
 
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: theme.borderSubtle
+            // Draggable Header Area
+            MouseArea {
+                anchors.fill: parent
+                anchors.rightMargin: 44
+                drag.target: root
+                drag.axis: Drag.XAndYAxis
+                cursorShape: Qt.SizeAllCursor
+                acceptedButtons: Qt.LeftButton
+                z: 5
             }
         }
 
-        // ═════════════════════════════════════════════════════════════════════
-        // BODY
-        // ═════════════════════════════════════════════════════════════════════
+        // Header Divider
+        Rectangle {
+            Layout.fillWidth: true
+            height: 1
+            color: theme ? theme.borderSubtle : "#282828"
+        }
 
+        // 1.5 Interactive Search Bar
+        Rectangle {
+            Layout.fillWidth: true
+            height: 42
+            color: theme ? theme.bgSidebar : "#1b1b1d"
+            border.color: theme ? theme.borderSubtle : "#282828"
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 10
+
+                VectorIcon {
+                    name: "search"
+                    size: 12
+                    color: searchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
+                }
+
+                TextInput {
+                    id: searchInput
+                    Layout.fillWidth: true
+                    text: root.searchQuery
+                    color: theme ? theme.textBright : "#ffffff"
+                    font.pixelSize: 12
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                    selectByMouse: true
+                    clip: true
+
+                    Text {
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Search settings, themes, AI, shortcuts, runner..."
+                        color: theme ? theme.textMuted : "#656565"
+                        font.pixelSize: 12
+                        font.italic: true
+                        visible: !searchInput.text && !searchInput.activeFocus
+                    }
+
+                    onTextChanged: {
+                        root.searchQuery = text;
+                    }
+                }
+
+                Rectangle {
+                    width: 20
+                    height: 20
+                    radius: 10
+                    color: clearSearchMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+                    visible: root.searchQuery.length > 0
+
+                    VectorIcon {
+                        anchors.centerIn: parent
+                        name: "close"
+                        size: 8
+                        color: theme ? theme.textSecondary : "#858585"
+                    }
+
+                    MouseArea {
+                        id: clearSearchMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            searchInput.text = "";
+                            root.searchQuery = "";
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Main Content Split
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
 
-            // ─────────────────────────────────────────────────────────────────
-            // SIDEBAR
-            // ─────────────────────────────────────────────────────────────────
-
+            // Category Sidebar
             Rectangle {
-                Layout.preferredWidth: 190
+                Layout.preferredWidth: 170
                 Layout.fillHeight: true
-                color: theme.bgSidebar
+                color: theme ? theme.bgSidebar : "#181818"
 
-                ColumnLayout {
+                ListView {
                     anchors.fill: parent
-                    anchors.topMargin: 18
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    spacing: 3
+                    anchors.margins: 8
+                    model: root.categories
+                    spacing: 4
 
-                    Text {
-                        text: "PREFERENCES"
-                        color: theme.textMuted
-                        font.family: theme.uiFont
-                        font.pixelSize: 9
-                        font.bold: true
-                        font.letterSpacing: 1.0
+                    delegate: Rectangle {
+                        width: parent ? parent.width : 154
+                        height: 36
+                        radius: theme ? theme.radiusSm : 4
+                        color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.bgSelected : "#04395e") : (catMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
 
-                        Layout.leftMargin: 10
-                        Layout.bottomMargin: 7
-                    }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 10
 
-                    Repeater {
-                        model: [
-                            {
-                                name: "Appearance",
-                                subtitle: "Theme & interface",
-                                icon: "◐"
-                            },
-                            {
-                                name: "Editor",
-                                subtitle: "Code editing",
-                                icon: "▤"
-                            },
-                            {
-                                name: "Music",
-                                subtitle: "Playback & visualizer",
-                                icon: "♫"
-                            },
-                            {
-                                name: "General",
-                                subtitle: "Workspace behavior",
-                                icon: "•"
-                            }
-                        ]
-
-                        delegate: Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 52
-                            radius: 8
-
-                            color: settingsRoot.selectedCategory === modelData.name
-                                   ? theme.bgActive
-                                   : categoryMouse.containsMouse
-                                     ? theme.bgHover
-                                     : "transparent"
-
-                            border.color: settingsRoot.selectedCategory === modelData.name
-                                           ? Qt.rgba(
-                                                 Qt.color(theme.accentColor).r,
-                                                 Qt.color(theme.accentColor).g,
-                                                 Qt.color(theme.accentColor).b,
-                                                 0.25
-                                             )
-                                           : "transparent"
-                            border.width: 1
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 10
-                                anchors.rightMargin: 8
-                                spacing: 10
-
-                                Rectangle {
-                                    Layout.preferredWidth: 30
-                                    Layout.preferredHeight: 30
-                                    radius: 7
-
-                                    color: settingsRoot.selectedCategory === modelData.name
-                                           ? Qt.rgba(
-                                                 Qt.color(theme.accentColor).r,
-                                                 Qt.color(theme.accentColor).g,
-                                                 Qt.color(theme.accentColor).b,
-                                                 0.13
-                                             )
-                                           : "transparent"
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData.icon
-                                        color: settingsRoot.selectedCategory === modelData.name
-                                               ? theme.accentColor
-                                               : theme.textSecondary
-                                        font.pixelSize: 15
-                                    }
-                                }
-
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 1
-
-                                    Text {
-                                        text: modelData.name
-                                        color: settingsRoot.selectedCategory === modelData.name
-                                               ? theme.textPrimary
-                                               : theme.textSecondary
-
-                                        font.family: theme.uiFont
-                                        font.pixelSize: 11
-                                        font.bold: settingsRoot.selectedCategory === modelData.name
-                                    }
-
-                                    Text {
-                                        text: modelData.subtitle
-                                        color: theme.textMuted
-                                        font.family: theme.uiFont
-                                        font.pixelSize: 9
-                                        elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                    }
-                                }
+                            VectorIcon {
+                                name: modelData.icon
+                                size: 13
+                                color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585")
                             }
 
-                            MouseArea {
-                                id: categoryMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
+                            Text {
+                                text: modelData.name
+                                color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                font.pixelSize: 12
+                                font.bold: (root.searchQuery.length === 0 && index === root.activeCategoryIndex)
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                Layout.fillWidth: true
+                            }
+                        }
 
-                                onClicked: {
-                                    settingsRoot.selectedCategory = modelData.name
-                                }
+                        MouseArea {
+                            id: catMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                searchInput.text = "";
+                                root.searchQuery = "";
+                                root.activeCategoryIndex = index;
                             }
                         }
                     }
-
-                    Item {
-                        Layout.fillHeight: true
-                    }
-
-                    Text {
-                        text: "DGX STUDIO"
-                        color: theme.textMuted
-                        font.family: theme.uiFont
-                        font.pixelSize: 8
-                        font.bold: true
-                        font.letterSpacing: 1
-                        Layout.leftMargin: 10
-                    }
-
-                    Text {
-                        text: "v2.0"
-                        color: theme.textMuted
-                        font.family: theme.uiFont
-                        font.pixelSize: 9
-                        Layout.leftMargin: 10
-                        Layout.bottomMargin: 12
-                    }
-                }
-
-                Rectangle {
-                    anchors.right: parent.right
-                    width: 1
-                    height: parent.height
-                    color: theme.borderSubtle
                 }
             }
 
-            // ─────────────────────────────────────────────────────────────────
-            // CONTENT
-            // ─────────────────────────────────────────────────────────────────
+            // Vertical Sidebar Divider
+            Rectangle {
+                Layout.fillHeight: true
+                width: 1
+                color: theme ? theme.borderSubtle : "#282828"
+            }
 
+            // Detail Settings View with StackLayout
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                color: theme.bgRoot
+                color: theme ? theme.bgEditor : "#1e1e1e"
 
-                ScrollView {
-                    id: settingsScroll
-
+                StackLayout {
                     anchors.fill: parent
                     anchors.margins: 24
-                    clip: true
+                    currentIndex: root.searchQuery.length > 0 ? 5 : root.activeCategoryIndex
 
-                    ScrollBar.vertical: ScrollBar {
-                        policy: ScrollBar.AsNeeded
+                    // =========================================================
+                    // 0. GENERAL TAB
+                    // =========================================================
+                    ScrollView {
+                        id: generalScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                        contentItem: Rectangle {
-                            implicitWidth: 5
-                            radius: 3
-                            color: theme.scrollThumb
-                            opacity: 0.7
-                        }
+                        Column {
+                            width: Math.max(380, generalScroll.availableWidth)
+                            spacing: 14
 
-                        background: Rectangle {
-                            color: "transparent"
+                            Text {
+                                text: "General Settings"
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                            }
+
+                            Item { width: 1; height: 6 }
+
+                            // AI Assistant (Beta) Toggle
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "AI Assistant (Beta)"
+                                subtitle: "Enable ChatGPT AI code assistant, smart debugging, and workspace panel"
+                                checked: theme ? theme.enableAI : true
+                                onToggled: function(c) {
+                                    if (theme) {
+                                        theme.enableAI = c;
+                                        theme.saveSettings();
+                                    }
+                                }
+                            }
+
+                            // HTML File Run Target Selector
+                            Rectangle {
+                                width: parent.width
+                                height: 72
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
+                                border.width: 1
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 6
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: "HTML File Run Action (Radial Menu / F5)"
+                                            color: theme ? theme.textPrimary : "#cccccc"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        // Built-in Live Preview Button
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 28
+                                            radius: 3
+                                            color: (!theme || theme.htmlRunTarget === "built_in") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#1e1e1e")
+                                            border.color: (!theme || theme.htmlRunTarget === "built_in") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 6
+                                                VectorIcon { anchors.verticalCenter: parent.verticalCenter; name: "sparkles"; size: 10; color: "#ffffff" }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "Built-in Live Preview Tab"
+                                                    color: (!theme || theme.htmlRunTarget === "built_in") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                                    font.pixelSize: 11
+                                                    font.bold: (!theme || theme.htmlRunTarget === "built_in")
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (theme) {
+                                                        theme.htmlRunTarget = "built_in";
+                                                        theme.saveSettings();
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // External Browser Button
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 28
+                                            radius: 3
+                                            color: (theme && theme.htmlRunTarget === "browser") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#1e1e1e")
+                                            border.color: (theme && theme.htmlRunTarget === "browser") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 6
+                                                VectorIcon { anchors.verticalCenter: parent.verticalCenter; name: "code"; size: 10; color: "#ffffff" }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "Default Web Browser"
+                                                    color: (theme && theme.htmlRunTarget === "browser") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                                    font.pixelSize: 11
+                                                    font.bold: (theme && theme.htmlRunTarget === "browser")
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (theme) {
+                                                        theme.htmlRunTarget = "browser";
+                                                        theme.saveSettings();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Smooth UI Animations"
+                                subtitle: "Enable smooth state transitions and micro-interactions"
+                                checked: theme ? theme.enableAnimations : true
+                                onToggled: function(c) { if (theme) theme.enableAnimations = c; }
+                            }
+
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Vinyl Spin Animation"
+                                subtitle: "Rotate vinyl record cover during music playback"
+                                checked: theme ? theme.enableVinylAnimation : true
+                                onToggled: function(c) { if (theme) theme.enableVinylAnimation = c; }
+                            }
                         }
                     }
 
-                    ColumnLayout {
-                        width: settingsScroll.availableWidth
-                        spacing: 26
+                    // =========================================================
+                    // 1. APPEARANCE TAB
+                    // =========================================================
+                    ScrollView {
+                        id: appearanceScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                        // ═════════════════════════════════════════════════════
-                        // APPEARANCE
-                        // ═════════════════════════════════════════════════════
+                        Column {
+                            width: Math.max(380, appearanceScroll.availableWidth)
+                            spacing: 14
 
-                        ColumnLayout {
-                            visible: settingsRoot.categoryVisible("Appearance")
-                            Layout.fillWidth: true
-                            spacing: 20
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 3
-
-                                Text {
-                                    text: "Appearance"
-                                    color: theme.textPrimary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 18
-                                    font.bold: true
-                                }
-
-                                Text {
-                                    text: "Choose how DGX Studio looks and feels."
-                                    color: theme.textMuted
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 10
-                                }
+                            Text {
+                                text: "Appearance & Themes"
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
                             }
 
-                            // Theme section
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 10
+                            Item { width: 1; height: 6 }
 
-                                Text {
-                                    text: "COLOR THEME"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 4
-                                    columnSpacing: 8
-                                    rowSpacing: 8
-
-                                    Repeater {
-                                        model: [
-                                            {
-                                                name: "Obsidian",
-                                                color: "#090b10",
-                                                edge: "#252c38",
-                                                accent: "#8b7cff"
-                                            },
-                                            {
-                                                name: "Midnight",
-                                                color: "#080b14",
-                                                edge: "#1b2440",
-                                                accent: "#7aa2f7"
-                                            },
-                                            {
-                                                name: "Dracula",
-                                                color: "#191a23",
-                                                edge: "#35364e",
-                                                accent: "#bd93f9"
-                                            },
-                                            {
-                                                name: "Nord",
-                                                color: "#242933",
-                                                edge: "#3b4252",
-                                                accent: "#88c0d0"
-                                            },
-                                            {
-                                                name: "Monokai",
-                                                color: "#1c1d1a",
-                                                edge: "#3a3b34",
-                                                accent: "#a6e22e"
-                                            },
-                                            {
-                                                name: "Light",
-                                                color: "#ffffff",
-                                                edge: "#d6dbe4",
-                                                accent: "#2563eb"
-                                            },
-                                            {
-                                                name: "Paper",
-                                                color: "#fbf9f5",
-                                                edge: "#d4cec2",
-                                                accent: "#8b6834"
-                                            },
-                                            {
-                                                name: "Glass",
-                                                color: "#101722",
-                                                edge: "#3a4a60",
-                                                accent: "#7dd3fc"
-                                            }
-                                        ]
-
-                                        delegate: Rectangle {
-                                            Layout.fillWidth: true
-                                            Layout.preferredHeight: 72
-                                            radius: 8
-                                            color: modelData.color
-
-                                            border.color: theme.currentTheme === modelData.name
-                                                          ? modelData.accent
-                                                          : modelData.edge
-                                            border.width: theme.currentTheme === modelData.name
-                                                          ? 2
-                                                          : 1
-
-                                            // Accent preview line
-                                            Rectangle {
-                                                anchors.left: parent.left
-                                                anchors.right: parent.right
-                                                anchors.bottom: parent.bottom
-                                                anchors.leftMargin: 10
-                                                anchors.rightMargin: 10
-                                                anchors.bottomMargin: 10
-                                                height: 2
-                                                radius: 1
-                                                color: modelData.accent
-                                                opacity: 0.8
-                                            }
-
-                                            Column {
-                                                anchors.left: parent.left
-                                                anchors.top: parent.top
-                                                anchors.leftMargin: 11
-                                                anchors.topMargin: 10
-                                                spacing: 2
-
-                                                Text {
-                                                    text: modelData.name
-                                                    color: theme.currentTheme === "Light" ||
-                                                           theme.currentTheme === "Paper"
-                                                           ? "#29251f"
-                                                           : "#edf0f5"
-                                                    font.family: theme.uiFont
-                                                    font.pixelSize: 10
-                                                    font.bold: true
-                                                }
-
-                                                Text {
-                                                    text: theme.currentTheme === modelData.name
-                                                          ? "ACTIVE"
-                                                          : "Select"
-                                                    color: modelData.accent
-                                                    font.family: theme.uiFont
-                                                    font.pixelSize: 8
-                                                    font.bold: true
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-
-                                                onClicked: {
-                                                    theme.currentTheme = modelData.name
-                                                    theme.accentColor = modelData.accent
-                                                    backend.set_theme(modelData.name)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            Text {
+                                text: "Color Theme"
+                                color: theme ? theme.textSecondary : "#858585"
+                                font.pixelSize: 11
+                                font.bold: true
                             }
 
-                            // Accent section
-                            ColumnLayout {
-                                Layout.fillWidth: true
+                            Grid {
+                                width: parent.width
+                                columns: 2
                                 spacing: 10
 
-                                Text {
-                                    text: "ACCENT COLOR"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
+                                Repeater {
+                                    model: root.themeList
 
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 10
+                                    delegate: Rectangle {
+                                        width: (parent.width - 10) / 2
+                                        height: 44
+                                        radius: theme ? theme.radiusSm : 4
+                                        color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.bgSelected : "#04395e") : (themeItemMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgSurface : "#252526"))
+                                        border.color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+                                        border.width: 1
 
-                                    Repeater {
-                                        model: [
-                                            "#0ea5e9",
-                                            "#8b5cf6",
-                                            "#10b981",
-                                            "#f59e0b",
-                                            "#ef4444",
-                                            "#ec4899",
-                                            "#6366f1",
-                                            "#14b8a6"
-                                        ]
-
-                                        delegate: Rectangle {
-                                            Layout.preferredWidth: 30
-                                            Layout.preferredHeight: 30
-                                            radius: 15
-                                            color: modelData
-
-                                            border.color: theme.accentColor === modelData
-                                                          ? theme.textPrimary
-                                                          : "transparent"
-                                            border.width: 2
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            anchors.rightMargin: 12
+                                            spacing: 10
 
                                             Rectangle {
-                                                anchors.fill: parent
-                                                anchors.margins: 4
-                                                radius: width / 2
-                                                color: "transparent"
-                                                border.color: Qt.rgba(1, 1, 1, 0.18)
+                                                width: 16
+                                                height: 16
+                                                radius: 8
+                                                color: modelData.color
+                                                border.color: "#555555"
                                                 border.width: 1
                                             }
 
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
+                                            Text {
+                                                text: modelData.name
+                                                color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                                font.pixelSize: 12
+                                                font.bold: (theme && theme.currentTheme === modelData.id)
+                                                Layout.fillWidth: true
+                                            }
+                                        }
 
-                                                onClicked: settingsRoot.setAccent(modelData)
+                                        MouseArea {
+                                            id: themeItemMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (theme) {
+                                                    theme.setTheme(modelData.id);
+                                                    root.themeSelected(modelData.id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // 2. EDITOR TAB
+                    // =========================================================
+                    ScrollView {
+                        id: editorScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        Column {
+                            width: Math.max(380, editorScroll.availableWidth)
+                            spacing: 14
+
+                            Text {
+                                text: "Editor Preferences"
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                            }
+
+                            Item { width: 1; height: 6 }
+
+                            // Context Menu Style Selector (Radial vs Standard)
+                            Rectangle {
+                                width: parent.width
+                                height: 56
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
+                                border.width: 1
+
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 3
+
+                                    Text {
+                                        text: "Right-Click Context Menu"
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        text: "Choose radial hold-and-drag gesture or classic popup menu"
+                                        color: theme ? theme.textMuted : "#656565"
+                                        font.pixelSize: 10
+                                    }
+                                }
+
+                                Row {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
+
+                                    // Radial Button
+                                    Rectangle {
+                                        width: 82
+                                        height: 30
+                                        radius: 3
+                                        color: (theme && theme.contextMenuStyle === "radial") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgSurfaceHover : "#2a2d2e")
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Radial"
+                                            color: (theme && theme.contextMenuStyle === "radial") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                            font.pixelSize: 11
+                                            font.bold: (theme && theme.contextMenuStyle === "radial")
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (theme) theme.contextMenuStyle = "radial";
+                                            }
+                                        }
+                                    }
+
+                                    // Standard Button
+                                    Rectangle {
+                                        width: 82
+                                        height: 30
+                                        radius: 3
+                                        color: (theme && theme.contextMenuStyle === "standard") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgSurfaceHover : "#2a2d2e")
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Standard"
+                                            color: (theme && theme.contextMenuStyle === "standard") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                            font.pixelSize: 11
+                                            font.bold: (theme && theme.contextMenuStyle === "standard")
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (theme) theme.contextMenuStyle = "standard";
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            // Interface section
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
-
-                                Text {
-                                    text: "INTERFACE"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                    Layout.bottomMargin: 8
-                                }
-
-                                SettingRow {
-                                    title: "Smooth UI animations"
-                                    description: "Animate non-essential interface transitions."
-                                    checked: theme.animationsEnabled
-                                    onToggled: theme.animationsEnabled = checked
-                                }
-
-                                SettingRow {
-                                    title: "Music visualizations"
-                                    description: "Enable reactive visual effects in the music player."
-                                    checked: theme.musicVisualizationsEnabled
-                                    onToggled: theme.musicVisualizationsEnabled = checked
-                                }
-
-                                SettingRow {
-                                    title: "Compact spacing"
-                                    description: "Reduce padding throughout the interface."
-                                    checked: theme.compactMode
-                                    onToggled: theme.compactMode = checked
-                                }
-                            }
-                        }
-
-                        // ═════════════════════════════════════════════════════
-                        // EDITOR
-                        // ═════════════════════════════════════════════════════
-
-                        ColumnLayout {
-                            visible: settingsRoot.categoryVisible("Editor")
-                            Layout.fillWidth: true
-                            spacing: 20
-
-                            ColumnLayout {
-                                spacing: 3
-
-                                Text {
-                                    text: "Editor"
-                                    color: theme.textPrimary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 18
-                                    font.bold: true
-                                }
-
-                                Text {
-                                    text: "Configure code editing and navigation."
-                                    color: theme.textMuted
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 10
-                                }
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Code Minimap"
+                                subtitle: "Display live code overview scroll minimap on the right edge"
+                                checked: theme ? theme.enableMinimap : true
+                                onToggled: function(c) { if (theme) theme.enableMinimap = c; }
                             }
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
-
-                                Text {
-                                    text: "EDITOR"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                    Layout.bottomMargin: 8
-                                }
-
-                                SettingRow {
-                                    title: "Line numbers"
-                                    description: "Show line numbers beside the editor."
-                                    checked: theme.lineNumbersVisible
-                                    onToggled: theme.lineNumbersVisible = checked
-                                }
-
-                                SettingRow {
-                                    title: "Word wrap"
-                                    description: "Wrap long lines instead of scrolling horizontally."
-                                    checked: theme.wordWrap
-                                    onToggled: theme.wordWrap = checked
-                                }
-
-                                SettingRow {
-                                    title: "Bracket matching"
-                                    description: "Highlight matching brackets and quotes."
-                                    checked: theme.bracketMatching
-                                    onToggled: theme.bracketMatching = checked
-                                }
-
-                                SettingRow {
-                                    title: "Minimap"
-                                    description: "Display a compact code overview."
-                                    checked: theme.minimapVisible
-                                    onToggled: theme.minimapVisible = checked
-                                }
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Line Numbers Gutter"
+                                subtitle: "Display line numbers in editor gutter"
+                                checked: theme ? theme.enableLineNumbers : true
+                                onToggled: function(c) { if (theme) theme.enableLineNumbers = c; }
                             }
 
-                            // Font size
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Bracket Matching & Auto-Closing"
+                                subtitle: "Automatically insert closing brackets and quotes"
+                                checked: theme ? theme.enableBracketMatching : true
+                                onToggled: function(c) { if (theme) theme.enableBracketMatching = c; }
+                            }
+
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Word Wrap"
+                                subtitle: "Wrap long lines to fit within editor width"
+                                checked: theme ? theme.enableWordWrap : false
+                                onToggled: function(c) { if (theme) theme.enableWordWrap = c; }
+                            }
+
+                            // Font Size Stepper with Explicit Anchors
                             Rectangle {
-                                Layout.fillWidth: true
-                                height: 58
-                                radius: 8
-                                color: theme.bgCard
-                                border.color: theme.borderSubtle
+                                width: parent.width
+                                height: 52
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
                                 border.width: 1
 
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 14
-                                    anchors.rightMargin: 10
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-
-                                        Text {
-                                            text: "Editor font size"
-                                            color: theme.textPrimary
-                                            font.family: theme.uiFont
-                                            font.pixelSize: 11
-                                        }
-
-                                        Text {
-                                            text: "Current size: " + theme.editorFontSize + " px"
-                                            color: theme.textMuted
-                                            font.family: theme.uiFont
-                                            font.pixelSize: 9
-                                        }
-                                    }
-
-                                    SpinBox {
-                                        from: 10
-                                        to: 28
-                                        value: theme.editorFontSize
-
-                                        onValueChanged: {
-                                            theme.editorFontSize = value
-
-                                            if (editorArea)
-                                                editorArea.editorFontSize = value
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // ═════════════════════════════════════════════════════
-                        // MUSIC
-                        // ═════════════════════════════════════════════════════
-
-                        ColumnLayout {
-                            visible: settingsRoot.categoryVisible("Music")
-                            Layout.fillWidth: true
-                            spacing: 20
-
-                            ColumnLayout {
-                                spacing: 3
-
                                 Text {
-                                    text: "Music"
-                                    color: theme.textPrimary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 18
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Editor Font Size"
+                                    color: theme ? theme.textPrimary : "#cccccc"
+                                    font.pixelSize: 12
                                     font.bold: true
                                 }
 
-                                Text {
-                                    text: "Control playback visuals and the audio experience."
-                                    color: theme.textMuted
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 10
-                                }
-                            }
+                                Row {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
 
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 76
-                                radius: 9
-                                color: Qt.rgba(
-                                    Qt.color(theme.accentColor).r,
-                                    Qt.color(theme.accentColor).g,
-                                    Qt.color(theme.accentColor).b,
-                                    0.08
-                                )
-                                border.color: Qt.rgba(
-                                    Qt.color(theme.accentColor).r,
-                                    Qt.color(theme.accentColor).g,
-                                    Qt.color(theme.accentColor).b,
-                                    0.20
-                                )
-                                border.width: 1
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 14
-                                    spacing: 12
-
-                                    Text {
-                                        text: "♫"
-                                        color: theme.accentColor
-                                        font.pixelSize: 22
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 3
+                                    Rectangle {
+                                        width: 28
+                                        height: 28
+                                        radius: 3
+                                        color: theme ? theme.bgSurfaceHover : "#2a2d2e"
 
                                         Text {
-                                            text: "DGX Audio Engine"
-                                            color: theme.textPrimary
-                                            font.family: theme.uiFont
-                                            font.pixelSize: 11
+                                            anchors.centerIn: parent
+                                            text: "−"
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 14
                                             font.bold: true
                                         }
 
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (theme) theme.editorFontSize = Math.max(10, theme.editorFontSize - 1);
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 50
+                                        height: 28
+                                        color: "transparent"
+
                                         Text {
-                                            text: "FFmpeg PCM direct streaming"
-                                            color: theme.textSecondary
-                                            font.family: theme.uiFont
-                                            font.pixelSize: 9
+                                            anchors.centerIn: parent
+                                            text: (theme ? theme.editorFontSize : 13) + " px"
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 28
+                                        height: 28
+                                        radius: 3
+                                        color: theme ? theme.bgSurfaceHover : "#2a2d2e"
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "+"
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 14
+                                            font.bold: true
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (theme) theme.editorFontSize = Math.min(24, theme.editorFontSize + 1);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // 3. TERMINAL TAB
+                    // =========================================================
+                    ScrollView {
+                        id: terminalScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        Column {
+                            width: Math.max(380, terminalScroll.availableWidth)
+                            spacing: 14
+
+                            Text {
+                                text: "Terminal Settings"
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                            }
+
+                            Item { width: 1; height: 6 }
+
+                            Rectangle {
+                                width: parent.width
+                                height: 64
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
+                                border.width: 1
+
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 4
+
+                                    Text {
+                                        text: "Integrated Terminal: PowerShell / Windows Shell"
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        text: "Shortcut: Ctrl+` | Clear screen with 'clear' or 'cls'"
+                                        color: theme ? theme.textMuted : "#656565"
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // 4. SHORTCUTS TAB
+                    // =========================================================
+                    ScrollView {
+                        id: shortcutsScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        Column {
+                            width: Math.max(380, shortcutsScroll.availableWidth)
+                            spacing: 10
+
+                            RowLayout {
+                                width: parent.width
+                                spacing: 8
+
+                                Text {
+                                    text: "Keyboard Shortcuts"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                    Layout.fillWidth: true
+                                }
+
+                                // Reset All Shortcuts Button
+                                Rectangle {
+                                    width: 130
+                                    height: 26
+                                    radius: theme ? theme.radiusSm : 3
+                                    color: resetScMa.containsMouse ? (theme ? theme.bgSurfaceActive : "#37373d") : (theme ? theme.bgSurface : "#252526")
+                                    border.color: theme ? theme.borderNormal : "#333333"
+                                    border.width: 1
+
+                                    RowLayout {
+                                        anchors.centerIn: parent
+                                        spacing: 6
+
+                                        VectorIcon {
+                                            name: "undo"
+                                            size: 11
+                                            color: theme ? theme.accent : "#0078d4"
                                         }
 
                                         Text {
-                                            text: "YTMusic search backend"
-                                            color: theme.textMuted
-                                            font.family: theme.uiFont
-                                            font.pixelSize: 9
+                                            text: "Reset Defaults"
+                                            color: theme ? theme.textPrimary : "#cccccc"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: resetScMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (theme && theme.resetShortcuts) {
+                                                theme.resetShortcuts();
+                                            }
                                         }
                                     }
                                 }
                             }
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
-
-                                Text {
-                                    text: "PLAYBACK"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                    Layout.bottomMargin: 8
-                                }
-
-                                SettingRow {
-                                    title: "Reactive vinyl & visualizations"
-                                    description: "Allow the vinyl and visual effects to react to playback."
-                                    checked: theme.musicVisualizationsEnabled
-                                    onToggled: theme.musicVisualizationsEnabled = checked
-                                }
-
-                                SettingRow {
-                                    title: "Continuous vinyl rotation"
-                                    description: "Keep the record rotating while a song is playing."
-                                    checked: theme.animationsEnabled
-                                    onToggled: theme.animationsEnabled = checked
-                                }
+                            Text {
+                                text: "Click any shortcut box to edit its keybinding."
+                                color: theme ? theme.textMuted : "#656565"
+                                font.pixelSize: 11
                             }
+
+                            Item { width: 1; height: 4 }
+
+                            // Shortcut List Items
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Run Active File"
+                                subtitle: "Compile / execute active file in integrated terminal"
+                                currentShortcut: theme ? theme.shortcutRun : "F5"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutRun = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Format Document"
+                                subtitle: "Auto-format active code buffer according to language standard"
+                                currentShortcut: theme ? theme.shortcutFormat : "Shift+Alt+F"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutFormat = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Save File"
+                                subtitle: "Save modifications in active buffer to disk"
+                                currentShortcut: theme ? theme.shortcutSave : "Ctrl+S"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutSave = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Save As"
+                                subtitle: "Save active buffer with a new filename"
+                                currentShortcut: theme ? theme.shortcutSaveAs : "Ctrl+Shift+S"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutSaveAs = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Integrated Terminal"
+                                subtitle: "Show or hide bottom PowerShell / CMD terminal"
+                                currentShortcut: theme ? theme.shortcutToggleTerminal : "Ctrl+`"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleTerminal = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Explorer Panel"
+                                subtitle: "Show or hide left project file tree"
+                                currentShortcut: theme ? theme.shortcutToggleExplorer : "Ctrl+B"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleExplorer = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Find in Buffer"
+                                subtitle: "Search for text matching query in active editor"
+                                currentShortcut: theme ? theme.shortcutFind : "Ctrl+F"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutFind = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Find & Replace"
+                                subtitle: "Search and replace occurrences in active editor"
+                                currentShortcut: theme ? theme.shortcutReplace : "Ctrl+H"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutReplace = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "New File"
+                                subtitle: "Create an empty unsaved document tab"
+                                currentShortcut: theme ? theme.shortcutNewFile : "Ctrl+N"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutNewFile = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Open File"
+                                subtitle: "Open an existing source code file"
+                                currentShortcut: theme ? theme.shortcutOpenFile : "Ctrl+O"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutOpenFile = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Open Workspace Folder"
+                                subtitle: "Open directory in project explorer tree"
+                                currentShortcut: theme ? theme.shortcutOpenFolder : "Ctrl+Shift+O"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutOpenFolder = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Close Tab"
+                                subtitle: "Close currently active document tab"
+                                currentShortcut: theme ? theme.shortcutCloseTab : "Ctrl+W"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutCloseTab = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Zen Focus Mode"
+                                subtitle: "Hide all sidebars and chrome for distraction-free coding"
+                                currentShortcut: theme ? theme.shortcutZenMode : "Ctrl+Shift+Z"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutZenMode = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle AI Assistant"
+                                subtitle: "Open or close AI coding assistant panel"
+                                currentShortcut: theme ? theme.shortcutToggleAI : "Ctrl+Shift+A"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleAI = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Music Player"
+                                subtitle: "Open or close music player streaming panel"
+                                currentShortcut: theme ? theme.shortcutToggleMusic : "Ctrl+Shift+M"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleMusic = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Line Comment"
+                                subtitle: "Comment or uncomment current line / selection"
+                                currentShortcut: theme ? theme.shortcutComment : "Ctrl+/"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutComment = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Whiteboard Architecture Canvas"
+                                subtitle: "Open or close visual architecture design & plan canvas"
+                                currentShortcut: theme ? theme.shortcutWhiteboard : "Ctrl+Alt+W"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutWhiteboard = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Preferences / Settings"
+                                subtitle: "Open IDE Preferences modal"
+                                currentShortcut: theme ? theme.shortcutSettings : "Ctrl+,"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutSettings = val; }
+                            }
+
+                            Item { width: 1; height: 16 }
                         }
+                    }
 
-                        // ═════════════════════════════════════════════════════
-                        // GENERAL
-                        // ═════════════════════════════════════════════════════
+                    // =========================================================
+                    // 5. SEARCH RESULTS TAB
+                    // =========================================================
+                    ScrollView {
+                        id: searchScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                        ColumnLayout {
-                            visible: settingsRoot.categoryVisible("General")
-                            Layout.fillWidth: true
-                            spacing: 20
+                        Column {
+                            width: Math.max(380, searchScroll.availableWidth)
+                            spacing: 12
 
-                            ColumnLayout {
-                                spacing: 3
+                            RowLayout {
+                                width: parent.width
+                                spacing: 8
 
                                 Text {
-                                    text: "General"
-                                    color: theme.textPrimary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 18
+                                    text: "Search Results"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 15
                                     font.bold: true
+                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
                                 }
 
                                 Text {
-                                    text: "Workspace and application preferences."
-                                    color: theme.textMuted
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 10
+                                    text: "for '" + root.searchQuery + "'"
+                                    color: theme ? theme.accent : "#0078d4"
+                                    font.pixelSize: 13
+                                    font.italic: true
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
                                 }
                             }
 
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
+                            Item { width: 1; height: 4 }
 
-                                Text {
-                                    text: "WORKSPACE"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                    Layout.bottomMargin: 8
-                                }
-
-                                SettingRow {
-                                    title: "Auto-save files on close"
-                                    description: "Save modified files before closing the workspace."
-                                    checked: true
-                                }
-
-                                SettingRow {
-                                    title: "Remember workspace"
-                                    description: "Restore the previous workspace when DGX Studio starts."
-                                    checked: true
+                            // 1. AI Assistant (Beta)
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("AI Assistant (Beta)", "ChatGPT AI code assistant smart debugging inline chat workspace")
+                                title: "AI Assistant (Beta)"
+                                subtitle: "Enable ChatGPT AI code assistant, smart debugging, and workspace panel"
+                                checked: theme ? theme.enableAI : true
+                                onToggled: function(c) {
+                                    if (theme) {
+                                        theme.enableAI = c;
+                                        theme.saveSettings();
+                                    }
                                 }
                             }
 
+                            // 2. HTML File Run Target
                             Rectangle {
-                                Layout.fillWidth: true
-                                height: 1
-                                color: theme.borderSubtle
+                                width: parent.width
+                                height: 72
+                                visible: root.matchesSearch("HTML File Run Target", "html htm run action radial menu f5 browser built-in live preview sandbox")
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
+                                border.width: 1
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 6
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: "HTML File Run Action (Radial Menu / F5)"
+                                            color: theme ? theme.textPrimary : "#cccccc"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 28
+                                            radius: 3
+                                            color: (!theme || theme.htmlRunTarget === "built_in") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#1e1e1e")
+                                            border.color: (!theme || theme.htmlRunTarget === "built_in") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 6
+                                                VectorIcon { anchors.verticalCenter: parent.verticalCenter; name: "sparkles"; size: 10; color: "#ffffff" }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "Built-in Live Preview Tab"
+                                                    color: (!theme || theme.htmlRunTarget === "built_in") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                                    font.pixelSize: 11
+                                                    font.bold: (!theme || theme.htmlRunTarget === "built_in")
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (theme) {
+                                                        theme.htmlRunTarget = "built_in";
+                                                        theme.saveSettings();
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 28
+                                            radius: 3
+                                            color: (theme && theme.htmlRunTarget === "browser") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#1e1e1e")
+                                            border.color: (theme && theme.htmlRunTarget === "browser") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 6
+                                                VectorIcon { anchors.verticalCenter: parent.verticalCenter; name: "code"; size: 10; color: "#ffffff" }
+                                                Text {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: "Default Web Browser"
+                                                    color: (theme && theme.htmlRunTarget === "browser") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                                    font.pixelSize: 11
+                                                    font.bold: (theme && theme.htmlRunTarget === "browser")
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (theme) {
+                                                        theme.htmlRunTarget = "browser";
+                                                        theme.saveSettings();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
-                            ColumnLayout {
-                                spacing: 3
+                            // 3. Right-Click Context Menu Style
+                            Rectangle {
+                                width: parent.width
+                                height: 56
+                                visible: root.matchesSearch("Right-Click Context Menu", "radial hold and drag gesture standard popup menu mouse")
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#282828"
+                                border.width: 1
 
-                                Text {
-                                    text: "DGX Studio"
-                                    color: theme.textSecondary
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 11
-                                    font.bold: true
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 3
+
+                                    Text {
+                                        text: "Right-Click Context Menu"
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        text: "Choose radial gesture or classic popup menu"
+                                        color: theme ? theme.textMuted : "#656565"
+                                        font.pixelSize: 10
+                                    }
                                 }
 
-                                Text {
-                                    text: "v2.0  •  PySide6 + QML"
-                                    color: theme.textMuted
-                                    font.family: theme.uiFont
-                                    font.pixelSize: 9
+                                Row {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 8
+
+                                    Rectangle {
+                                        width: 82
+                                        height: 30
+                                        radius: 3
+                                        color: (theme && theme.contextMenuStyle === "radial") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgSurfaceHover : "#2a2d2e")
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Radial"
+                                            color: (theme && theme.contextMenuStyle === "radial") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                            font.pixelSize: 11
+                                            font.bold: (theme && theme.contextMenuStyle === "radial")
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: { if (theme) theme.contextMenuStyle = "radial"; }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 82
+                                        height: 30
+                                        radius: 3
+                                        color: (theme && theme.contextMenuStyle === "standard") ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgSurfaceHover : "#2a2d2e")
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Standard"
+                                            color: (theme && theme.contextMenuStyle === "standard") ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                            font.pixelSize: 11
+                                            font.bold: (theme && theme.contextMenuStyle === "standard")
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: { if (theme) theme.contextMenuStyle = "standard"; }
+                                        }
+                                    }
                                 }
                             }
-                        }
 
-                        Item {
-                            Layout.preferredHeight: 12
+                            // 4. Smooth Animations
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Smooth UI Animations", "state transitions micro-interactions speed")
+                                title: "Smooth UI Animations"
+                                subtitle: "Enable smooth state transitions and micro-interactions"
+                                checked: theme ? theme.enableAnimations : true
+                                onToggled: function(c) { if (theme) theme.enableAnimations = c; }
+                            }
+
+                            // 5. Vinyl Spin Animation
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Vinyl Spin Animation", "rotate record cover music playback spinning")
+                                title: "Vinyl Spin Animation"
+                                subtitle: "Rotate vinyl record cover during music playback"
+                                checked: theme ? theme.enableVinylAnimation : true
+                                onToggled: function(c) { if (theme) theme.enableVinylAnimation = c; }
+                            }
+
+                            // 6. Code Minimap
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Code Minimap", "overview scroll minimap right edge code preview")
+                                title: "Code Minimap"
+                                subtitle: "Display live code overview scroll minimap on the right edge"
+                                checked: theme ? theme.enableMinimap : true
+                                onToggled: function(c) { if (theme) theme.enableMinimap = c; }
+                            }
+
+                            // 7. Line Numbers
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Line Numbers Gutter", "display line numbers in editor gutter margin")
+                                title: "Line Numbers Gutter"
+                                subtitle: "Display line numbers in editor gutter"
+                                checked: theme ? theme.enableLineNumbers : true
+                                onToggled: function(c) { if (theme) theme.enableLineNumbers = c; }
+                            }
+
+                            // 8. Bracket Matching
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Bracket Matching", "auto-closing quotes parenthesis curly brackets tags")
+                                title: "Bracket Matching & Auto-Closing"
+                                subtitle: "Automatically insert closing brackets and quotes"
+                                checked: theme ? theme.enableBracketMatching : true
+                                onToggled: function(c) { if (theme) theme.enableBracketMatching = c; }
+                            }
+
+                            // 9. Word Wrap
+                            SettingToggleItem {
+                                width: parent.width
+                                visible: root.matchesSearch("Word Wrap", "wrap long lines fit editor width")
+                                title: "Word Wrap"
+                                subtitle: "Wrap long lines to fit within editor width"
+                                checked: theme ? theme.enableWordWrap : false
+                                onToggled: function(c) { if (theme) theme.enableWordWrap = c; }
+                            }
+
+                            // 10. Searchable Keyboard Shortcuts
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Run Active File", "execute compile terminal runner f5")
+                                title: "Run Active File"
+                                subtitle: "Compile / execute active file in integrated terminal"
+                                currentShortcut: theme ? theme.shortcutRun : "F5"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutRun = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Format Document", "prettify beautify indent language code formatting")
+                                title: "Format Document"
+                                subtitle: "Auto-format active code buffer according to language standard"
+                                currentShortcut: theme ? theme.shortcutFormat : "Shift+Alt+F"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutFormat = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Save File", "save buffer to disk write")
+                                title: "Save File"
+                                subtitle: "Save modifications in active buffer to disk"
+                                currentShortcut: theme ? theme.shortcutSave : "Ctrl+S"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutSave = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Save As", "save active buffer new filename")
+                                title: "Save As"
+                                subtitle: "Save active buffer with a new filename"
+                                currentShortcut: theme ? theme.shortcutSaveAs : "Ctrl+Shift+S"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutSaveAs = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Toggle Integrated Terminal", "terminal powershell bash prompt")
+                                title: "Toggle Integrated Terminal"
+                                subtitle: "Show or hide bottom PowerShell / CMD terminal"
+                                currentShortcut: theme ? theme.shortcutToggleTerminal : "Ctrl+`"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleTerminal = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Toggle Explorer Panel", "file tree project sidebar")
+                                title: "Toggle Explorer Panel"
+                                subtitle: "Show or hide left project file tree"
+                                currentShortcut: theme ? theme.shortcutToggleExplorer : "Ctrl+B"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleExplorer = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Find in Buffer", "search find text occurrences")
+                                title: "Find in Buffer"
+                                subtitle: "Search for text matching query in active editor"
+                                currentShortcut: theme ? theme.shortcutFind : "Ctrl+F"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutFind = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Find & Replace", "replace text occurrences buffer")
+                                title: "Find & Replace"
+                                subtitle: "Search and replace occurrences in active editor"
+                                currentShortcut: theme ? theme.shortcutReplace : "Ctrl+H"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutReplace = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("New File", "create unsaved empty document")
+                                title: "New File"
+                                subtitle: "Create an empty unsaved document tab"
+                                currentShortcut: theme ? theme.shortcutNewFile : "Ctrl+N"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutNewFile = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Open File", "open existing source code document")
+                                title: "Open File"
+                                subtitle: "Open an existing source code file"
+                                currentShortcut: theme ? theme.shortcutOpenFile : "Ctrl+O"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutOpenFile = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Toggle AI Assistant", "chatgpt ai coding assistant smart chat")
+                                title: "Toggle AI Assistant"
+                                subtitle: "Open or close AI coding assistant panel"
+                                currentShortcut: theme ? theme.shortcutToggleAI : "Ctrl+Shift+A"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleAI = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Toggle Music Player", "music audio stream lo-fi synthwave")
+                                title: "Toggle Music Player"
+                                subtitle: "Open or close music player streaming panel"
+                                currentShortcut: theme ? theme.shortcutToggleMusic : "Ctrl+Shift+M"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutToggleMusic = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Toggle Line Comment", "comment uncomment code lines")
+                                title: "Toggle Line Comment"
+                                subtitle: "Comment or uncomment current line / selection"
+                                currentShortcut: theme ? theme.shortcutComment : "Ctrl+/"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutComment = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                visible: root.matchesSearch("Whiteboard Architecture Canvas", "visual diagram architecture canvas plan drawings")
+                                title: "Whiteboard Architecture Canvas"
+                                subtitle: "Open or close visual architecture design & plan canvas"
+                                currentShortcut: theme ? theme.shortcutWhiteboard : "Ctrl+Alt+W"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutWhiteboard = val; }
+                            }
+
+                            Item { width: 1; height: 16 }
                         }
                     }
                 }
@@ -956,68 +1450,159 @@ Popup {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // REUSABLE SETTING ROW
-    // ═════════════════════════════════════════════════════════════════════════
-
-    component SettingRow: Rectangle {
-        id: settingRow
-
+    // Component: SettingToggleItem with Clean Spacing & Anchors
+    component SettingToggleItem: Rectangle {
         property string title: ""
-        property string description: ""
+        property string subtitle: ""
         property bool checked: false
+        signal toggled(bool c)
 
-        signal toggled(bool checked)
+        height: subtitle ? 54 : 44
+        radius: theme ? theme.radiusSm : 4
+        color: theme ? theme.bgSurface : "#252526"
+        border.color: theme ? theme.borderSubtle : "#282828"
+        border.width: 1
 
-        Layout.fillWidth: true
-        height: 64
+        Column {
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            anchors.right: pillSwitch.left
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
 
-        color: rowMouse.containsMouse
-               ? theme.bgHover
-               : "transparent"
-
-        radius: 8
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 10
-            spacing: 12
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 3
-
-                Text {
-                    text: settingRow.title
-                    color: theme.textPrimary
-                    font.family: theme.uiFont
-                    font.pixelSize: 11
-                }
-
-                Text {
-                    text: settingRow.description
-                    color: theme.textMuted
-                    font.family: theme.uiFont
-                    font.pixelSize: 9
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
+            Text {
+                text: title
+                color: theme ? theme.textPrimary : "#cccccc"
+                font.pixelSize: 12
+                font.bold: true
+                elide: Text.ElideRight
+                width: parent.width
             }
 
-            Switch {
-                checked: settingRow.checked
-
-                onToggled: settingRow.toggled(checked)
+            Text {
+                text: subtitle
+                color: theme ? theme.textMuted : "#656565"
+                font.pixelSize: 10
+                visible: subtitle.length > 0
+                elide: Text.ElideRight
+                width: parent.width
             }
         }
 
-        MouseArea {
-            id: rowMouse
+        // Animated Pill Switch
+        Rectangle {
+            id: pillSwitch
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            width: 40
+            height: 22
+            radius: 11
+            color: checked ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+
+            Behavior on color {
+                ColorAnimation { duration: 120 }
+            }
+
+            Rectangle {
+                width: 18
+                height: 18
+                radius: 9
+                color: "#ffffff"
+                x: checked ? 20 : 2
+                anchors.verticalCenter: parent.verticalCenter
+
+                Behavior on x {
+                    NumberAnimation { duration: 120 }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: toggled(!checked)
+            }
+        }
+    }
+
+    // Component: ShortcutSettingRow with Interactive Keybinding Input
+    component ShortcutSettingRow: Rectangle {
+        id: scRow
+        property string title: ""
+        property string subtitle: ""
+        property string currentShortcut: ""
+        signal shortcutChanged(string val)
+
+        height: 48
+        radius: theme ? theme.radiusSm : 4
+        color: theme ? theme.bgSurface : "#252526"
+        border.color: theme ? theme.borderSubtle : "#282828"
+        border.width: 1
+
+        RowLayout {
             anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            z: -1
+            anchors.leftMargin: 16
+            anchors.rightMargin: 16
+            spacing: 12
+
+            Column {
+                Layout.fillWidth: true
+                spacing: 2
+
+                Text {
+                    text: scRow.title
+                    color: theme ? theme.textPrimary : "#cccccc"
+                    font.pixelSize: 12
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+
+                Text {
+                    text: scRow.subtitle
+                    color: theme ? theme.textMuted : "#656565"
+                    font.pixelSize: 10
+                    elide: Text.ElideRight
+                }
+            }
+
+            // Shortcut Keybinding Badge / Input
+            Rectangle {
+                width: 110
+                height: 26
+                radius: 3
+                color: scInput.activeFocus ? (theme ? theme.bgSurfaceActive : "#37373d") : (theme ? theme.bgInput : "#1e1e1e")
+                border.color: scInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+                border.width: 1
+
+                TextInput {
+                    id: scInput
+                    anchors.fill: parent
+                    anchors.leftMargin: 6
+                    anchors.rightMargin: 6
+                    verticalAlignment: TextInput.AlignVCenter
+                    horizontalAlignment: TextInput.AlignHCenter
+                    text: scRow.currentShortcut
+                    color: theme ? theme.textBright : "#ffffff"
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.family: theme ? theme.fontFamilyMono : "monospace"
+                    selectByMouse: true
+
+                    onEditingFinished: {
+                        if (scInput.text.trim()) {
+                            scRow.shortcutChanged(scInput.text.trim());
+                        }
+                    }
+
+                    onAccepted: {
+                        if (scInput.text.trim()) {
+                            scRow.shortcutChanged(scInput.text.trim());
+                        }
+                        scInput.focus = false;
+                    }
+                }
+            }
         }
     }
 }

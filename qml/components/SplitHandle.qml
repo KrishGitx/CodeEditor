@@ -1,137 +1,50 @@
 import QtQuick 2.15
 
-// Minimal draggable workspace splitter.
-// Public API preserved:
-//   orientation
-//   isHovered
-//   isDragging
-//   dragged(delta)
+Item {
+    id: root
 
-Rectangle {
-    id: splitHandle
+    // Orientation: Qt.Horizontal (divides left/right, drags X) or Qt.Vertical (divides top/bottom, drags Y)
+    property int orientation: Qt.Horizontal
+    property real thickness: 4
+    property color dividerLineColor: theme ? theme.borderSubtle : "#282828"
+    property color hoverColor: theme ? theme.accent : "#0078d4"
 
-    property string orientation: "horizontal"
-    property bool isHovered: hoverArea.containsMouse
-    property bool isDragging: dragArea.pressed
+    signal moved(real delta)
+    property bool enabled: true
 
-    signal dragged(real delta)
+    width: orientation === Qt.Horizontal ? thickness : undefined
+    height: orientation === Qt.Vertical ? thickness : undefined
 
-    width: orientation === "horizontal" ? 6 : parent.width
-    height: orientation === "vertical" ? 6 : parent.height
-
-    // The splitter itself is transparent.
-    // Only the single center line is visible.
-    color: "transparent"
-
-    readonly property bool horizontalDrag:
-        orientation === "horizontal"
-
-    // Invisible enlarged hit target.
-    // This keeps resizing easy without making the UI look bulky.
-    MouseArea {
-        id: hoverArea
-
-        anchors.fill: parent
-        anchors.margins: -5
-
-        hoverEnabled: true
-        acceptedButtons: Qt.NoButton
-
-        cursorShape: splitHandle.horizontalDrag
-                     ? Qt.SplitHCursor
-                     : Qt.SplitVCursor
-
-        z: 1
-    }
-
-    // One subtle divider — no box, no grip, no second border.
+    // Exact 1px divider line
     Rectangle {
-        id: visualLine
-
+        id: line
         anchors.centerIn: parent
-
-        width: splitHandle.horizontalDrag
-               ? 0
-               : Math.max(0, parent.width)
-
-        height: splitHandle.horizontalDrag
-                ? Math.max(0, parent.height)
-                : 0
-
-        color: splitHandle.isDragging
-               ? theme.splitterHover
-               : splitHandle.isHovered
-                 ? Qt.lighter(theme.splitterLine, 1.25)
-                 : theme.splitterLine
-
-        opacity: splitHandle.isDragging
-                 ? 1.0
-                 : splitHandle.isHovered
-                   ? 0.9
-                   : 0.55
-
-        Behavior on color {
-            enabled: theme.animationsEnabled
-            ColorAnimation {
-                duration: theme.animFast
-            }
-        }
-
-        Behavior on opacity {
-            enabled: theme.animationsEnabled
-            NumberAnimation {
-                duration: theme.animFast
-            }
-        }
+        width: root.orientation === Qt.Horizontal ? 1 : parent.width
+        height: root.orientation === Qt.Vertical ? 1 : parent.height
+        color: (mouseArea.containsMouse || mouseArea.pressed) ? root.hoverColor : root.dividerLineColor
     }
 
-    // Separate drag area so hover detection and dragging don't fight.
     MouseArea {
-        id: dragArea
-
+        id: mouseArea
         anchors.fill: parent
-        anchors.margins: -5
+        hoverEnabled: root.enabled
+        enabled: root.enabled
+        cursorShape: root.orientation === Qt.Horizontal ? Qt.SplitHCursor : Qt.SplitVCursor
 
-        cursorShape: splitHandle.horizontalDrag
-                     ? Qt.SplitHCursor
-                     : Qt.SplitVCursor
-
-        preventStealing: true
-        propagateComposedEvents: false
-
-        property real lastGlobalPosition: 0
+        property real startPos: 0
 
         onPressed: function(mouse) {
-            var p = splitHandle.mapToItem(null, mouse.x, mouse.y)
-
-            lastGlobalPosition =
-                splitHandle.horizontalDrag ? p.x : p.y
+            startPos = (root.orientation === Qt.Horizontal) ? mouse.x : mouse.y;
         }
 
         onPositionChanged: function(mouse) {
-            if (!pressed)
-                return
-
-            var p = splitHandle.mapToItem(null, mouse.x, mouse.y)
-
-            var currentPosition =
-                splitHandle.horizontalDrag ? p.x : p.y
-
-            var delta =
-                currentPosition - lastGlobalPosition
-
-            if (Math.abs(delta) >= 0.5) {
-                splitHandle.dragged(delta)
-                lastGlobalPosition = currentPosition
+            if (pressed) {
+                var currentPos = (root.orientation === Qt.Horizontal) ? mouse.x : mouse.y;
+                var delta = currentPos - startPos;
+                if (Math.abs(delta) > 0.5) {
+                    root.moved(delta);
+                }
             }
-        }
-
-        onReleased: {
-            lastGlobalPosition = 0
-        }
-
-        onCanceled: {
-            lastGlobalPosition = 0
         }
     }
 }

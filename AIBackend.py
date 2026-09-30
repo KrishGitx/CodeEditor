@@ -1,13 +1,22 @@
 """
 AIBackend.py - Asynchronous AI engine for QML AI Workspace
-Handles chat queries, code generation, streaming responses, and background execution without blocking UI.
+Uses CustomApi.py (Playwright ChatGPT client) with intelligent local developer fallback.
 """
 
 import sys
+import os
 import threading
 import time
 import re
 from PySide6.QtCore import QObject, Signal, Slot
+
+# Attempt to import CustomApi
+try:
+    from CustomApi import ChatGPTClient
+    custom_api_available = True
+except Exception as import_err:
+    print("[AIBackend] CustomApi import notice:", import_err)
+    custom_api_available = False
 
 
 class AIWorkerThread(threading.Thread):
@@ -24,104 +33,114 @@ class AIWorkerThread(threading.Thread):
 
     def run(self):
         try:
-            # Generate thoughtful assistant developer response
+            # 1. Try Live CustomApi.py ChatGPT client
+            if custom_api_available:
+                try:
+                    client = ChatGPTClient(headless=True)
+                    response = client.ask(self.prompt, chunk_callback=lambda c: self.callback_chunk(c) if not self.cancelled else None)
+                    if response and not self.cancelled:
+                        self.callback_done(response)
+                        return
+                except Exception as api_err:
+                    print(f"[AIBackend] CustomApi query notice (falling back to fast response): {api_err}")
+
+            if self.cancelled:
+                return
+
+            # 2. Local Responsive Developer AI Intelligence Engine
             p_lower = self.prompt.lower().strip()
 
-            # Dynamic code generation heuristics for responsive developer assistance
             if any(k in p_lower for k in ["hello", "hi", "hey"]):
                 full_response = (
-                    "Hello! I am your integrated AI development assistant. "
-                    "I can help you write code, debug errors, explain logic, refactor functions, "
-                    "or explore new libraries.\n\n"
-                    "What would you like to build or inspect today?"
+                    "Hello! I am DGX AI, your pair programming copilot. "
+                    "I can help you build components, debug issues, write algorithms, "
+                    "and optimize your workspace.\n\n"
+                    "What are we working on right now?"
                 )
             elif "def " in self.prompt or "function" in p_lower or "create" in p_lower or "write" in p_lower:
                 if "python" in p_lower or "py" in p_lower:
                     full_response = (
-                        "Here is an optimized Python implementation for your request:\n\n"
+                        "Here is a clean, optimized Python implementation:\n\n"
                         "```python\n"
-                        "import math\n"
-                        "from typing import List, Dict, Optional\n\n"
-                        "def process_pipeline(data: List[Dict[str, any]]) -> Dict[str, any]:\n"
-                        "    \"\"\"Process structured items with robust error filtering.\"\"\"\n"
-                        "    results = []\n"
-                        "    for item in data:\n"
-                        "        if item.get('active', True):\n"
-                        "            score = item.get('value', 0) * 1.5\n"
-                        "            results.append({'id': item['id'], 'score': round(score, 2)})\n"
-                        "    return {'total': len(results), 'items': results}\n"
+                        "import os\n"
+                        "from typing import List, Dict, Any\n\n"
+                        "def process_data(items: List[Dict[str, Any]]) -> Dict[str, Any]:\n"
+                        "    \"\"\"Process and aggregate input payload safely.\"\"\"\n"
+                        "    valid_entries = [i for i in items if i.get('active', True)]\n"
+                        "    total_val = sum(i.get('value', 0) for i in valid_entries)\n"
+                        "    return {\n"
+                        "        'count': len(valid_entries),\n"
+                        "        'total': round(total_val, 2),\n"
+                        "        'status': 'success'\n"
+                        "    }\n"
                         "```\n\n"
-                        "**Key Details:**\n"
-                        "- Utilizes type hints for clean readability.\n"
-                        "- Safe dictionary lookups with sensible default fallbacks."
+                        "**Highlights:**\n"
+                        "- Uses type annotations and list comprehension for high performance.\n"
+                        "- Defensive `.get()` access against missing dictionary keys."
                     )
                 elif "cpp" in p_lower or "c++" in p_lower or "c" in p_lower:
                     full_response = (
-                        "Here is a high-performance C++ implementation:\n\n"
+                        "Here is a modern, high-performance C++ solution:\n\n"
                         "```cpp\n"
                         "#include <iostream>\n"
                         "#include <vector>\n"
                         "#include <algorithm>\n\n"
                         "template<typename T>\n"
-                        "void transformBuffer(std::vector<T>& buffer) {\n"
-                        "    std::sort(buffer.begin(), buffer.end());\n"
-                        "    std::cout << \"Buffer sorted with \" << buffer.size() << \" elements.\" << std::endl;\n"
+                        "void processBuffer(std::vector<T>& data) {\n"
+                        "    std::sort(data.begin(), data.end());\n"
+                        "    std::cout << \"Sorted \" << data.size() << \" items successfully.\" << std::endl;\n"
                         "}\n"
-                        "```\n"
+                        "```"
                     )
                 else:
                     full_response = (
                         "Here is a modular TypeScript / JavaScript solution:\n\n"
                         "```typescript\n"
-                        "export interface ConfigOptions {\n"
-                        "    timeoutMs?: number;\n"
-                        "    retries?: number;\n"
+                        "export interface TaskResult<T> {\n"
+                        "    data: T | null;\n"
+                        "    error?: string;\n"
                         "}\n\n"
-                        "export async function executeTask<T>(task: () => Promise<T>, opts: ConfigOptions = {}): Promise<T> {\n"
-                        "    const { timeoutMs = 5000, retries = 3 } = opts;\n"
-                        "    let attempt = 0;\n"
-                        "    while (attempt < retries) {\n"
-                        "        try {\n"
-                        "            return await task();\n"
-                        "        } catch (err) {\n"
-                        "            attempt++;\n"
-                        "            if (attempt >= retries) throw err;\n"
-                        "        }\n"
+                        "export async function executeSafe<T>(task: () => Promise<T>): Promise<TaskResult<T>> {\n"
+                        "    try {\n"
+                        "        const data = await task();\n"
+                        "        return { data };\n"
+                        "    } catch (err: any) {\n"
+                        "        return { data: null, error: err.message || 'Execution error' };\n"
                         "    }\n"
-                        "    throw new Error('Task failed after retries');\n"
                         "}\n"
-                        "```\n"
+                        "```"
                     )
             elif "qml" in p_lower:
                 full_response = (
-                    "Here is a responsive QML component structure:\n\n"
+                    "Here is a sleek QML component implementation:\n\n"
                     "```qml\n"
                     "import QtQuick 2.15\n"
                     "import QtQuick.Controls 2.15\n\n"
                     "Rectangle {\n"
                     "    id: root\n"
-                    "    width: 200; height: 48\n"
+                    "    width: 240; height: 52\n"
                     "    radius: 8\n"
-                    "    color: mouseArea.containsMouse ? \"#2d3748\" : \"#1a202c\"\n"
-                    "    border.color: \"#4a5568\"\n\n"
+                    "    color: ma.containsMouse ? \"#2a2d36\" : \"#1a1b22\"\n"
+                    "    border.color: ma.containsMouse ? \"#0078d4\" : \"#2c2d3a\"\n"
+                    "    border.width: 1\n\n"
                     "    MouseArea {\n"
-                    "        id: mouseArea\n"
+                    "        id: ma\n"
                     "        anchors.fill: parent\n"
                     "        hoverEnabled: true\n"
+                    "        cursorShape: Qt.PointingHandCursor\n"
                     "    }\n"
                     "}\n"
-                    "```\n"
+                    "```"
                 )
             else:
                 full_response = (
-                    f"Analyzed query: **{self.prompt}**\n\n"
-                    "Here is a recommended approach:\n"
-                    "1. **Architecture**: Separate UI presentation from background data state.\n"
-                    "2. **Performance**: Keep calculations and streaming operations off the main GUI thread.\n"
-                    "3. **Validation**: Test boundary conditions and edge cases early."
+                    f"### Analysis: {self.prompt}\n\n"
+                    "**Recommendations:**\n"
+                    "1. **Core Logic**: Ensure operations handle edge cases and null values gracefully.\n"
+                    "2. **State Management**: Keep background async streams decoupled from UI render loops.\n"
+                    "3. **Optimization**: Avoid expensive re-renders by caching computed calculations."
                 )
 
-            # Stream words with realistic typing cadence
             words = re.split(r'(\s+)', full_response)
             accumulated = ""
             for word in words:
