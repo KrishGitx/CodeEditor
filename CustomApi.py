@@ -114,6 +114,20 @@ class ChatGPTClient:
                         init_browser()
                     result_holder["success"] = self.is_connected
 
+                elif action == "reset":
+                    if page and not page.is_closed():
+                        try:
+                            new_chat_btn = page.locator('a[href="/"], a[data-testid="new-chat-button"], button[aria-label="New chat"]').first
+                            if new_chat_btn.count() > 0 and new_chat_btn.is_visible():
+                                new_chat_btn.click()
+                            else:
+                                page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=15000)
+                            time.sleep(1.0)
+                            dismiss_modals(page)
+                        except Exception as e:
+                            print(f"[CustomApi] Reset conversation notice: {e}")
+                    result_holder["success"] = True
+
                 elif action == "ask":
                     prompt = args.get("prompt", "")
                     chunk_callback = args.get("chunk_callback", None)
@@ -221,6 +235,13 @@ class ChatGPTClient:
         self._task_queue.put(("connect", {}, result_holder, done_event))
         done_event.wait(timeout=50.0)
         return result_holder.get("success", False)
+
+    def reset(self):
+        result_holder = {}
+        done_event = threading.Event()
+        self._task_queue.put(("reset", {}, result_holder, done_event))
+        done_event.wait(timeout=15.0)
+        return result_holder.get("success", True)
 
     def ask(self, prompt, chunk_callback=None):
         result_holder = {}

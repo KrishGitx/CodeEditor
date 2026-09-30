@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import QtWebEngine 1.15
 import "."
 
 Rectangle {
@@ -9,7 +10,7 @@ Rectangle {
     property string htmlContent: ""
     property string sourcePath: ""
     property string activeUrl: "http://localhost:3000"
-    property string previewMode: "desktop" // "desktop", "tablet", "mobile"
+    property string previewMode: "desktop" // "desktop", "mobile"
     property bool isMarkdown: false
 
     signal closeRequested()
@@ -17,10 +18,64 @@ Rectangle {
     color: theme ? theme.bgEditor : "#1e1e1e"
     clip: true
 
+    onHtmlContentChanged: updatePreview()
+    onSourcePathChanged: updatePreview()
+    onIsMarkdownChanged: updatePreview()
+
     function setContent(content, isMd, path) {
         root.htmlContent = content || "";
         root.isMarkdown = !!isMd;
         if (path !== undefined) root.sourcePath = path;
+        updatePreview();
+    }
+
+    function getBaseUrl() {
+        if (root.sourcePath && root.sourcePath.indexOf("://") === -1) {
+            var folder = root.sourcePath.replace(/\\/g, "/");
+            var lastSlash = folder.lastIndexOf("/");
+            if (lastSlash !== -1) {
+                folder = folder.substring(0, lastSlash + 1);
+            }
+            return "file:///" + folder;
+        }
+        return "http://localhost/";
+    }
+
+    function getRenderHtml() {
+        if (!root.htmlContent || root.htmlContent.trim().length === 0) {
+            return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" +
+                   "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #121212; color: #888; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }" +
+                   "h2 { color: #fff; margin-bottom: 8px; font-size: 20px; font-weight: 600; }" +
+                   "p { max-width: 420px; font-size: 13px; line-height: 1.6; color: #999; }" +
+                   ".badge { background: #0078d420; color: #0078d4; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; border: 1px solid #0078d440; margin-bottom: 12px; }" +
+                   "</style></head><body>" +
+                   "<div class='badge'>Chromium Engine Active</div>" +
+                   "<h2>Live Web & HTML Sandbox</h2>" +
+                   "<p>Edit HTML, CSS, JavaScript, or Markdown to see instant pixel-perfect hot-reloading.</p>" +
+                   "</body></html>";
+        }
+        if (root.isMarkdown) {
+            var md = root.htmlContent;
+            var formatted = md
+                .replace(/^### (.*$)/gim, '<h3 style="color:#0078d4; margin-top:20px;">$1</h3>')
+                .replace(/^## (.*$)/gim, '<h2 style="color:#0078d4; border-bottom:1px solid #e2e8f0; padding-bottom:6px; margin-top:24px;">$1</h2>')
+                .replace(/^# (.*$)/gim, '<h1 style="color:#0f172a; border-bottom:2px solid #0078d4; padding-bottom:10px; margin-top:14px;">$1</h1>')
+                .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
+                .replace(/\*(.*)\*/gim, '<em>$1</em>')
+                .replace(/`([^`]+)`/gim, '<code style="background:#f1f5f9; color:#e11d48; padding:2px 6px; border-radius:4px; font-family:monospace;">$1</code>')
+                .replace(/\n/gim, '<br>');
+            return "<!DOCTYPE html><html><head><meta charset='utf-8'><style>" +
+                   "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ffffff; color: #1e293b; padding: 24px; margin: 0; line-height: 1.6; font-size: 14px; }" +
+                   "pre { background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }" +
+                   "</style></head><body>" + formatted + "</body></html>";
+        }
+        return root.htmlContent;
+    }
+
+    function updatePreview() {
+        if (typeof webEngineView !== "undefined" && webEngineView) {
+            webEngineView.loadHtml(getRenderHtml(), getBaseUrl());
+        }
     }
 
     function openInBrowser() {
@@ -28,7 +83,6 @@ Rectangle {
             var cleanPath = root.sourcePath.replace(/\\/g, "/");
             Qt.openUrlExternally("file:///" + cleanPath);
         } else {
-            // For virtual or untitled files, open through terminal or external browser url
             Qt.openUrlExternally("http://localhost:3000");
         }
     }
@@ -58,7 +112,7 @@ Rectangle {
                 }
 
                 Text {
-                    text: root.isMarkdown ? "Live Markdown Preview" : "Live Web & HTML Preview"
+                    text: root.isMarkdown ? "Live Markdown Preview" : "Live Web & HTML Preview (Chromium)"
                     color: theme ? theme.textBright : "#ffffff"
                     font.pixelSize: 11
                     font.bold: true
@@ -148,7 +202,7 @@ Rectangle {
             }
         }
 
-        // 2. Rendered Web Sandbox / Markdown Viewport Area
+        // 2. High-Fidelity Chromium WebEngine Viewport
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -169,50 +223,10 @@ Rectangle {
                 border.color: root.previewMode === "mobile" ? "#333333" : "transparent"
                 border.width: root.previewMode === "mobile" ? 2 : 0
 
-                Flickable {
+                WebEngineView {
+                    id: webEngineView
                     anchors.fill: parent
-                    contentWidth: width
-                    contentHeight: Math.max(height, previewText.implicitHeight + 40)
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 8 }
-
-                    Text {
-                        id: previewText
-                        width: parent.width - 40
-                        x: 20
-                        y: 20
-                        textFormat: Text.RichText
-                        wrapMode: Text.Wrap
-                        color: "#1e1e1e"
-                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                        font.pixelSize: 13
-                        lineHeight: 1.4
-
-                        text: {
-                            if (!root.htmlContent || root.htmlContent.trim().length === 0) {
-                                return "<div style='color: #888888; text-align: center; margin-top: 60px; font-family: sans-serif;'>" +
-                                       "<h3>⚡ Live Web & Markdown Sandbox</h3>" +
-                                       "<p>Start typing HTML, CSS, or Markdown in the editor to see instant hot-reload preview.</p>" +
-                                       "</div>";
-                            }
-                            if (root.isMarkdown) {
-                                var md = root.htmlContent;
-                                // Simple rich markdown formatter for headers, bold, code
-                                var formatted = md
-                                    .replace(/^### (.*$)/gim, '<h3 style="color:#0078d4; margin-top:16px;">$1</h3>')
-                                    .replace(/^## (.*$)/gim, '<h2 style="color:#0078d4; border-bottom:1px solid #e2e8f0; padding-bottom:4px; margin-top:20px;">$1</h2>')
-                                    .replace(/^# (.*$)/gim, '<h1 style="color:#0f172a; border-bottom:2px solid #0078d4; padding-bottom:8px; margin-top:10px;">$1</h1>')
-                                    .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
-                                    .replace(/\*(.*)\*/gim, '<em>$1</em>')
-                                    .replace(/`([^`]+)`/gim, '<code style="background:#f1f5f9; color:#e11d48; padding:2px 6px; border-radius:4px; font-family:monospace;">$1</code>')
-                                    .replace(/\n/gim, '<br>');
-                                return "<div style='padding: 8px; color: #1e293b;'>" + formatted + "</div>";
-                            }
-                            return root.htmlContent;
-                        }
-                    }
+                    Component.onCompleted: root.updatePreview()
                 }
             }
         }

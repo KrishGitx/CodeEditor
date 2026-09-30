@@ -192,9 +192,13 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             chatHistoryModel.clear();
-                            // TODO: Connect CustomApi.py here.
-                            // TODO: Connect AIBackend.py here.
-                            if (typeof aiBackend !== "undefined" && aiBackend) {
+                            chatHistoryModel.append({
+                                msgId: "welcome_" + Date.now(),
+                                role: "assistant",
+                                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
+                            });
+                            root.aiStatus = "idle";
+                            if (typeof aiBackend !== "undefined" && aiBackend && aiBackend.clear_chat) {
                                 aiBackend.clear_chat();
                             }
                         }

@@ -373,6 +373,12 @@ class EditorBackend(QObject):
 # 3. APPLICATION ENTRY POINT
 # ==============================================================================
 if __name__ == "__main__":
+    try:
+        from PySide6.QtWebEngineQuick import QtWebEngineQuick
+        QtWebEngineQuick.initialize()
+    except Exception as we_err:
+        print("[main.py] QtWebEngineQuick initialization notice:", we_err)
+
     app = QGuiApplication(sys.argv)
     app.setApplicationName("DGX Studio")
     app.setOrganizationName("DGX")

@@ -202,4 +202,14 @@ class AIBackend(QObject):
     @Slot()
     def clear_chat(self):
         self.cancel()
+        if custom_api_available:
+            try:
+                client = ChatGPTClient(headless=True)
+                client.reset()
+            except Exception as e:
+                print(f"[AIBackend] Clear chat client reset notice: {e}")
         self.statusChanged.emit("idle")
+
+    @Slot()
+    def new_chat(self):
+        self.clear_chat()

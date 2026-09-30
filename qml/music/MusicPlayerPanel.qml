@@ -137,7 +137,7 @@ Rectangle {
             if (root.currentPositionSec < root.totalDurationSec) {
                 root.currentPositionSec += 1;
             } else {
-                root.currentPositionSec = 0;
+                root.playNextSong();
             }
         }
     }
@@ -178,12 +178,19 @@ Rectangle {
             }
         }
 
-        function onCurrentSongChanged(title, artist, videoId) {
+        function onCurrentSongChanged(title, artist, videoId, duration) {
             root.currentTitle = title;
             root.currentArtist = artist;
             root.currentVideoId = videoId;
+            root.totalDurationSec = duration || 210;
             root.currentPositionSec = 0;
             root.viewMode = "player";
+        }
+
+        function onSongFinished(videoId) {
+            if (root.playbackState === "playing") {
+                root.playNextSong();
+            }
         }
 
         function onVolumeChanged(vol) {
@@ -478,10 +485,38 @@ Rectangle {
                     }
                 }
 
-                // Playback Controls Row (Play/Pause, Stop, Rotary Volume, Info ⓘ)
+                // Playback Controls Row (Prev, Play/Pause, Next, Stop, Rotary Volume, Info ⓘ)
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 10
+                    spacing: 8
+
+                    // Previous Track Button
+                    Rectangle {
+                        width: 26
+                        height: 26
+                        radius: 13
+                        color: prevMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        border.width: 1
+
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: "undo"
+                            size: 10
+                            color: theme ? theme.textSecondary : "#858585"
+                        }
+
+                        ToolTip.visible: prevMa.containsMouse
+                        ToolTip.text: "Previous Track"
+
+                        MouseArea {
+                            id: prevMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.playPrevSong()
+                        }
+                    }
 
                     // Play/Pause Button
                     Rectangle {
@@ -502,6 +537,34 @@ Rectangle {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.togglePlayPause()
+                        }
+                    }
+
+                    // Next Track Button
+                    Rectangle {
+                        width: 26
+                        height: 26
+                        radius: 13
+                        color: nextMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+                        border.color: theme ? theme.borderNormal : "#333333"
+                        border.width: 1
+
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: "redo"
+                            size: 10
+                            color: theme ? theme.textSecondary : "#858585"
+                        }
+
+                        ToolTip.visible: nextMa.containsMouse
+                        ToolTip.text: "Next Track"
+
+                        MouseArea {
+                            id: nextMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.playNextSong()
                         }
                     }
 
@@ -798,6 +861,49 @@ Rectangle {
         root.currentVolume = vol;
         if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.volume_change) {
             musicPlayer.volume_change(vol);
+        }
+    }
+
+    function playNextSong() {
+        if (songListModel.count === 0) return;
+        var curIdx = -1;
+        for (var i = 0; i < songListModel.count; i++) {
+            if (songListModel.get(i).videoId === root.currentVideoId) {
+                curIdx = i;
+                break;
+            }
+        }
+        var nextIdx = curIdx + 1;
+        if (nextIdx < songListModel.count) {
+            var nextSong = songListModel.get(nextIdx);
+            root.playSong(nextSong.videoId, nextSong.title, nextSong.artist, nextSong.duration || 210);
+        } else {
+            // Reached end of playlist/search list -> loop or stop
+            if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_value("music_loop", "false") === "true") {
+                var firstSong = songListModel.get(0);
+                root.playSong(firstSong.videoId, firstSong.title, firstSong.artist, firstSong.duration || 210);
+            } else {
+                root.stopPlayback();
+            }
+        }
+    }
+
+    function playPrevSong() {
+        if (songListModel.count === 0) return;
+        var curIdx = -1;
+        for (var i = 0; i < songListModel.count; i++) {
+            if (songListModel.get(i).videoId === root.currentVideoId) {
+                curIdx = i;
+                break;
+            }
+        }
+        var prevIdx = curIdx - 1;
+        if (prevIdx >= 0) {
+            var prevSong = songListModel.get(prevIdx);
+            root.playSong(prevSong.videoId, prevSong.title, prevSong.artist, prevSong.duration || 210);
+        } else {
+            var lastSong = songListModel.get(songListModel.count - 1);
+            root.playSong(lastSong.videoId, lastSong.title, lastSong.artist, lastSong.duration || 210);
         }
     }
 }
