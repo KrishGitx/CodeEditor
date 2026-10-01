@@ -15,6 +15,7 @@ from urllib.request import url2pathname
 import subprocess
 import json
 import time
+import re
 
 from MusicPlayer import MusicPlayer
 from HighlighterEngine import MultiLanguageHighlighter
@@ -97,6 +98,8 @@ class EditorBackend(QObject):
     fileSaved = Signal(str, bool)
     explorerContent = Signal(list, str)
     currentLanguageChanged = Signal(str)
+    diagnosticsUpdated = Signal(list)
+    outputLogReceived = Signal(str, str)  # channel, text
 
     def __init__(self):
         super().__init__()
@@ -309,6 +312,236 @@ class EditorBackend(QObject):
         except (OSError, UnicodeError) as e:
             print(f"Error saving file {clean_path}: {e}")
             self.fileSaved.emit(clean_path, False)
+
+    @Slot(str, str, str, int, result=str)
+    def format_code(self, lang_id, file_path, source_code, tab_size=4):
+        if not source_code or not source_code.strip():
+            return source_code
+
+        ext = file_path.split(".")[-1].lower() if file_path and "." in file_path else ""
+        lang = (lang_id or "").lower()
+
+        # 1. JSON Formatter
+        if lang == "json" or ext == "json":
+            try:
+                parsed = json.loads(source_code)
+                return json.dumps(parsed, indent=tab_size)
+            except Exception:
+                return source_code
+
+        # 2. Python Formatter (PEP8 compliant)
+        if lang == "python" or ext in ("py", "pyw"):
+            try:
+                import autopep8
+                formatted = autopep8.fix_code(source_code, options={"indent_size": tab_size})
+                if formatted and formatted.strip():
+                    return formatted.rstrip() + "\n"
+            except Exception as e:
+                print("[Formatter] autopep8 notice:", e)
+
+        # 3. HTML / XML / SVG Formatter
+        if lang in ("html", "xml", "svg") or ext in ("html", "htm", "xml", "svg"):
+            try:
+                lines = source_code.split("\n")
+                indent = 0
+                formatted_lines = []
+                tab_spaces = " " * tab_size
+                void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "!doctype"}
+
+                for line in lines:
+                    trimmed = line.strip()
+                    if not trimmed:
+                        formatted_lines.append("")
+                        continue
+
+                    is_closing = trimmed.startswith("</")
+                    if is_closing:
+                        indent = max(0, indent - 1)
+
+                    formatted_lines.append((tab_spaces * indent) + trimmed)
+
+                    if trimmed.startswith("<") and not is_closing and not trimmed.startswith("<!--") and not trimmed.startswith("<!"):
+                        parts = trimmed[1:].split()
+                        tag_name = parts[0].split(">")[0].lower() if parts else ""
+                        if not trimmed.endswith("/>") and tag_name not in void_tags and "</" not in trimmed:
+                            indent += 1
+
+                return "\n".join(formatted_lines)
+            except Exception:
+                return source_code
+
+        # 4. JS / TS / C / C++ / C# / Java / Rust / Go / CSS / QML Formatter
+        try:
+            lines = source_code.split("\n")
+            indent = 0
+            formatted_lines = []
+            tab_spaces = " " * tab_size
+
+            for line in lines:
+                trimmed = line.strip()
+                if not trimmed:
+                    formatted_lines.append("")
+                    continue
+
+                clean = re.sub(r'"(\\.|[^"\\])*"', '""', trimmed)
+                clean = re.sub(r"'(\\.|[^'\\])*'", "''", clean)
+                clean = re.sub(r"//.*$", "", clean)
+
+                unindent_start = bool(re.match(r"^(\}|\]|\)|else\b|catch\b|finally\b|case\b|default:)", clean))
+                if unindent_start:
+                    indent = max(0, indent - 1)
+
+                formatted_lines.append((tab_spaces * indent) + trimmed)
+
+                opens = len(re.findall(r"[\{\[\(]", clean))
+                closes = len(re.findall(r"[\}\]\)]", clean))
+                if unindent_start:
+                    closes = max(0, closes - 1)
+
+                indent = max(0, indent + (opens - closes))
+
+            return "\n".join(formatted_lines)
+        except Exception:
+            return source_code
+
+    @Slot(str, str, str, result=list)
+    def check_diagnostics(self, file_path, source_code, lang_id=""):
+        if not source_code:
+            self.diagnosticsUpdated.emit([])
+            return []
+
+        problems = []
+        ext = file_path.split(".")[-1].lower() if file_path and "." in file_path else ""
+        lang = (lang_id or "").lower()
+        base_name = os.path.basename(file_path) if file_path else "untitled"
+
+        # 1. Python Syntax & Indentation Check
+        if lang == "python" or ext in ("py", "pyw"):
+            try:
+                compile(source_code, file_path or "<string>", "exec")
+            except SyntaxError as e:
+                problems.append({
+                    "file": base_name,
+                    "filePath": file_path or "",
+                    "line": e.lineno or 1,
+                    "column": e.offset or 1,
+                    "message": e.msg or "Syntax Error",
+                    "severity": "error",
+                    "source": "Python Parser"
+                })
+            except Exception as e:
+                problems.append({
+                    "file": base_name,
+                    "filePath": file_path or "",
+                    "line": 1,
+                    "column": 1,
+                    "message": str(e),
+                    "severity": "error",
+                    "source": "Python Parser"
+                })
+
+        # 2. JSON Validation
+        elif lang == "json" or ext == "json":
+            try:
+                json.loads(source_code)
+            except json.JSONDecodeError as e:
+                problems.append({
+                    "file": base_name,
+                    "filePath": file_path or "",
+                    "line": e.lineno,
+                    "column": e.colno,
+                    "message": e.msg,
+                    "severity": "error",
+                    "source": "JSON Validator"
+                })
+
+        # 3. HTML / XML Validation (Unclosed tags check)
+        elif lang in ("html", "xml") or ext in ("html", "htm", "xml"):
+            void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "!doctype"}
+            lines = source_code.split("\n")
+            tag_stack = []
+            for line_idx, line in enumerate(lines, 1):
+                matches = re.finditer(r'<(/)?([a-zA-Z0-9_\-]+)(?:\s+[^<>]*)?(/)?>', line)
+                for m in matches:
+                    is_close = bool(m.group(1))
+                    tag_name = m.group(2).lower()
+                    is_self_closing = bool(m.group(3)) or tag_name in void_tags
+
+                    if is_self_closing:
+                        continue
+                    if is_close:
+                        if tag_stack and tag_stack[-1][0] == tag_name:
+                            tag_stack.pop()
+                        else:
+                            problems.append({
+                                "file": base_name,
+                                "filePath": file_path or "",
+                                "line": line_idx,
+                                "column": m.start() + 1,
+                                "message": f"Unexpected closing tag </{tag_name}>",
+                                "severity": "error",
+                                "source": "HTML Validator"
+                            })
+                    else:
+                        tag_stack.append((tag_name, line_idx, m.start() + 1))
+
+            for unclosed_tag, unclosed_line, unclosed_col in tag_stack[-5:]:
+                problems.append({
+                    "file": base_name,
+                    "filePath": file_path or "",
+                    "line": unclosed_line,
+                    "column": unclosed_col,
+                    "message": f"Unclosed tag <{unclosed_tag}>",
+                    "severity": "warning",
+                    "source": "HTML Validator"
+                })
+
+        # 4. General Braces Mismatch Check (JS, TS, C, C++, QML, CSS, etc.)
+        elif lang in ("javascript", "typescript", "cpp", "c", "qml", "css", "rust", "go", "csharp", "java") or ext in ("js", "ts", "jsx", "tsx", "cpp", "c", "h", "hpp", "qml", "css", "rs", "go", "cs", "java"):
+            lines = source_code.split("\n")
+            bracket_stack = []
+            matching = {')': '(', ']': '[', '}': '{'}
+
+            for line_idx, line in enumerate(lines, 1):
+                clean_line = re.sub(r'"(\\.|[^"\\])*"', '""', line)
+                clean_line = re.sub(r"'(\\.|[^'\\])*'", "''", clean_line)
+                clean_line = re.sub(r"//.*$", "", clean_line)
+
+                for col_idx, char in enumerate(clean_line, 1):
+                    if char in "({[":
+                        bracket_stack.append((char, line_idx, col_idx))
+                    elif char in ")}]":
+                        expected = matching[char]
+                        if bracket_stack and bracket_stack[-1][0] == expected:
+                            bracket_stack.pop()
+                        else:
+                            problems.append({
+                                "file": base_name,
+                                "filePath": file_path or "",
+                                "line": line_idx,
+                                "column": col_idx,
+                                "message": f"Unmatched '{char}'",
+                                "severity": "error",
+                                "source": "Syntax Linter"
+                            })
+
+            for unclosed_char, unclosed_line, unclosed_col in bracket_stack[-5:]:
+                problems.append({
+                    "file": base_name,
+                    "filePath": file_path or "",
+                    "line": unclosed_line,
+                    "column": unclosed_col,
+                    "message": f"Unclosed '{unclosed_char}'",
+                    "severity": "error",
+                    "source": "Syntax Linter"
+                })
+
+        self.diagnosticsUpdated.emit(problems)
+        return problems
+
+    @Slot(str, str)
+    def log_output(self, channel, text):
+        self.outputLogReceived.emit(channel, text)
 
     @Slot(str)
     def open_Workspace(self, path):

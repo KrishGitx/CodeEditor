@@ -27,7 +27,7 @@ Item {
     property int cursorLine: 1
     property int cursorColumn: 1
     property int totalLineCount: 1
-    readonly property real editorLineHeight: fontMetrics.lineSpacing > 0 ? fontMetrics.lineSpacing : (codeTextArea.font.pixelSize * 1.45)
+    readonly property real editorLineHeight: (codeTextArea && codeTextArea.cursorRectangle && codeTextArea.cursorRectangle.height > 0) ? codeTextArea.cursorRectangle.height : (fontMetrics.height > 0 ? fontMetrics.height : 15)
 
     // Signals for parent / status bar
     signal fileSaved(string path, bool success)
@@ -139,7 +139,7 @@ Item {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: (index + 1).toString()
                                         font.pixelSize: codeTextArea.font.pixelSize
-                                        font.family: theme ? theme.fontFamilyMono : "monospace"
+                                        font.family: codeTextArea.font.family
                                         color: (index + 1) === root.cursorLine ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
                                     }
                                 }
@@ -182,11 +182,12 @@ Item {
                         Rectangle {
                             id: currentLineHighlight
                             x: 0
-                            y: codeTextArea.topPadding + (root.cursorLine - 1) * root.editorLineHeight
+                            y: codeTextArea.cursorRectangle.y
                             width: Math.max(editorFlickable.contentWidth, editorFlickable.width)
-                            height: root.editorLineHeight
+                            height: (codeTextArea.cursorRectangle.height > 0) ? codeTextArea.cursorRectangle.height : root.editorLineHeight
                             color: theme ? theme.synCurrentLine : "#282828"
                             z: 0
+                            visible: codeTextArea.cursorRectangle.height > 0
                         }
 
                         TextArea {
@@ -203,11 +204,15 @@ Item {
                             selectionColor: theme ? theme.synSelection : "#264f78"
                             selectedTextColor: theme ? theme.textBright : "#ffffff"
                             font.pixelSize: theme ? theme.editorFontSize : 13
-                            font.family: theme ? theme.fontFamilyMono : "monospace"
+                            font.family: (theme && theme.fontFamilyMono) ? theme.fontFamilyMono : "Consolas"
                             selectByMouse: true
                             focus: true
                             textFormat: TextArea.PlainText
                             background: null
+
+                            onCursorRectangleChanged: {
+                                root.ensureCursorVisible();
+                            }
 
                             // Multi-Cursor Caret Overlays
                             Repeater {
@@ -899,7 +904,7 @@ Item {
     }
 
     // =========================================================================
-    // ACCURATE MULTI-LANGUAGE CODE FORMATTER
+    // ACCURATE MULTI-LANGUAGE CODE FORMATTER (Preserves Viewport & Cursor Position)
     // =========================================================================
     function formatDocument() {
         var text = codeTextArea.text;
@@ -909,151 +914,146 @@ Item {
         var ext = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
         var tabSize = theme ? theme.tabSize : 4;
         var tabSpaces = " ".repeat(tabSize);
+        var formattedText = text;
 
-        // 1. JSON Formatter
-        if (lang === "json" || ext === "json") {
+        if (typeof backend !== "undefined" && backend && backend.format_code) {
             try {
-                var parsed = JSON.parse(text);
-                codeTextArea.text = JSON.stringify(parsed, null, tabSize);
-                return;
-            } catch (e) {}
+                formattedText = backend.format_code(lang, root.activeFilePath || root.activeFileName || "", text, tabSize);
+            } catch (e) {
+                console.log("[EditorArea] Backend format notice:", e);
+            }
         }
 
-        // 2. Python Formatter
-        if (lang === "python" || ext === "py" || ext === "pyw") {
-            var pyLines = text.split("\n");
-            var pyIndent = 0;
-            var formattedPy = [];
-
-            for (var p = 0; p < pyLines.length; p++) {
-                var pLine = pyLines[p].trim();
-                if (pLine.length === 0) {
-                    formattedPy.push("");
-                    continue;
-                }
-
-                if (/^(elif |else:|except(\s.*)?:|finally:)/.test(pLine)) {
-                    pyIndent = Math.max(0, pyIndent - 1);
-                } else if (/^(\]|\}|\))/.test(pLine)) {
-                    pyIndent = Math.max(0, pyIndent - 1);
-                }
-
-                formattedPy.push(tabSpaces.repeat(pyIndent) + pLine);
-
-                if (pLine.endsWith(":") || pLine.endsWith("(") || pLine.endsWith("[") || pLine.endsWith("{")) {
-                    pyIndent++;
-                }
+        // Fallback local formatter if backend produced no change or is unavailable
+        if (!formattedText || formattedText === text) {
+            if (lang === "json" || ext === "json") {
+                try {
+                    var parsed = JSON.parse(text);
+                    formattedText = JSON.stringify(parsed, null, tabSize);
+                } catch (e) {}
             }
-            codeTextArea.text = formattedPy.join("\n");
-            return;
         }
 
-        // 3. HTML / XML / SVG Formatter
-        if (lang === "html" || lang === "xml" || ext === "html" || ext === "htm" || ext === "xml" || ext === "svg") {
-            var htmlLines = text.split("\n");
-            var htmlIndent = 0;
-            var formattedHtml = [];
+        if (!formattedText || formattedText === text) return;
 
-            for (var h = 0; h < htmlLines.length; h++) {
-                var hLine = htmlLines[h].trim();
-                if (hLine.length === 0) {
-                    formattedHtml.push("");
-                    continue;
-                }
+        var curLine = root.cursorLine;
+        var curCol = root.cursorColumn;
+        var oldScrollX = editorFlickable.contentX;
+        var oldScrollY = editorFlickable.contentY;
 
-                var isClosing = /^<\/[^>]+>/.test(hLine);
-                if (isClosing) {
-                    htmlIndent = Math.max(0, htmlIndent - 1);
-                }
+        codeTextArea.text = formattedText;
 
-                formattedHtml.push(tabSpaces.repeat(htmlIndent) + hLine);
-
-                var isOpening = /^<[a-zA-Z0-9_-]+(\s[^>]*)?>/.test(hLine) && !hLine.endsWith("/>") && !/^(<area|<base|<br|<col|<embed|<hr|<img|<input|<link|<meta|<param|<source|<track|<wbr)/i.test(hLine);
-                if (isOpening && !isClosing && !hLine.includes("</")) {
-                    htmlIndent++;
-                }
-            }
-            codeTextArea.text = formattedHtml.join("\n");
-            return;
+        // Restore cursor position by line and column in formatted text
+        var newLines = formattedText.split("\n");
+        var targetLine = Math.min(curLine, newLines.length);
+        var newCharPos = 0;
+        for (var l = 0; l < targetLine - 1; l++) {
+            newCharPos += newLines[l].length + 1;
         }
-
-        // 4. JS / TS / C / C++ / C# / Java / Rust / Go / CSS / QML Formatter
-        var lines = text.split("\n");
-        var indentLevel = 0;
-        var formattedLines = [];
-
-        for (var i = 0; i < lines.length; i++) {
-            var rawLine = lines[i].trim();
-
-            if (rawLine.length === 0) {
-                formattedLines.push("");
-                continue;
-            }
-
-            // Strip strings and comments for clean token parsing
-            var cleanLine = rawLine.replace(/"(\\.|[^"\\])*"/g, '""').replace(/'(\\.|[^'\\])*'/g, "''").replace(/\/\/.*$/, "");
-
-            // Check if current line starts with a closing structure or branch keyword
-            var unindentAtStart = /^(\}|\]|\)|else\b|catch\b|finally\b|case\b|default:)/.test(cleanLine);
-            if (unindentAtStart) {
-                indentLevel = Math.max(0, indentLevel - 1);
-            }
-
-            var currentIndent = tabSpaces.repeat(indentLevel);
-            formattedLines.push(currentIndent + rawLine);
-
-            // Compute open and close braces on this line
-            var opens = (cleanLine.match(/[\{\[\(]/g) || []).length;
-            var closes = (cleanLine.match(/[\}\]\)]/g) || []).length;
-
-            if (unindentAtStart) {
-                closes = Math.max(0, closes - 1);
-            }
-
-            indentLevel = Math.max(0, indentLevel + (opens - closes));
+        if (targetLine - 1 < newLines.length) {
+            newCharPos += Math.min(curCol - 1, newLines[targetLine - 1].length);
         }
+        codeTextArea.cursorPosition = Math.min(newCharPos, formattedText.length);
 
-        codeTextArea.text = formattedLines.join("\n");
+        // Keep viewport steady so code is never scrolled away or hidden
+        editorFlickable.contentX = Math.max(0, oldScrollX);
+        editorFlickable.contentY = Math.max(0, oldScrollY);
+        root.updateCursorPosition();
     }
 
+    // =========================================================================
+    // SMART TAB & INDENTATION ENGINE
+    // =========================================================================
     function indentSelectedText() {
-        var tabSpaces = "    ";
-        if (theme && theme.tabSize) {
-            tabSpaces = " ".repeat(theme.tabSize);
-        }
+        var tabSize = (theme && theme.tabSize) ? theme.tabSize : 4;
+        var tabSpaces = " ".repeat(tabSize);
         var fullText = codeTextArea.text;
         var start = codeTextArea.selectionStart;
         var end = codeTextArea.selectionEnd;
 
-        if (start === end) {
-            // No multi-char selection: insert tab spaces at cursor
-            var cur = codeTextArea.cursorPosition;
-            codeTextArea.insert(cur, tabSpaces);
-            codeTextArea.cursorPosition = cur + tabSpaces.length;
+        // 1. Multi-line selection: indent each selected line by tabSpaces
+        if (start !== end) {
+            var minPos = Math.min(start, end);
+            var maxPos = Math.max(start, end);
+
+            var firstLineStart = fullText.lastIndexOf("\n", minPos - 1) + 1;
+            var lastLineEnd = fullText.indexOf("\n", maxPos);
+            if (lastLineEnd === -1) lastLineEnd = fullText.length;
+
+            var targetBlock = fullText.substring(firstLineStart, lastLineEnd);
+            var lines = targetBlock.split("\n");
+            var modifiedLines = [];
+            var addedChars = 0;
+
+            for (var i = 0; i < lines.length; i++) {
+                modifiedLines.push(tabSpaces + lines[i]);
+                addedChars += tabSpaces.length;
+            }
+
+            var newBlock = modifiedLines.join("\n");
+            codeTextArea.text = fullText.substring(0, firstLineStart) + newBlock + fullText.substring(lastLineEnd);
+            codeTextArea.select(minPos + tabSpaces.length, maxPos + addedChars);
             return;
         }
 
-        // Multi-line / selected text indentation
-        var minPos = Math.min(start, end);
-        var maxPos = Math.max(start, end);
+        // 2. Single cursor position (Smart Tab)
+        var cur = codeTextArea.cursorPosition;
+        var lineStart = fullText.lastIndexOf("\n", cur - 1) + 1;
+        var textBeforeCursor = fullText.substring(lineStart, cur);
+        var isLeadingWhitespace = /^\s*$/.test(textBeforeCursor);
 
-        var firstLineStart = fullText.lastIndexOf("\n", minPos - 1) + 1;
-        var lastLineEnd = fullText.indexOf("\n", maxPos);
-        if (lastLineEnd === -1) lastLineEnd = fullText.length;
+        if (isLeadingWhitespace) {
+            // Find previous non-empty line to determine context-aware smart indent
+            var prevText = fullText.substring(0, lineStart > 0 ? lineStart - 1 : 0);
+            var prevLines = prevText.split("\n");
+            var prevNonEmpty = "";
+            for (var p = prevLines.length - 1; p >= 0; p--) {
+                if (prevLines[p].trim().length > 0) {
+                    prevNonEmpty = prevLines[p];
+                    break;
+                }
+            }
 
-        var targetBlock = fullText.substring(firstLineStart, lastLineEnd);
-        var lines = targetBlock.split("\n");
-        var modifiedLines = [];
-        var addedChars = 0;
+            var expectedIndent = "";
+            if (prevNonEmpty.length > 0) {
+                var prevIndentMatch = prevNonEmpty.match(/^(\s*)/);
+                var prevIndent = prevIndentMatch ? prevIndentMatch[1] : "";
+                var prevTrimmed = prevNonEmpty.trim();
 
-        for (var i = 0; i < lines.length; i++) {
-            modifiedLines.push(tabSpaces + lines[i]);
-            addedChars += tabSpaces.length;
+                if (prevTrimmed.endsWith(":") || prevTrimmed.endsWith("{") || prevTrimmed.endsWith("(") || prevTrimmed.endsWith("[")) {
+                    expectedIndent = prevIndent + tabSpaces;
+                } else if (/^(case\b|default:)/.test(prevTrimmed) && !prevTrimmed.endsWith(";")) {
+                    expectedIndent = prevIndent + tabSpaces;
+                } else {
+                    expectedIndent = prevIndent;
+                }
+            }
+
+            // If current line indent is less than expected indent, jump directly to expected indent
+            if (expectedIndent.length > textBeforeCursor.length && expectedIndent.startsWith(textBeforeCursor)) {
+                var missingSpaces = expectedIndent.substring(textBeforeCursor.length);
+                codeTextArea.insert(cur, missingSpaces);
+                codeTextArea.cursorPosition = cur + missingSpaces.length;
+            } else {
+                // Otherwise add standard tabSpaces or align to next tab stop
+                var col = textBeforeCursor.length;
+                var count = tabSize - (col % tabSize);
+                if (count === 0) count = tabSize;
+                var insertStr = " ".repeat(count);
+                codeTextArea.insert(cur, insertStr);
+                codeTextArea.cursorPosition = cur + insertStr.length;
+            }
+        } else {
+            // Cursor is after code on the line: align to next tab stop multiple of tabSize
+            var colAfter = textBeforeCursor.length;
+            var spacesNeeded = tabSize - (colAfter % tabSize);
+            if (spacesNeeded === 0) spacesNeeded = tabSize;
+            var addSpaces = " ".repeat(spacesNeeded);
+            codeTextArea.insert(cur, addSpaces);
+            codeTextArea.cursorPosition = cur + addSpaces.length;
         }
 
-        var newBlock = modifiedLines.join("\n");
-        codeTextArea.text = fullText.substring(0, firstLineStart) + newBlock + fullText.substring(lastLineEnd);
-        codeTextArea.select(minPos + tabSpaces.length, maxPos + addedChars);
+        root.updateCursorPosition();
     }
 
     function unindentSelectedText() {
@@ -1063,16 +1063,31 @@ Item {
         var end = codeTextArea.selectionEnd;
 
         if (start === end) {
-            // No selection: unindent current line before cursor
             var cur = codeTextArea.cursorPosition;
             var lineStart = fullText.lastIndexOf("\n", cur - 1) + 1;
-            var lineContent = fullText.substring(lineStart, cur);
-            var match = lineContent.match(/ {1,4}$/);
-            if (match) {
-                var removeCount = match[0].length;
-                codeTextArea.remove(cur - removeCount, cur);
-                codeTextArea.cursorPosition = cur - removeCount;
+            var lineEnd = fullText.indexOf("\n", cur);
+            if (lineEnd === -1) lineEnd = fullText.length;
+            var lineContent = fullText.substring(lineStart, lineEnd);
+            var textBeforeCursor = fullText.substring(lineStart, cur);
+
+            // If cursor is in leading whitespace or at start of line
+            if (/^\s*$/.test(textBeforeCursor)) {
+                var matchLeading = lineContent.match(/^ +/);
+                if (matchLeading) {
+                    var spacesToRemove = Math.min(tabSize, matchLeading[0].length);
+                    codeTextArea.remove(lineStart, lineStart + spacesToRemove);
+                    codeTextArea.cursorPosition = Math.max(lineStart, cur - spacesToRemove);
+                }
+            } else {
+                // If cursor is after spaces
+                var matchTrail = textBeforeCursor.match(/ +$/);
+                if (matchTrail) {
+                    var removeCount = Math.min(tabSize, matchTrail[0].length);
+                    codeTextArea.remove(cur - removeCount, cur);
+                    codeTextArea.cursorPosition = cur - removeCount;
+                }
             }
+            root.updateCursorPosition();
             return;
         }
 
@@ -1105,6 +1120,7 @@ Item {
         var newBlock = modifiedLines.join("\n");
         codeTextArea.text = fullText.substring(0, firstLineStart) + newBlock + fullText.substring(lastLineEnd);
         codeTextArea.select(firstLineStart, Math.max(firstLineStart, maxPos - removedChars));
+        root.updateCursorPosition();
     }
 
     function toggleComment() {
@@ -1168,6 +1184,35 @@ Item {
         codeTextArea.select(firstLineStart, firstLineStart + newBlock.length);
     }
 
+    function ensureCursorVisible() {
+        if (!codeTextArea || codeTextArea.cursorRectangle.height <= 0) return;
+        var curY = codeTextArea.cursorRectangle.y;
+        var curH = codeTextArea.cursorRectangle.height;
+        var curX = codeTextArea.cursorRectangle.x;
+        var viewTop = editorFlickable.contentY;
+        var viewLeft = editorFlickable.contentX;
+        var viewHeight = editorFlickable.height;
+        var viewWidth = editorFlickable.width;
+        if (viewHeight <= 0 || viewWidth <= 0) return;
+
+        var paddingY = 24;
+        var paddingX = 40;
+
+        if (curY < viewTop + paddingY) {
+            editorFlickable.contentY = Math.max(0, curY - paddingY);
+        } else if (curY + curH > viewTop + viewHeight - paddingY) {
+            var maxY = Math.max(0, editorFlickable.contentHeight - editorFlickable.height);
+            editorFlickable.contentY = Math.min(maxY, curY + curH + paddingY - viewHeight);
+        }
+
+        if (curX < viewLeft + paddingX) {
+            editorFlickable.contentX = Math.max(0, curX - paddingX);
+        } else if (curX > viewLeft + viewWidth - paddingX) {
+            var maxX = Math.max(0, editorFlickable.contentWidth - editorFlickable.width);
+            editorFlickable.contentX = Math.min(maxX, curX + paddingX - viewWidth);
+        }
+    }
+
     function updateCursorPosition() {
         var pos = codeTextArea.cursorPosition;
         var text = codeTextArea.text;
@@ -1176,6 +1221,35 @@ Item {
         root.cursorColumn = Math.max(1, lines[lines.length - 1].length + 1);
         root.totalLineCount = Math.max(1, text.split("\n").length);
         root.cursorPositionChanged(root.cursorLine, root.cursorColumn);
+        root.ensureCursorVisible();
+    }
+
+    Timer {
+        id: diagnosticsTimer
+        interval: 350
+        repeat: false
+        onTriggered: {
+            if (typeof backend !== "undefined" && backend && backend.check_diagnostics) {
+                backend.check_diagnostics(root.activeFilePath || root.activeFileName || "", codeTextArea.text, root.currentLanguageId);
+            }
+        }
+    }
+
+    function jumpToLineAndCol(line, col) {
+        if (!codeTextArea) return;
+        var text = codeTextArea.text;
+        var lines = text.split("\n");
+        var targetLine = Math.max(1, Math.min(line, lines.length));
+        var charPos = 0;
+        for (var i = 0; i < targetLine - 1; i++) {
+            charPos += lines[i].length + 1;
+        }
+        var targetCol = Math.max(1, Math.min(col || 1, lines[targetLine - 1].length + 1));
+        charPos += (targetCol - 1);
+        codeTextArea.cursorPosition = Math.min(charPos, text.length);
+        codeTextArea.forceActiveFocus();
+        root.updateCursorPosition();
+        root.ensureCursorVisible();
     }
 
     function handleEditorContentChanged() {
@@ -1199,6 +1273,8 @@ Item {
         if (typeof backend !== "undefined" && backend && backend.notify_change) {
             backend.notify_change(root.activeFilePath || "untitled.txt", codeTextArea.text);
         }
+
+        diagnosticsTimer.restart();
     }
 
     function createNewFile() {
@@ -1213,7 +1289,9 @@ Item {
             isDirty: true,
             languageName: "Plain Text",
             languageId: "text",
-            cursorPos: 0
+            cursorPos: 0,
+            scrollX: 0,
+            scrollY: 0
         });
 
         switchToTab(tabModel.count - 1);
@@ -1240,7 +1318,9 @@ Item {
             isDirty: false,
             languageName: langObj.name,
             languageId: langObj.id,
-            cursorPos: 0
+            cursorPos: 0,
+            scrollX: 0,
+            scrollY: 0
         });
 
         switchToTab(tabModel.count - 1);
@@ -1312,6 +1392,8 @@ Item {
         if (root.currentTab && !root.currentTab.isWhiteboard && !root.currentTab.isWebPreview) {
             root.currentTab.content = codeTextArea.text;
             root.currentTab.cursorPos = codeTextArea.cursorPosition;
+            root.currentTab.scrollX = editorFlickable.contentX;
+            root.currentTab.scrollY = editorFlickable.contentY;
         }
 
         root.activeTabIndex = index;
@@ -1320,6 +1402,8 @@ Item {
         if (!newTab.isWhiteboard && !newTab.isWebPreview) {
             codeTextArea.text = newTab.content || "";
             codeTextArea.cursorPosition = Math.min(newTab.cursorPos || 0, codeTextArea.text.length);
+            editorFlickable.contentX = newTab.scrollX || 0;
+            editorFlickable.contentY = newTab.scrollY || 0;
 
             if (typeof backend !== "undefined" && backend && backend.register_text_area) {
                 backend.register_text_area(codeTextArea);
@@ -1331,6 +1415,7 @@ Item {
 
         updateCursorPosition();
         root.activeFileChanged(newTab.path || "", newTab.title || "", root.currentLanguage, newTab.isDirty || false);
+        diagnosticsTimer.restart();
     }
 
     function closeTab(index) {

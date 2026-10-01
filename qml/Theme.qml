@@ -195,8 +195,8 @@ QtObject {
     readonly property int fontSizeBase: 13
     readonly property int fontSizeLg: 14
 
-    readonly property string fontFamilyUi: "'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif"
-    readonly property string fontFamilyMono: "Consolas, 'Cascadia Code', 'Fira Code', 'Courier New', monospace"
+    readonly property string fontFamilyUi: "Segoe UI"
+    readonly property string fontFamilyMono: "Consolas"
 
     function setTheme(name) {
         var themeName = name.toLowerCase().trim();

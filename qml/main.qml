@@ -442,6 +442,9 @@ Window {
             visible: mainWindow.effectiveTerminalHeight > 0
 
             onCloseRequested: mainWindow.terminalVisible = false
+            onProblemSelected: function(filePath, line, column) {
+                editorArea.jumpToLineAndCol(line, column);
+            }
         }
 
         // 4. Status Bar
@@ -579,6 +582,7 @@ Window {
             cmd = 'Write-Host "No runner configured for .' + ext + ' files." -ForegroundColor Yellow';
         }
 
+        terminalPanel.addOutputLog("Build/Run", "Executing " + (editorArea.activeFileName || "script") + " [" + cmd + "]");
         terminalPanel.executeCommand(cmd);
     }
 }

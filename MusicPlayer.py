@@ -343,3 +343,7 @@ class MusicPlayer(QObject):
         if self._audio_sink:
             self._audio_sink.setVolume(self._volume)
         self.volumeChanged.emit(self._volume)
+
+    @Slot(float)
+    def set_volume(self, value):
+        self.volume_change(value)
