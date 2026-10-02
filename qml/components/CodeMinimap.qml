@@ -22,47 +22,69 @@ Rectangle {
             ctx.reset();
             ctx.clearRect(0, 0, width, height);
 
-            if (!root.documentText || root.documentText.length === 0) return;
+            var text = root.documentText;
+            if (!text || text.length === 0) return;
 
-            var lines = root.documentText.split("\n");
+            var lines = text.split("\n");
             var lineCount = Math.max(1, lines.length);
-            var lineHeight = Math.max(1.5, Math.min(6.0, height / lineCount));
-            var maxDraw = Math.min(lineCount, Math.floor(height / lineHeight));
 
-            for (var i = 0; i < maxDraw; i++) {
-                var lineStr = lines[i] || "";
+            // Cap max bars rendered on canvas to at most 250 for instant rendering
+            var maxBars = Math.min(250, Math.max(1, Math.floor(height / 2.5)));
+            var step = lineCount / maxBars;
+            var barHeight = Math.max(1.5, Math.min(4.0, height / maxBars));
+
+            var kwColor = theme ? theme.synKeyword : "#569cd6";
+            var fnColor = theme ? theme.synFunction : "#dcdcaa";
+            var comColor = theme ? theme.synComment : "#6a9955";
+            var typeColor = theme ? theme.synType : "#4ec9b0";
+            var defaultColor = theme ? theme.textDisabled : "#4d4d4d";
+
+            for (var b = 0; b < maxBars; b++) {
+                var lineIdx = Math.floor(b * step);
+                if (lineIdx >= lineCount) break;
+
+                var lineStr = lines[lineIdx] || "";
                 var trimmed = lineStr.trim();
                 if (trimmed.length > 0) {
-                    var indent = lineStr.search(/\S/);
-                    if (indent < 0) indent = 0;
-
-                    var startX = Math.min(width * 0.6, Math.max(3, indent * 2));
-                    var barWidth = Math.min(width - startX - 4, Math.max(4, trimmed.length * 0.85));
-                    var y = i * lineHeight;
-
-                    // Syntax-like color encoding
-                    if (/^(def |class |function |const |let |var |import |from |package |public |private )/.test(trimmed)) {
-                        ctx.fillStyle = theme ? theme.synKeyword : "#569cd6";
-                    } else if (/\(.*\)/.test(trimmed)) {
-                        ctx.fillStyle = theme ? theme.synFunction : "#dcdcaa";
-                    } else if (/^(\/\/|#|\/\*|\*)/.test(trimmed)) {
-                        ctx.fillStyle = theme ? theme.synComment : "#6a9955";
-                    } else if (/^(\{|\}|\(|\)|\[|\])/.test(trimmed)) {
-                        ctx.fillStyle = theme ? theme.synType : "#4ec9b0";
-                    } else {
-                        ctx.fillStyle = theme ? theme.textDisabled : "#4d4d4d";
+                    var indent = 0;
+                    while (indent < lineStr.length && (lineStr.charAt(indent) === ' ' || lineStr.charAt(indent) === '\t')) {
+                        indent++;
                     }
 
-                    ctx.fillRect(startX, y, barWidth, Math.max(1, lineHeight - 0.5));
+                    var startX = Math.min(width * 0.55, Math.max(3, indent * 2));
+                    var barWidth = Math.min(width - startX - 4, Math.max(4, trimmed.length * 0.75));
+                    var y = b * (height / maxBars);
+
+                    var firstChar = trimmed.charAt(0);
+                    if (firstChar === '#' || (firstChar === '/' && trimmed.charAt(1) === '/')) {
+                        ctx.fillStyle = comColor;
+                    } else if (trimmed.startsWith("def ") || trimmed.startsWith("class ") || trimmed.startsWith("function ") || trimmed.startsWith("const ") || trimmed.startsWith("import ") || trimmed.startsWith("return ")) {
+                        ctx.fillStyle = kwColor;
+                    } else if (trimmed.indexOf("(") !== -1) {
+                        ctx.fillStyle = fnColor;
+                    } else if (firstChar === '{' || firstChar === '}' || firstChar === '[' || firstChar === ']') {
+                        ctx.fillStyle = typeColor;
+                    } else {
+                        ctx.fillStyle = defaultColor;
+                    }
+
+                    ctx.fillRect(startX, y, barWidth, Math.max(1, barHeight - 0.5));
                 }
             }
         }
     }
 
-    onDocumentTextChanged: minimapCanvas.requestPaint()
+    Timer {
+        id: paintDebounceTimer
+        interval: 150
+        repeat: false
+        onTriggered: minimapCanvas.requestPaint()
+    }
+
+    onDocumentTextChanged: paintDebounceTimer.restart()
     onWidthChanged: minimapCanvas.requestPaint()
     onHeightChanged: minimapCanvas.requestPaint()
-    Component.onCompleted: minimapCanvas.requestPaint()
+    Component.onCompleted: paintDebounceTimer.restart()
 
     // Highlighted Viewport Box Indicator
     Rectangle {

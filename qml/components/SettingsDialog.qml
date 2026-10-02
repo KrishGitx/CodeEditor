@@ -745,6 +745,44 @@ Rectangle {
                                     }
                                 }
                             }
+
+                            // Setting: Mouse Wheel Zoom
+                            Rectangle {
+                                width: parent.width
+                                height: 50
+                                color: "transparent"
+
+                                Column {
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 3
+
+                                    Text {
+                                        text: "Mouse Wheel Zoom"
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        text: "Zoom font size when scrolling with mouse wheel and holding Ctrl"
+                                        color: theme ? theme.textMuted : "#858585"
+                                        font.pixelSize: 11
+                                    }
+                                }
+
+                                Switch {
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    checked: (typeof theme !== "undefined" && theme) ? theme.enableMouseWheelZoom : true
+                                    onToggled: {
+                                        if (typeof theme !== "undefined" && theme) {
+                                            theme.enableMouseWheelZoom = checked;
+                                            theme.saveSettings();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1526,19 +1564,20 @@ Rectangle {
         }
     }
 
-    // Component: ShortcutSettingRow with Interactive Keybinding Input
+    // Component: ShortcutSettingRow with Interactive Keybinding Recorder & Manual Input
     component ShortcutSettingRow: Rectangle {
         id: scRow
         property string title: ""
         property string subtitle: ""
         property string currentShortcut: ""
+        property bool isRecording: false
         signal shortcutChanged(string val)
 
-        height: 48
+        height: 52
         radius: theme ? theme.radiusSm : 4
-        color: theme ? theme.bgSurface : "#252526"
-        border.color: theme ? theme.borderSubtle : "#282828"
-        border.width: 1
+        color: scRow.isRecording ? (theme ? theme.bgSurfaceActive : "#2a2d3e") : (theme ? theme.bgSurface : "#252526")
+        border.color: scRow.isRecording ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#282828")
+        border.width: scRow.isRecording ? 1.5 : 1
 
         RowLayout {
             anchors.fill: parent
@@ -1566,40 +1605,128 @@ Rectangle {
                 }
             }
 
-            // Shortcut Keybinding Badge / Input
+            // Key Recording Badge / Button
             Rectangle {
-                width: 110
-                height: 26
-                radius: 3
-                color: scInput.activeFocus ? (theme ? theme.bgSurfaceActive : "#37373d") : (theme ? theme.bgInput : "#1e1e1e")
-                border.color: scInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+                id: recorderBadge
+                width: Math.max(120, scBadgeText.contentWidth + 20)
+                height: 28
+                radius: 4
+                color: scRow.isRecording ? (theme ? theme.accent : "#0078d4") : (badgeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgInput : "#181818"))
+                border.color: scRow.isRecording ? "#ffffff" : (theme ? theme.borderNormal : "#333333")
                 border.width: 1
+                focus: scRow.isRecording
 
-                TextInput {
-                    id: scInput
-                    anchors.fill: parent
-                    anchors.leftMargin: 6
-                    anchors.rightMargin: 6
-                    verticalAlignment: TextInput.AlignVCenter
-                    horizontalAlignment: TextInput.AlignHCenter
-                    text: scRow.currentShortcut
-                    color: theme ? theme.textBright : "#ffffff"
-                    font.pixelSize: 11
-                    font.bold: true
-                    font.family: theme ? theme.fontFamilyMono : "monospace"
-                    selectByMouse: true
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 6
 
-                    onEditingFinished: {
-                        if (scInput.text.trim()) {
-                            scRow.shortcutChanged(scInput.text.trim());
-                        }
+                    VectorIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: scRow.isRecording ? "sparkles" : "keyboard"
+                        size: 11
+                        color: scRow.isRecording ? "#ffffff" : (theme ? theme.accent : "#0078d4")
                     }
 
-                    onAccepted: {
-                        if (scInput.text.trim()) {
-                            scRow.shortcutChanged(scInput.text.trim());
+                    Text {
+                        id: scBadgeText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: scRow.isRecording ? "Press Keys..." : (scRow.currentShortcut || "Not Set")
+                        color: scRow.isRecording ? "#ffffff" : (theme ? theme.textBright : "#ffffff")
+                        font.pixelSize: 11
+                        font.bold: true
+                        font.family: theme ? theme.fontFamilyMono : "monospace"
+                    }
+                }
+
+                MouseArea {
+                    id: badgeMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        scRow.isRecording = !scRow.isRecording;
+                        if (scRow.isRecording) {
+                            recorderBadge.forceActiveFocus();
                         }
-                        scInput.focus = false;
+                    }
+                }
+
+                Keys.onPressed: function(event) {
+                    if (!scRow.isRecording) return;
+
+                    // Allow Escape to cancel recording without modifying shortcut
+                    if (event.key === Qt.Key_Escape && !event.modifiers) {
+                        scRow.isRecording = false;
+                        event.accepted = true;
+                        return;
+                    }
+
+                    // Ignore standalone modifier presses (wait for key combo)
+                    if (event.key === Qt.Key_Control || event.key === Qt.Key_Shift ||
+                        event.key === Qt.Key_Alt || event.key === Qt.Key_Meta) {
+                        event.accepted = true;
+                        return;
+                    }
+
+                    var keyStr = "";
+                    if (event.key >= Qt.Key_F1 && event.key <= Qt.Key_F12) {
+                        keyStr = "F" + (event.key - Qt.Key_F1 + 1);
+                    } else if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z) {
+                        keyStr = String.fromCharCode(event.key);
+                    } else if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) {
+                        keyStr = String.fromCharCode(event.key);
+                    } else if (event.key === Qt.Key_QuoteLeft || event.key === Qt.Key_AsciiTilde) {
+                        keyStr = "`";
+                    } else if (event.key === Qt.Key_Slash) {
+                        keyStr = "/";
+                    } else if (event.key === Qt.Key_Backslash) {
+                        keyStr = "\\";
+                    } else if (event.key === Qt.Key_Minus) {
+                        keyStr = "-";
+                    } else if (event.key === Qt.Key_Equal || event.key === Qt.Key_Plus) {
+                        keyStr = "=";
+                    } else if (event.key === Qt.Key_Comma) {
+                        keyStr = ",";
+                    } else if (event.key === Qt.Key_Period) {
+                        keyStr = ".";
+                    } else if (event.key === Qt.Key_Semicolon) {
+                        keyStr = ";";
+                    } else if (event.key === Qt.Key_Apostrophe) {
+                        keyStr = "'";
+                    } else if (event.key === Qt.Key_BracketLeft) {
+                        keyStr = "[";
+                    } else if (event.key === Qt.Key_BracketRight) {
+                        keyStr = "]";
+                    } else if (event.key === Qt.Key_Tab) {
+                        keyStr = "Tab";
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        keyStr = "Return";
+                    } else if (event.key === Qt.Key_Space) {
+                        keyStr = "Space";
+                    } else if (event.key === Qt.Key_Delete) {
+                        keyStr = "Del";
+                    } else if (event.key === Qt.Key_Backspace) {
+                        keyStr = "Backspace";
+                    } else if (event.text && event.text.length > 0) {
+                        keyStr = event.text.toUpperCase();
+                    }
+
+                    if (keyStr.length > 0) {
+                        var parts = [];
+                        if (event.modifiers & Qt.ControlModifier) parts.push("Ctrl");
+                        if (event.modifiers & Qt.AltModifier) parts.push("Alt");
+                        if (event.modifiers & Qt.ShiftModifier) parts.push("Shift");
+                        if (event.modifiers & Qt.MetaModifier) parts.push("Meta");
+                        parts.push(keyStr);
+
+                        var fullCombo = parts.join("+");
+                        scRow.currentShortcut = fullCombo;
+                        scRow.shortcutChanged(fullCombo);
+                        if (theme && theme.saveSettings) {
+                            theme.saveSettings();
+                        }
+                        scRow.isRecording = false;
+                        event.accepted = true;
                     }
                 }
             }

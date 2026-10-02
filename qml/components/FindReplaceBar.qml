@@ -19,6 +19,18 @@ Rectangle {
     signal replaceRequested()
     signal replaceAllRequested()
     signal closeRequested()
+    function focusInput() {
+        findInput.forceActiveFocus();
+        findInput.selectAll();
+    }
+
+    function setFindText(t) {
+        findInput.text = t;
+    }
+
+    onFindTextChanged: {
+        root.findNextRequested();
+    }
 
     width: 380
     height: isReplaceMode ? 76 : 38
@@ -93,6 +105,18 @@ Rectangle {
                     }
 
                     onAccepted: root.findNextRequested()
+
+                    Keys.onEscapePressed: root.closeRequested()
+                    Keys.onPressed: function(event) {
+                        if (event.key === Qt.Key_F3) {
+                            if (event.modifiers & Qt.ShiftModifier) {
+                                root.findPrevRequested();
+                            } else {
+                                root.findNextRequested();
+                            }
+                            event.accepted = true;
+                        }
+                    }
                 }
             }
 

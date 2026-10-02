@@ -303,6 +303,8 @@ Rectangle {
         var folderPathMap = {};
         folderPathMap[root.workspaceName] = root.workspacePath;
 
+        var initialCollapsed = {};
+
         for (var i = 0; i < rawList.length; i++) {
             var item = rawList[i];
             var pId = item.parentId || root.workspaceName;
@@ -311,6 +313,7 @@ Rectangle {
 
             if (item.type === "Folder") {
                 folderPathMap[item.name] = fullPath;
+                initialCollapsed[fullPath] = true;
             }
 
             var level = (parentLevelMap[pId] !== undefined) ? (parentLevelMap[pId] + 1) : 0;
@@ -327,5 +330,8 @@ Rectangle {
                 fullPath: fullPath
             });
         }
+
+        root.collapsedFolders = initialCollapsed;
+        root.collapseVersion++;
     }
 }

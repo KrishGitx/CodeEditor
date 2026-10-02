@@ -15,6 +15,7 @@ QtObject {
     property bool enableBracketMatching: true
     property bool enableAutocomplete: true
     property bool enableWordWrap: false
+    property bool enableMouseWheelZoom: true
     property int editorFontSize: 13
     property string editorFontFamily: "Consolas, 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
     property int tabSize: 4
@@ -51,6 +52,7 @@ QtObject {
                     var s = JSON.parse(rawJson);
                     if (s.theme) root.setTheme(s.theme);
                     if (s.editor_font_size) root.editorFontSize = parseInt(s.editor_font_size);
+                    if (s.enable_mouse_wheel_zoom !== undefined) root.enableMouseWheelZoom = (s.enable_mouse_wheel_zoom === true || s.enable_mouse_wheel_zoom === "true");
                     if (s.enable_word_wrap !== undefined) root.enableWordWrap = (s.enable_word_wrap === true || s.enable_word_wrap === "true");
                     if (s.enable_minimap !== undefined) root.enableMinimap = (s.enable_minimap === true || s.enable_minimap === "true");
                     if (s.enable_line_numbers !== undefined) root.enableLineNumbers = (s.enable_line_numbers === true || s.enable_line_numbers === "true");
@@ -77,6 +79,7 @@ QtObject {
         if (typeof settingsBackend !== "undefined" && settingsBackend) {
             settingsBackend.set_value("theme", root.currentTheme);
             settingsBackend.set_value("editor_font_size", "" + root.editorFontSize);
+            settingsBackend.set_value("enable_mouse_wheel_zoom", "" + root.enableMouseWheelZoom);
             settingsBackend.set_value("enable_word_wrap", "" + root.enableWordWrap);
             settingsBackend.set_value("enable_minimap", "" + root.enableMinimap);
             settingsBackend.set_value("enable_line_numbers", "" + root.enableLineNumbers);

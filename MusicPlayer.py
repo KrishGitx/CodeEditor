@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import queue
+import time
 
 from PySide6.QtCore import (
     QObject,
@@ -62,6 +63,7 @@ class MusicPlayer(QObject):
     currentSongChanged = Signal(str, str, str, int)  # title, artist, videoId, durationSec
     volumeChanged = Signal(float)
     songFinished = Signal(str)  # videoId
+    coverUrlChanged = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -81,12 +83,17 @@ class MusicPlayer(QObject):
         self._current_artist = "Ready to Play"
         self._current_video = None
         self._current_duration = 210
+        self._current_cover_url = ""
 
         self._audio_sink = None
         self._audio_device = None
         self._download_process = None
         self._stream_thread = None
         self._song_cache = {}
+
+    @Property(str, notify=coverUrlChanged)
+    def coverUrl(self):
+        return self._current_cover_url
 
     @staticmethod
     def _parse_duration(dur_val):
@@ -121,12 +128,15 @@ class MusicPlayer(QObject):
                     vid = song.get("videoId", "")
                     if vid:
                         dur_sec = self._parse_duration(song.get("duration_seconds") or song.get("duration"))
+                        thumbnails = song.get("thumbnails", [])
+                        cover_url = thumbnails[-1]["url"] if thumbnails else f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
                         item = {
                             "title": title,
                             "artist": artist,
                             "videoId": vid,
                             "duration": dur_sec,
-                            "durationText": song.get("duration", f"{dur_sec//60}:{dur_sec%60:02d}")
+                            "durationText": song.get("duration", f"{dur_sec//60}:{dur_sec%60:02d}"),
+                            "coverUrl": cover_url
                         }
                         songs.append(item)
                         self._song_cache[vid] = item
@@ -136,9 +146,10 @@ class MusicPlayer(QObject):
                 print("Search error:", e)
                 # Fallback demo items if offline or search limit reached
                 fallback_songs = [
-                    {"title": f"{query} - Lo-Fi Chill Beats", "artist": "Synthwave Collective", "videoId": "demo_1", "duration": 225, "durationText": "03:45"},
-                    {"title": f"{query} - Ambient Focus Flow", "artist": "Deep Code Audio", "videoId": "demo_2", "duration": 198, "durationText": "03:18"},
-                    {"title": f"{query} - Midnight Cyber Hack", "artist": "Neural Soundscapes", "videoId": "demo_3", "duration": 264, "durationText": "04:24"},
+                    {"title": f"{query} - Starboy Flow", "artist": "The Weeknd", "videoId": "demo_1", "duration": 230, "durationText": "03:50", "coverUrl": "https://img.youtube.com/vi/3_g2un5M350/hqdefault.jpg"},
+                    {"title": f"{query} - Lo-Fi Chill Beats", "artist": "Synthwave Collective", "videoId": "demo_2", "duration": 225, "durationText": "03:45", "coverUrl": "https://img.youtube.com/vi/suxP321fM5s/hqdefault.jpg"},
+                    {"title": f"{query} - Ambient Focus Flow", "artist": "Deep Code Audio", "videoId": "demo_3", "duration": 198, "durationText": "03:18", "coverUrl": "https://img.youtube.com/vi/5qap5aO4i9A/hqdefault.jpg"},
+                    {"title": f"{query} - Midnight Cyber Hack", "artist": "Neural Soundscapes", "videoId": "demo_4", "duration": 264, "durationText": "04:24", "coverUrl": "https://img.youtube.com/vi/DWcJFNfaw90/hqdefault.jpg"},
                 ]
                 for s in fallback_songs:
                     self._song_cache[s["videoId"]] = s
@@ -152,20 +163,23 @@ class MusicPlayer(QObject):
         self._stop_stream()
         self._current_video = videoId
 
-        # Update metadata if available in cache
+        # Update metadata and cover URL if available in cache
         if videoId in self._song_cache:
             song = self._song_cache[videoId]
             self._current_title = song.get("title", "Streaming Track")
             self._current_artist = song.get("artist", "Artist")
             self._current_duration = song.get("duration", 210)
+            self._current_cover_url = song.get("coverUrl", f"https://img.youtube.com/vi/{videoId}/hqdefault.jpg")
         else:
             self._current_title = f"Track {videoId[:8]}"
             self._current_artist = "YouTube Music"
             self._current_duration = 210
+            self._current_cover_url = f"https://img.youtube.com/vi/{videoId}/hqdefault.jpg"
 
         self.currentSongChanged.emit(self._current_title, self._current_artist, videoId, self._current_duration)
+        self.coverUrlChanged.emit(self._current_cover_url)
         self._set_state("playing")
-        print("Playing:", videoId, "Duration:", self._current_duration)
+        print("Playing:", videoId, "Duration:", self._current_duration, "Cover:", self._current_cover_url)
 
         # Create audio format
         format = QAudioFormat()
@@ -191,17 +205,17 @@ class MusicPlayer(QObject):
         self._stream_thread.start()
 
     def _stream_song(self, videoId):
+        actual_id = videoId
         if videoId.startswith("demo_"):
-            # Map demo fallback IDs to reliable streaming tracks so sound always plays
             demo_map = {
-                "demo_1": "suxP321fM5s",
-                "demo_2": "jfKfPfyJRdk",
+                "demo_1": "3_g2un5M350",
+                "demo_2": "suxP321fM5s",
                 "demo_3": "5qap5aO4i9A",
                 "demo_4": "DWcJFNfaw90"
             }
-            videoId = demo_map.get(videoId, "suxP321fM5s")
+            actual_id = demo_map.get(videoId, "3_g2un5M350")
 
-        url = f"https://www.youtube.com/watch?v={videoId}"
+        url = f"https://www.youtube.com/watch?v={actual_id}"
         print("Getting audio stream for:", url)
 
         try:
@@ -211,7 +225,7 @@ class MusicPlayer(QObject):
                     "-m",
                     "yt_dlp",
                     "-f",
-                    "bestaudio",
+                    "bestaudio/140/ba",
                     "-g",
                     "--no-playlist",
                     url
@@ -272,12 +286,7 @@ class MusicPlayer(QObject):
                 if self._audio_device:
                     self._audio_device.feed(data)
 
-            print("Stream finished for:", videoId)
-            if self._current_video == videoId and self._playback_state == "playing":
-                # Wait briefly for buffered audio to drain
-                time.sleep(0.5)
-                if self._current_video == videoId:
-                    self.songFinished.emit(videoId)
+            print("Stream finished buffering for:", videoId)
         except Exception as e:
             print("Streaming error:", e)
 

@@ -14,6 +14,15 @@ Item {
     height: 340
 
     readonly property real radiusDistance: 110
+    Connections {
+    target: codeTextArea
+
+    function onSelection(code) {
+        if (code !== "") {
+            menuItems[4].label = "Ask AI"
+        }
+    }
+}
 
     property var menuItems: [
         { id: "save", label: "Save", icon: "save", shortcut: "Ctrl+S" },

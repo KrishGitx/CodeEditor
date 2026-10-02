@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 class SettingsBackend(QObject):
     settingsLoaded = Signal(str)
     settingChanged = Signal(str, str)
+    recentProjectsChanged = Signal(list)
 
     def __init__(self):
         super().__init__()
@@ -126,3 +127,45 @@ class SettingsBackend(QObject):
                 self._save_to_disk()
         except Exception as e:
             print(f"[SettingsBackend] Failed to update settings from JSON: {e}")
+
+    @Slot(str)
+    def add_recent_project(self, folder_path):
+        if not folder_path or not folder_path.strip():
+            return
+        clean_path = folder_path.replace("file:///", "").strip()
+        if not os.path.exists(clean_path):
+            return
+
+        name = os.path.basename(os.path.normpath(clean_path)) or clean_path
+        recent = self.settings.get("recent_projects", [])
+        if not isinstance(recent, list):
+            recent = []
+
+        # Remove existing instance of same path
+        recent = [p for p in recent if isinstance(p, dict) and os.path.normpath(p.get("path", "")) != os.path.normpath(clean_path)]
+        recent.insert(0, {
+            "name": name,
+            "path": clean_path
+        })
+        recent = recent[:12]  # Keep up to 12 recent projects
+        self.settings["recent_projects"] = recent
+        self._save_to_disk()
+        self.recentProjectsChanged.emit(recent)
+
+    @Slot(result=list)
+    def get_recent_projects(self):
+        recent = self.settings.get("recent_projects", [])
+        if not isinstance(recent, list):
+            return []
+        # Filter existing directories
+        valid = []
+        for p in recent:
+            if isinstance(p, dict) and "path" in p and os.path.exists(p["path"]):
+                valid.append(p)
+        return valid
+
+    @Slot()
+    def clear_recent_projects(self):
+        self.settings["recent_projects"] = []
+        self._save_to_disk()
+        self.recentProjectsChanged.emit([])

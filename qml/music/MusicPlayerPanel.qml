@@ -10,6 +10,7 @@ Rectangle {
     property string currentTitle: "Coding Focus Lo-Fi"
     property string currentArtist: "Deep Code Audio"
     property string currentVideoId: "demo_1"
+    property string currentCoverUrl: "https://img.youtube.com/vi/3_g2un5M350/hqdefault.jpg"
     property real currentVolume: 0.8
     property string viewMode: "player" // "player" or "search"
     property bool showInfoCard: false
@@ -185,10 +186,21 @@ Rectangle {
             root.totalDurationSec = duration || 210;
             root.currentPositionSec = 0;
             root.viewMode = "player";
+            if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.coverUrl) {
+                root.currentCoverUrl = musicPlayer.coverUrl;
+            } else {
+                root.currentCoverUrl = "https://img.youtube.com/vi/" + videoId + "/hqdefault.jpg";
+            }
+        }
+
+        function onCoverUrlChanged(url) {
+            if (url) {
+                root.currentCoverUrl = url;
+            }
         }
 
         function onSongFinished(videoId) {
-            if (root.playbackState === "playing") {
+            if (root.playbackState === "playing" && root.currentPositionSec >= Math.max(10, root.totalDurationSec - 5)) {
                 root.playNextSong();
             }
         }
@@ -341,6 +353,7 @@ Rectangle {
                         isPlaying: root.playbackState === "playing"
                         trackTitle: root.currentTitle
                         trackArtist: root.currentArtist
+                        coverUrl: (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.coverUrl) ? musicPlayer.coverUrl : (root.currentCoverUrl || "")
                     }
                 }
 
@@ -768,10 +781,30 @@ Rectangle {
                                     anchors.rightMargin: 8
                                     spacing: 8
 
-                                    VectorIcon {
-                                        name: (model.videoId === root.currentVideoId && root.playbackState === "playing") ? "disc" : "play"
-                                        size: 11
-                                        color: model.videoId === root.currentVideoId ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
+                                    // Track Cover Thumbnail / Icon
+                                    Rectangle {
+                                        width: 24
+                                        height: 24
+                                        radius: 3
+                                        color: theme ? theme.bgSurface : "#202022"
+                                        clip: true
+
+                                        Image {
+                                            anchors.fill: parent
+                                            source: (model.coverUrl && model.coverUrl.length > 0) ? model.coverUrl : ("https://img.youtube.com/vi/" + model.videoId + "/hqdefault.jpg")
+                                            fillMode: Image.PreserveAspectCrop
+                                            asynchronous: true
+                                            cache: true
+                                            visible: status === Image.Ready
+                                        }
+
+                                        VectorIcon {
+                                            anchors.centerIn: parent
+                                            name: (model.videoId === root.currentVideoId && root.playbackState === "playing") ? "disc" : "play"
+                                            size: 10
+                                            color: model.videoId === root.currentVideoId ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
+                                            visible: !model.coverUrl || model.coverUrl.length === 0
+                                        }
                                     }
 
                                     ColumnLayout {

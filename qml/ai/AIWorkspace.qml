@@ -11,7 +11,9 @@ Rectangle {
     signal insertCodeRequested(string code)
     signal closeRequested()
 
+
     color: theme ? theme.bgSidebar : "#181818"
+    
 
     // Disabled Overlay when AI Assistant is turned off in Settings
     Rectangle {
@@ -86,10 +88,10 @@ Rectangle {
 
         Component.onCompleted: {
             append({
-                msgId: "welcome_1",
-                role: "assistant",
-                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
-            });
+                    msgId: "welcome_1",
+                    role: "assistant",
+                    content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
+                });
         }
     }
 
@@ -105,10 +107,10 @@ Rectangle {
                 }
             }
             chatHistoryModel.append({
-                msgId: msgId,
-                role: role,
-                content: content
-            });
+                    msgId: msgId,
+                    role: role,
+                    content: content
+                });
             chatListView.positionViewAtEnd();
         }
 
@@ -122,10 +124,10 @@ Rectangle {
                 }
             }
             chatHistoryModel.append({
-                msgId: msgId,
-                role: "assistant",
-                content: chunk
-            });
+                    msgId: msgId,
+                    role: "assistant",
+                    content: chunk
+                });
             chatListView.positionViewAtEnd();
         }
 
@@ -135,10 +137,10 @@ Rectangle {
 
         function onErrorOccurred(err) {
             chatHistoryModel.append({
-                msgId: "err_" + Date.now(),
-                role: "assistant",
-                content: "Error: " + err
-            });
+                    msgId: "err_" + Date.now(),
+                    role: "assistant",
+                    content: "Error: " + err
+                });
             root.aiStatus = "idle";
         }
     }
@@ -193,10 +195,10 @@ Rectangle {
                         onClicked: {
                             chatHistoryModel.clear();
                             chatHistoryModel.append({
-                                msgId: "welcome_" + Date.now(),
-                                role: "assistant",
-                                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
-                            });
+                                    msgId: "welcome_" + Date.now(),
+                                    role: "assistant",
+                                    content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
+                                });
                             root.aiStatus = "idle";
                             if (typeof aiBackend !== "undefined" && aiBackend && aiBackend.clear_chat) {
                                 aiBackend.clear_chat();
@@ -328,6 +330,13 @@ Rectangle {
             }
         }
     }
+    function askAboutCode(code) {
+    console.log("AIWorkspace RECEIVED:", code)
+
+    inputTextArea.text = "Please Review the Following code:\n" + code
+
+    submitPrompt()
+}
 
     function submitPrompt() {
         var query = inputTextArea.text.trim();
@@ -341,10 +350,10 @@ Rectangle {
             aiBackend.send_message(query);
         } else {
             chatHistoryModel.append({
-                msgId: "usr_" + Date.now(),
-                role: "user",
-                content: query
-            });
+                    msgId: "usr_" + Date.now(),
+                    role: "user",
+                    content: query
+                });
 
             root.aiStatus = "thinking";
             simTimer.targetQuery = query;
@@ -360,10 +369,10 @@ Rectangle {
         onTriggered: {
             root.aiStatus = "idle";
             chatHistoryModel.append({
-                msgId: "ai_" + Date.now(),
-                role: "assistant",
-                content: "DGX AI response for: " + simTimer.targetQuery
-            });
+                    msgId: "ai_" + Date.now(),
+                    role: "assistant",
+                    content: "DGX AI response for: " + simTimer.targetQuery
+                });
             chatListView.positionViewAtEnd();
         }
     }

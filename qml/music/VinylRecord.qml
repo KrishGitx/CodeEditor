@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import Qt5Compat.GraphicalEffects
 
 Item {
     id: root
@@ -6,6 +7,7 @@ Item {
     property bool isPlaying: false
     property string trackTitle: "No Track"
     property string trackArtist: "Ready"
+    property string coverUrl: ""
     property real size: 68
 
     width: size
@@ -55,21 +57,55 @@ Item {
             }
         }
 
-        // Center Label
-        Rectangle {
+        // Center Label Hub
+        Item {
             id: centerLabel
             anchors.centerIn: parent
-            width: parent.width * 0.44
+            width: parent.width * 0.46
             height: width
-            radius: width / 2
-            color: theme ? theme.accent : "#0078d4"
-            border.color: "#ffffff25"
-            border.width: 1
+
+            // Fallback Background Circle
+            Rectangle {
+                anchors.fill: parent
+                radius: width / 2
+                color: theme ? theme.accent : "#0078d4"
+                border.color: "#ffffff30"
+                border.width: 1
+            }
+
+            // Raw Image (Used as source for OpacityMask)
+            Image {
+                id: rawCoverImage
+                anchors.fill: parent
+                source: root.coverUrl
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                visible: false
+            }
+
+            // Circular Mask
+            Rectangle {
+                id: circularMask
+                anchors.fill: parent
+                radius: width / 2
+                visible: false
+            }
+
+            // Circular Cropped Album Cover
+            OpacityMask {
+                id: albumCoverImg
+                anchors.fill: parent
+                source: rawCoverImage
+                maskSource: circularMask
+                visible: root.coverUrl !== "" && rawCoverImage.status === Image.Ready
+            }
 
             Column {
                 anchors.centerIn: parent
                 width: parent.width - 6
                 spacing: 1
+                visible: !albumCoverImg.visible
 
                 Text {
                     width: parent.width
@@ -82,13 +118,16 @@ Item {
                 }
             }
 
-            // Center Hole
+            // Center Spindle Hole
             Rectangle {
                 anchors.centerIn: parent
                 width: parent.width * 0.22
                 height: width
                 radius: width / 2
                 color: "#121212"
+                border.color: "#333333"
+                border.width: 1
+                z: 10
             }
         }
     }

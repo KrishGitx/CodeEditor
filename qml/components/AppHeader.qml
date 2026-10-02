@@ -23,6 +23,7 @@ Rectangle {
     signal toggleAiRequested()
     signal toggleMusicRequested()
     signal toggleZenRequested()
+    signal toggleSplitEditorRequested()
     signal findRequested()
     signal replaceRequested()
     signal formatRequested()
@@ -286,6 +287,7 @@ Rectangle {
 
                     Action { text: "Live Web & Markdown Preview\tCtrl+Shift+V"; onTriggered: root.openWebPreviewRequested() }
                     Action { text: "Architecture Whiteboard\tCtrl+Alt+W"; onTriggered: root.toggleWhiteboardRequested() }
+                    Action { text: "Split Editor Side-by-Side\tCtrl+\\"; onTriggered: root.toggleSplitEditorRequested() }
                     Action { text: "Inline Color Picker\tCtrl+Shift+C"; onTriggered: root.openColorPickerRequested() }
                     MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
                     Action { text: "Toggle Explorer\tCtrl+B"; onTriggered: root.toggleExplorerRequested() }

@@ -8,10 +8,12 @@ Rectangle {
 
     property var tabModel: null
     property int activeIndex: 0
+    property bool isSplit: false
 
     signal tabSelected(int index)
     signal tabClosed(int index)
     signal newTabRequested()
+    signal splitEditorRequested()
 
     height: 30
     color: theme ? theme.bgHeader : "#181818"
@@ -28,7 +30,7 @@ Rectangle {
     ScrollView {
         id: tabScrollView
         anchors.left: parent.left
-        anchors.right: newTabBtn.left
+        anchors.right: actionsRow.left
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         ScrollBar.horizontal.policy: ScrollBar.AsNeeded
@@ -139,30 +141,60 @@ Rectangle {
         }
     }
 
-    // New Tab Button (+)
-    Rectangle {
-        id: newTabBtn
+    // Action Buttons Row (New Tab + Split Editor)
+    Row {
+        id: actionsRow
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         anchors.rightMargin: 4
-        width: 24
-        height: 24
-        radius: 2
-        color: newTabMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+        spacing: 2
 
-        VectorIcon {
-            anchors.centerIn: parent
-            name: "new-file"
-            size: 11
-            color: theme ? theme.textSecondary : "#858585"
+        // Split Editor Button
+        Rectangle {
+            id: splitBtn
+            width: 24
+            height: 24
+            radius: 2
+            color: root.isSplit ? (theme ? theme.bgSurfaceActive : "#37373d") : (splitMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+            VectorIcon {
+                anchors.centerIn: parent
+                name: "split-horizontal"
+                size: 12
+                color: root.isSplit ? (theme ? theme.accent : "#0078d4") : (splitMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585"))
+            }
+
+            MouseArea {
+                id: splitMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.splitEditorRequested()
+            }
         }
 
-        MouseArea {
-            id: newTabMa
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.newTabRequested()
+        // New Tab Button (+)
+        Rectangle {
+            id: newTabBtn
+            width: 24
+            height: 24
+            radius: 2
+            color: newTabMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+
+            VectorIcon {
+                anchors.centerIn: parent
+                name: "new-file"
+                size: 11
+                color: newTabMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585")
+            }
+
+            MouseArea {
+                id: newTabMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.newTabRequested()
+            }
         }
     }
 }

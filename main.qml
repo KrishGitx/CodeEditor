@@ -92,6 +92,14 @@ Window {
             statusBar.currentLanguage = lang;
         }
     }
+    Connections {
+        target: editorArea
+
+        function onAskAi(code) {
+            console.log("asking")
+            aiWorkspace.askAboutCode(code)
+        }
+    }
 
     // Native File Dialogs
     FileDialog {
@@ -229,6 +237,10 @@ Window {
         onActivated: editorArea.openWhiteboardTab()
     }
     Shortcut {
+        sequence: "Ctrl+\\"
+        onActivated: editorArea.toggleSplitEditor()
+    }
+    Shortcut {
         sequence: "Escape"
         onActivated: {
             if (settingsOverlay.visible) {
@@ -267,6 +279,7 @@ Window {
             onToggleAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
             onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
             onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
+            onToggleSplitEditorRequested: editorArea.toggleSplitEditor()
             onToggleWhiteboardRequested: editorArea.openWhiteboardTab()
             onOpenWebPreviewRequested: editorArea.openWebPreviewTab()
             onOpenColorPickerRequested: editorArea.openColorPickerAtCursor()

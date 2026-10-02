@@ -229,6 +229,10 @@ Window {
         onActivated: editorArea.openWhiteboardTab()
     }
     Shortcut {
+        sequence: "Ctrl+\\"
+        onActivated: editorArea.toggleSplitEditor()
+    }
+    Shortcut {
         sequence: "Escape"
         onActivated: {
             if (settingsOverlay.visible) {
@@ -267,6 +271,7 @@ Window {
             onToggleAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
             onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
             onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
+            onToggleSplitEditorRequested: editorArea.toggleSplitEditor()
             onToggleWhiteboardRequested: editorArea.openWhiteboardTab()
             onOpenWebPreviewRequested: editorArea.openWebPreviewTab()
             onOpenColorPickerRequested: editorArea.openColorPickerAtCursor()
@@ -334,11 +339,20 @@ Window {
 
                     EditorArea {
                         id: editorArea
+                        objectName: "editorArea"
                         anchors.fill: parent
 
                         onRequestOpenFile: openFileDialog.open()
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
+
+                        onAskAi: function(code) {
+                            if (!mainWindow.rightPanelVisible) {
+                                mainWindow.rightPanelVisible = true;
+                            }
+                            mainWindow.aiVisible = true;
+                            aiWorkspace.askAboutCode(code);
+                        }
 
                         onActiveFileChanged: function(path, name, lang, dirty) {
                             appHeader.activeFileName = name;
