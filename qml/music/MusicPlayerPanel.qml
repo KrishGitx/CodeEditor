@@ -862,6 +862,7 @@ Rectangle {
         root.totalDurationSec = dur || 210;
         root.currentPositionSec = 0;
         root.viewMode = "player";
+        root.playbackState = "loading";
 
         if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.play_song) {
             musicPlayer.play_song(vid);

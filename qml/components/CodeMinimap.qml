@@ -15,11 +15,9 @@ Rectangle {
     Canvas {
         id: minimapCanvas
         anchors.fill: parent
-        renderTarget: Canvas.Image
 
         onPaint: {
             var ctx = getContext("2d");
-            ctx.reset();
             ctx.clearRect(0, 0, width, height);
 
             var text = root.documentText;
@@ -28,14 +26,15 @@ Rectangle {
             var lines = text.split("\n");
             var lineCount = Math.max(1, lines.length);
 
-            // Cap max bars rendered on canvas to at most 250 for instant rendering
-            var maxBars = Math.min(250, Math.max(1, Math.floor(height / 2.5)));
+            // Cap max bars rendered on canvas to at most 300 for instant 60fps rendering
+            var maxBars = Math.min(300, Math.max(1, Math.floor(height / 2.2)));
             var step = lineCount / maxBars;
-            var barHeight = Math.max(1.5, Math.min(4.0, height / maxBars));
+            var barHeight = Math.max(1.2, Math.min(3.5, height / maxBars));
 
             var kwColor = theme ? theme.synKeyword : "#569cd6";
             var fnColor = theme ? theme.synFunction : "#dcdcaa";
             var comColor = theme ? theme.synComment : "#6a9955";
+            var strColor = theme ? theme.synString : "#ce9178";
             var typeColor = theme ? theme.synType : "#4ec9b0";
             var defaultColor = theme ? theme.textDisabled : "#4d4d4d";
 
@@ -51,14 +50,19 @@ Rectangle {
                         indent++;
                     }
 
-                    var startX = Math.min(width * 0.55, Math.max(3, indent * 2));
-                    var barWidth = Math.min(width - startX - 4, Math.max(4, trimmed.length * 0.75));
+                    var startX = Math.min(width * 0.55, Math.max(3, indent * 1.8));
+                    var barWidth = Math.min(width - startX - 4, Math.max(3, trimmed.length * 0.7));
                     var y = b * (height / maxBars);
 
                     var firstChar = trimmed.charAt(0);
-                    if (firstChar === '#' || (firstChar === '/' && trimmed.charAt(1) === '/')) {
+                    if (firstChar === '#' || (firstChar === '/' && trimmed.length > 1 && trimmed.charAt(1) === '/')) {
                         ctx.fillStyle = comColor;
-                    } else if (trimmed.startsWith("def ") || trimmed.startsWith("class ") || trimmed.startsWith("function ") || trimmed.startsWith("const ") || trimmed.startsWith("import ") || trimmed.startsWith("return ")) {
+                    } else if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
+                        ctx.fillStyle = strColor;
+                    } else if (trimmed.startsWith("def ") || trimmed.startsWith("class ") || trimmed.startsWith("function ") ||
+                               trimmed.startsWith("const ") || trimmed.startsWith("import ") || trimmed.startsWith("from ") ||
+                               trimmed.startsWith("return ") || trimmed.startsWith("var ") || trimmed.startsWith("let ") ||
+                               trimmed.startsWith("property ") || trimmed.startsWith("if ") || trimmed.startsWith("for ")) {
                         ctx.fillStyle = kwColor;
                     } else if (trimmed.indexOf("(") !== -1) {
                         ctx.fillStyle = fnColor;
@@ -68,7 +72,7 @@ Rectangle {
                         ctx.fillStyle = defaultColor;
                     }
 
-                    ctx.fillRect(startX, y, barWidth, Math.max(1, barHeight - 0.5));
+                    ctx.fillRect(startX, y, barWidth, Math.max(1.0, barHeight - 0.4));
                 }
             }
         }
@@ -76,7 +80,7 @@ Rectangle {
 
     Timer {
         id: paintDebounceTimer
-        interval: 150
+        interval: 100
         repeat: false
         onTriggered: minimapCanvas.requestPaint()
     }
@@ -92,7 +96,7 @@ Rectangle {
         x: 0
         y: Math.max(0, Math.min(root.height - height, root.scrollRatio * (root.height - height)))
         width: parent.width
-        height: Math.max(24, Math.min(root.height, root.visibleRatio * root.height))
+        height: Math.max(20, Math.min(root.height, root.visibleRatio * root.height))
         color: theme ? theme.accentMuted : "#0078d420"
         border.color: theme ? theme.borderNormal : "#333333"
         border.width: 1

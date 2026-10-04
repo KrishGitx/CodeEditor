@@ -53,7 +53,6 @@ Item {
     readonly property real editorLineHeight: fontMetrics.lineSpacing > 0 ? fontMetrics.lineSpacing : (fontMetrics.height > 0 ? fontMetrics.height : 18)
     readonly property real charWidth: fontMetrics.advanceWidth(" ") > 0 ? fontMetrics.advanceWidth(" ") : (fontMetrics.width(" ") > 0 ? fontMetrics.width(" ") : 8.0)
     readonly property var cachedIndentLevelWidths: {
-        var _dep = (fontMetrics.font.pixelSize || 13) + (fontMetrics.height || 0) + (typeof theme !== "undefined" && theme ? (theme.editorFontSize || 13) : 0);
         var tabSz = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
         var arr = [0];
         for (var i = 1; i <= 32; i++) {
@@ -155,8 +154,8 @@ Item {
 
     FontMetrics {
         id: fontMetrics
-        font.family: (typeof theme !== "undefined" && theme && (theme.editorFontFamily || theme.fontFamilyMono)) ? (theme.editorFontFamily || theme.fontFamilyMono) : "Consolas"
-        font.pixelSize: (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13
+        font.family: (theme && theme.fontFamilyMono) ? theme.fontFamilyMono : "Consolas"
+        font.pixelSize: theme ? theme.editorFontSize : 13
     }
 
     Component.onCompleted: {
@@ -377,13 +376,7 @@ Item {
                                                         id: canvasDebounceTimer
                                                         interval: 60
                                                         repeat: false
-                                                        onTriggered: {
-                                                            if (codeTextArea) {
-                                                                tabPane.paneTotalLineCount = codeTextArea.lineCount > 0 ? codeTextArea.lineCount : countLines(codeTextArea.text);
-                                                                tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
-                                                            }
-                                                            indentGuidesCanvas.requestPaint();
-                                                        }
+                                                        onTriggered: indentGuidesCanvas.requestPaint()
                                                     }
 
                                                     Connections {
@@ -429,115 +422,69 @@ Item {
                                                         ctx.strokeStyle = theme ? "#35383d" : "#303030";
                                                         ctx.globalAlpha = 0.35;
 
-                                                        function getLineIndent(text) {
-                                                            var trimmed = text.trim();
-                                                            if (trimmed.length === 0) return -1;
-                                                            var cols = 0;
-                                                            for (var c = 0; c < text.length; c++) {
-                                                                var ch = text.charAt(c);
-                                                                if (ch === ' ') {
-                                                                    cols += 1;
-                                                                } else if (ch === '\t') {
-                                                                    cols += tabSize - (cols % tabSize);
-                                                                } else {
-                                                                    break;
-                                                                }
-                                                            }
-                                                            return Math.floor(cols / tabSize);
-                                                        }
-
-                                                        var lastNonEmptyIndent = 0;
-                                                        if (startLine > 0) {
-                                                            var searchIdx = charIdx - 1;
-                                                            while (searchIdx > 0) {
-                                                                var pEnd = searchIdx;
-                                                                var pStart = doc.lastIndexOf("\n", pEnd - 1);
-                                                                var pLine = doc.substring(pStart === -1 ? 0 : pStart + 1, pEnd);
-                                                                var pInd = getLineIndent(pLine);
-                                                                if (pInd >= 0) {
-                                                                    lastNonEmptyIndent = pInd;
-                                                                    break;
-                                                                }
-                                                                if (pStart === -1) break;
-                                                                searchIdx = pStart;
-                                                            }
-                                                        }
-
-                                                        // 1. Regular indentation guides derived strictly from leading whitespace
+                                                        // 1. Regular indentation guides for indented code lines
                                                         for (var l = startLine; l < endLine && charIdx < docLen; l++) {
                                                             var lineEnd = doc.indexOf("\n", charIdx);
                                                             if (lineEnd === -1) lineEnd = docLen;
                                                             var lineText = doc.substring(charIdx, lineEnd);
-                                                            var nextCharIdx = lineEnd + 1;
+                                                            charIdx = lineEnd + 1;
 
-                                                            var indentCount = getLineIndent(lineText);
-                                                            if (indentCount >= 0) {
-                                                                lastNonEmptyIndent = indentCount;
-                                                            } else {
-                                                                // Blank line: determine effective indent from surrounding context
-                                                                var nextIndent = 0;
-                                                                var fIdx = nextCharIdx;
-                                                                while (fIdx < docLen) {
-                                                                    var fEnd = doc.indexOf("\n", fIdx);
-                                                                    if (fEnd === -1) fEnd = docLen;
-                                                                    var fLine = doc.substring(fIdx, fEnd);
-                                                                    var fInd = getLineIndent(fLine);
-                                                                    if (fInd >= 0) {
-                                                                        nextIndent = fInd;
+                                                            var trimmed = lineText.trim();
+                                                            if (trimmed.length > 0) {
+                                                                var cols = 0;
+                                                                for (var c = 0; c < lineText.length; c++) {
+                                                                    var ch = lineText.charAt(c);
+                                                                    if (ch === ' ') {
+                                                                        cols += 1;
+                                                                    } else if (ch === '\t') {
+                                                                        cols += tabSize - (cols % tabSize);
+                                                                    } else {
                                                                         break;
                                                                     }
-                                                                    fIdx = fEnd + 1;
                                                                 }
-                                                                indentCount = Math.min(lastNonEmptyIndent, nextIndent);
-                                                            }
-
-                                                            if (indentCount > 0) {
+                                                                var indentCount = Math.floor(cols / tabSize);
                                                                 var y = topPadding + (l * lineH) - viewTop;
-                                                                for (var lvl = 0; lvl < indentCount; lvl++) {
+
+                                                                for (var lvl = 1; lvl < indentCount; lvl++) {
                                                                     var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
-                                                                    var x = leftPadding + lvlWidth;
-                                                                    var drawX = Math.round(x) + 0.5;
-                                                                    if (drawX >= 0 && drawX <= width) {
+                                                                    var x = Math.round(leftPadding + lvlWidth) + 0.5;
+                                                                    if (x >= 0 && x <= width) {
                                                                         ctx.beginPath();
-                                                                        ctx.moveTo(drawX, y);
-                                                                        ctx.lineTo(drawX, y + lineH);
+                                                                        ctx.moveTo(x, y);
+                                                                        ctx.lineTo(x, y + lineH);
                                                                         ctx.stroke();
                                                                     }
                                                                 }
                                                             }
-
-                                                            charIdx = nextCharIdx;
                                                         }
 
                                                         // 2. Structural Scope Guides (handles outermost { at level 0, nested {, and blank lines)
                                                         var scopes = tabPane.paneScopeRanges || [];
                                                         for (var s = 0; s < scopes.length; s++) {
-                                                             var sc = scopes[s];
-                                                             if (sc.startLine < endLine && sc.endLine >= startLine) {
-                                                                 var sLvl = sc.level;
-                                                                 var sLvlWidth = (sLvl < cachedWidths.length) ? cachedWidths[sLvl] : (sLvl * cachedWidths[1]);
-                                                                 var sx = leftPadding + sLvlWidth;
-                                                                 var drawSx = Math.round(sx) + 0.5;
-                                                                 if (drawSx >= 0 && drawSx <= width) {
-                                                                     var lineStart = Math.max(startLine, sc.startLine + 1);
-                                                                     var lineEnd = Math.min(endLine - 1, sc.endLine);
-                                                                     for (var sl = lineStart; sl <= lineEnd; sl++) {
-                                                                         var sy = topPadding + (sl * lineH) - viewTop;
-                                                                         if (sl === sc.endLine) {
-                                                                             ctx.beginPath();
-                                                                             ctx.moveTo(drawSx, sy);
-                                                                             ctx.lineTo(drawSx, sy + lineH * 0.5);
-                                                                             ctx.lineTo(drawSx + root.charWidth * 0.75, sy + lineH * 0.5);
-                                                                             ctx.stroke();
-                                                                         } else {
-                                                                             ctx.beginPath();
-                                                                             ctx.moveTo(drawSx, sy);
-                                                                             ctx.lineTo(drawSx, sy + lineH);
-                                                                             ctx.stroke();
-                                                                         }
-                                                                     }
-                                                                 }
-                                                             }
+                                                            var sc = scopes[s];
+                                                            if (sc.startLine < endLine && sc.endLine >= startLine) {
+                                                                var sLvl = sc.level;
+                                                                var sLvlWidth = (sLvl < cachedWidths.length) ? cachedWidths[sLvl] : (sLvl * cachedWidths[1]);
+                                                                var sx = Math.round(leftPadding + sLvlWidth) + 0.5;
+                                                                if (sx >= 0 && sx <= width) {
+                                                                    var lineStart = Math.max(startLine, sc.startLine + 1);
+                                                                    var lineEnd = Math.min(endLine - 1, sc.endLine);
+                                                                    for (var sl = lineStart; sl <= lineEnd; sl++) {
+                                                                        var sy = topPadding + (sl * lineH) - viewTop;
+                                                                        ctx.beginPath();
+                                                                        ctx.moveTo(sx, sy);
+                                                                        ctx.lineTo(sx, sy + lineH);
+                                                                        ctx.stroke();
+
+                                                                        if (sl === sc.endLine) {
+                                                                            ctx.beginPath();
+                                                                            ctx.moveTo(sx, sy + lineH * 0.5);
+                                                                            ctx.lineTo(sx + root.charWidth * 0.75, sy + lineH * 0.5);
+                                                                            ctx.stroke();
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                         ctx.globalAlpha = 1.0;
                                                     }
@@ -549,12 +496,11 @@ Item {
                                                     interactive: false
                                                     clip: true
                                                     boundsBehavior: Flickable.StopAtBounds
-                                                    contentWidth: (theme && theme.enableWordWrap) ? width : Math.max(width, codeTextArea.contentWidth + codeTextArea.leftPadding + codeTextArea.rightPadding + 80)
-                                                    contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, codeTextArea.contentHeight + codeTextArea.topPadding + codeTextArea.bottomPadding + 220) : Math.max(height, tabPane.paneTotalLineCount * root.editorLineHeight + 220)
+                                                    contentWidth: Math.max(width, codeTextArea.contentWidth + codeTextArea.leftPadding + codeTextArea.rightPadding + 80)
+                                                    contentHeight: Math.max(height, tabPane.paneTotalLineCount * root.editorLineHeight + 220)
 
                                                     WheelHandler {
                                                         target: editorFlickable
-                                                        acceptedModifiers: Qt.NoModifier
                                                         orientation: Qt.Vertical
                                                         onWheel: function(event) {
                                                             var delta = event.angleDelta.y;
@@ -566,44 +512,29 @@ Item {
                                                         }
                                                     }
 
-                                                    Timer {
-                                                        id: saveZoomTimer
-                                                        interval: 400
-                                                        repeat: false
-                                                        onTriggered: {
-                                                            if (typeof theme !== "undefined" && theme) {
-                                                                theme.saveSettings();
-                                                            }
-                                                        }
-                                                    }
-
                                                     WheelHandler {
-                                                        id: zoomWheelHandler
                                                         target: null
                                                         acceptedModifiers: Qt.ControlModifier
                                                         orientation: Qt.Vertical
-
-                                                        property real deltaAccumulator: 0.0
-
                                                         onWheel: function(event) {
-                                                            if (typeof theme === "undefined" || !theme || theme.enableMouseWheelZoom === false) return;
+                                                            if (typeof theme !== "undefined" && theme && theme.enableMouseWheelZoom === false) return;
                                                             var delta = event.angleDelta.y;
                                                             if (delta === 0) return;
-
-                                                            deltaAccumulator += delta;
-                                                            if (Math.abs(deltaAccumulator) >= 120) {
-                                                                var step = (deltaAccumulator > 0) ? 1 : -1;
-                                                                deltaAccumulator = 0.0;
-
-                                                                var currentSize = theme.editorFontSize;
-                                                                var newSize = Math.max(8, Math.min(48, currentSize + step));
-                                                                if (newSize === currentSize) return;
-
-                                                                // Change font size only - let Qt handle layout & viewport naturally
-                                                                theme.editorFontSize = newSize;
-
-                                                                if (indentGuidesCanvas) indentGuidesCanvas.requestPaint();
-                                                                saveZoomTimer.restart();
+                                                            var change = delta > 0 ? 1 : -1;
+                                                            if (typeof theme !== "undefined" && theme) {
+                                                                var oldLineH = root.editorLineHeight > 0 ? root.editorLineHeight : 18;
+                                                                var topVisibleLine = editorFlickable.contentY / oldLineH;
+                                                                var newSize = Math.max(8, Math.min(48, theme.editorFontSize + change));
+                                                                if (newSize !== theme.editorFontSize) {
+                                                                    theme.editorFontSize = newSize;
+                                                                    theme.saveSettings();
+                                                                    Qt.callLater(function() {
+                                                                        if (editorFlickable && root.editorLineHeight > 0) {
+                                                                            var maxY = Math.max(0, editorFlickable.contentHeight - editorFlickable.height);
+                                                                            editorFlickable.contentY = Math.max(0, Math.min(maxY, topVisibleLine * root.editorLineHeight));
+                                                                        }
+                                                                    });
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -652,19 +583,19 @@ Item {
                                                         id: codeTextArea
                                                         objectName: "codeTextArea"
                                                         z: 1
-                                                        width: (theme && theme.enableWordWrap) ? editorFlickable.width : editorFlickable.contentWidth
+                                                        width: editorFlickable.contentWidth
                                                         height: editorFlickable.contentHeight
                                                         topPadding: 6
                                                         bottomPadding: 16
                                                         leftPadding: 10
                                                         rightPadding: 24
-                                                        wrapMode: (theme && theme.enableWordWrap) ? TextArea.WrapAtWordBoundaryOrAnywhere : TextArea.NoWrap
+                                                        wrapMode: (theme && theme.enableWordWrap) ? TextArea.Wrap : TextArea.NoWrap
                                                         tabStopDistance: (theme ? theme.tabSize : 4) * root.charWidth
                                                         color: theme ? theme.textPrimary : "#cccccc"
                                                         selectionColor: theme ? theme.synSelection : "#264f78"
                                                         selectedTextColor: theme ? theme.textBright : "#ffffff"
-                                                        font.pixelSize: (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13
-                                                        font.family: (typeof theme !== "undefined" && theme && (theme.editorFontFamily || theme.fontFamilyMono)) ? (theme.editorFontFamily || theme.fontFamilyMono) : "Consolas"
+                                                        font.pixelSize: (typeof theme !== "undefined" && theme) ? theme.editorFontSize : 13
+                                                        font.family: (theme && theme.fontFamilyMono) ? theme.fontFamilyMono : "Consolas"
                                                         selectByMouse: true
                                                         focus: tabPane.index === root.activeTabIndex
                                                         cursorVisible: true
@@ -781,12 +712,12 @@ Item {
 
                                                         onTextChanged: {
                                                             if (root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
+                                                            tabPane.paneTotalLineCount = countLines(codeTextArea.text);
+                                                            tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
                                                             if (index >= 0 && index < tabModel.count) {
+                                                                tabModel.setProperty(index, "isDirty", true);
                                                                 var curTab = tabModel.get(index);
-                                                                if (curTab && !curTab.isDirty) {
-                                                                    tabModel.setProperty(index, "isDirty", true);
-                                                                    root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, true);
-                                                                }
+                                                                root.activeFileChanged(curTab ? (curTab.path || "") : "", curTab ? (curTab.title || "") : "", root.currentLanguage, true);
                                                             }
                                                             canvasDebounceTimer.restart();
                                                             textChangeDebounceTimer.restart();
@@ -1124,15 +1055,6 @@ Item {
                                 onScrollRequested: function(ratio) {
                                     if (root.editorFlickable) {
                                         root.editorFlickable.contentY = ratio * Math.max(0, root.editorFlickable.contentHeight - root.editorFlickable.height);
-                                    }
-                                }
-                            }
-
-                            Connections {
-                                target: root
-                                function onActiveTabIndexChanged() {
-                                    if (codeMinimap && root.codeTextArea) {
-                                        codeMinimap.documentText = root.codeTextArea.text;
                                     }
                                 }
                             }
@@ -1793,85 +1715,41 @@ Item {
                                                 ctx.strokeStyle = theme ? "#35383d" : "#303030";
                                                 ctx.globalAlpha = 0.35;
 
-                                                        function getLineIndent(text) {
-                                                            var trimmed = text.trim();
-                                                            if (trimmed.length === 0) return -1;
-                                                            var cols = 0;
-                                                            for (var c = 0; c < text.length; c++) {
-                                                                var ch = text.charAt(c);
-                                                                if (ch === ' ') {
-                                                                    cols += 1;
-                                                                } else if (ch === '\t') {
-                                                                    cols += tabSize - (cols % tabSize);
-                                                                } else {
-                                                                    break;
-                                                                }
-                                                            }
-                                                            return Math.floor(cols / tabSize);
-                                                        }
+                                                // 1. Regular indentation guides for indented code lines
+                                                for (var l = startLine; l < endLine && charIdx < docLen; l++) {
+                                                    var lineEnd = doc.indexOf("\n", charIdx);
+                                                    if (lineEnd === -1) lineEnd = docLen;
+                                                    var lineText = doc.substring(charIdx, lineEnd);
+                                                    charIdx = lineEnd + 1;
 
-                                                        var lastNonEmptyIndent = 0;
-                                                        if (startLine > 0) {
-                                                            var searchIdx = charIdx - 1;
-                                                            while (searchIdx > 0) {
-                                                                var pEnd = searchIdx;
-                                                                var pStart = doc.lastIndexOf("\n", pEnd - 1);
-                                                                var pLine = doc.substring(pStart === -1 ? 0 : pStart + 1, pEnd);
-                                                                var pInd = getLineIndent(pLine);
-                                                                if (pInd >= 0) {
-                                                                    lastNonEmptyIndent = pInd;
-                                                                    break;
-                                                                }
-                                                                if (pStart === -1) break;
-                                                                searchIdx = pStart;
-                                                            }
-                                                        }
-
-                                                        // 1. Regular indentation guides derived strictly from leading whitespace
-                                                        for (var l = startLine; l < endLine && charIdx < docLen; l++) {
-                                                            var lineEnd = doc.indexOf("\n", charIdx);
-                                                            if (lineEnd === -1) lineEnd = docLen;
-                                                            var lineText = doc.substring(charIdx, lineEnd);
-                                                            var nextCharIdx = lineEnd + 1;
-
-                                                            var indentCount = getLineIndent(lineText);
-                                                            if (indentCount >= 0) {
-                                                                lastNonEmptyIndent = indentCount;
+                                                    var trimmed = lineText.trim();
+                                                    if (trimmed.length > 0) {
+                                                        var cols = 0;
+                                                        for (var c = 0; c < lineText.length; c++) {
+                                                            var ch = lineText.charAt(c);
+                                                            if (ch === ' ') {
+                                                                cols += 1;
+                                                            } else if (ch === '\t') {
+                                                                cols += tabSize - (cols % tabSize);
                                                             } else {
-                                                                // Blank line: determine effective indent from surrounding context
-                                                                var nextIndent = 0;
-                                                                var fIdx = nextCharIdx;
-                                                                while (fIdx < docLen) {
-                                                                    var fEnd = doc.indexOf("\n", fIdx);
-                                                                    if (fEnd === -1) fEnd = docLen;
-                                                                    var fLine = doc.substring(fIdx, fEnd);
-                                                                    var fInd = getLineIndent(fLine);
-                                                                    if (fInd >= 0) {
-                                                                        nextIndent = fInd;
-                                                                        break;
-                                                                    }
-                                                                    fIdx = fEnd + 1;
-                                                                }
-                                                                indentCount = Math.min(lastNonEmptyIndent, nextIndent);
+                                                                break;
                                                             }
-
-                                                            if (indentCount > 0) {
-                                                                var y = topPadding + (l * lineH) - viewTop;
-                                                                for (var lvl = 0; lvl < indentCount; lvl++) {
-                                                                    var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
-                                                                    var x = leftPadding + lvlWidth;
-                                                                    var drawX = Math.round(x) + 0.5;
-                                                                    if (drawX >= 0 && drawX <= width) {
-                                                                        ctx.beginPath();
-                                                                        ctx.moveTo(drawX, y);
-                                                                        ctx.lineTo(drawX, y + lineH);
-                                                                        ctx.stroke();
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            charIdx = nextCharIdx;
                                                         }
+                                                        var indentCount = Math.floor(cols / tabSize);
+                                                        var y = topPadding + (l * lineH) - viewTop;
+
+                                                        for (var lvl = 1; lvl < indentCount; lvl++) {
+                                                            var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
+                                                            var x = Math.round(leftPadding + lvlWidth) + 0.5;
+                                                            if (x >= 0 && x <= width) {
+                                                                ctx.beginPath();
+                                                                ctx.moveTo(x, y);
+                                                                ctx.lineTo(x, y + lineH);
+                                                                ctx.stroke();
+                                                            }
+                                                        }
+                                                    }
+                                                }
 
                                                 // 2. Structural Scope Guides (handles outermost { at level 0, nested {, and blank lines)
                                                 var scopes = root.activeScopeRanges || [];
@@ -1880,23 +1758,21 @@ Item {
                                                     if (sc.startLine < endLine && sc.endLine >= startLine) {
                                                         var sLvl = sc.level;
                                                         var sLvlWidth = (sLvl < cachedWidths.length) ? cachedWidths[sLvl] : (sLvl * cachedWidths[1]);
-                                                        var sx = leftPadding + sLvlWidth;
-                                                        var drawSx = Math.round(sx) + 0.5;
-                                                        if (drawSx >= 0 && drawSx <= width) {
+                                                        var sx = Math.round(leftPadding + sLvlWidth) + 0.5;
+                                                        if (sx >= 0 && sx <= width) {
                                                             var lineStart = Math.max(startLine, sc.startLine + 1);
                                                             var lineEnd = Math.min(endLine - 1, sc.endLine);
                                                             for (var sl = lineStart; sl <= lineEnd; sl++) {
                                                                 var sy = topPadding + (sl * lineH) - viewTop;
+                                                                ctx.beginPath();
+                                                                ctx.moveTo(sx, sy);
+                                                                ctx.lineTo(sx, sy + lineH);
+                                                                ctx.stroke();
+
                                                                 if (sl === sc.endLine) {
                                                                     ctx.beginPath();
-                                                                    ctx.moveTo(drawSx, sy);
-                                                                    ctx.lineTo(drawSx, sy + lineH * 0.5);
-                                                                    ctx.lineTo(drawSx + root.charWidth * 0.75, sy + lineH * 0.5);
-                                                                    ctx.stroke();
-                                                                } else {
-                                                                    ctx.beginPath();
-                                                                    ctx.moveTo(drawSx, sy);
-                                                                    ctx.lineTo(drawSx, sy + lineH);
+                                                                    ctx.moveTo(sx, sy + lineH * 0.5);
+                                                                    ctx.lineTo(sx + root.charWidth * 0.75, sy + lineH * 0.5);
                                                                     ctx.stroke();
                                                                 }
                                                             }
@@ -1913,12 +1789,11 @@ Item {
                                             interactive: false
                                             clip: true
                                             boundsBehavior: Flickable.StopAtBounds
-                                            contentWidth: (theme && theme.enableWordWrap) ? width : Math.max(width, secCodeTextArea.contentWidth + secCodeTextArea.leftPadding + secCodeTextArea.rightPadding + 60)
-                                            contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, secCodeTextArea.contentHeight + secCodeTextArea.topPadding + secCodeTextArea.bottomPadding + 220) : Math.max(height, secCodeTextArea.height + Math.max(250, height * 0.5))
+                                            contentWidth: Math.max(width, secCodeTextArea.contentWidth + secCodeTextArea.leftPadding + secCodeTextArea.rightPadding + 60)
+                                            contentHeight: Math.max(height, secCodeTextArea.height + Math.max(250, height * 0.5))
 
                                             WheelHandler {
                                                 target: secEditorFlickable
-                                                acceptedModifiers: Qt.NoModifier
                                                 orientation: Qt.Vertical
                                                 onWheel: function(event) {
                                                     var delta = event.angleDelta.y;
@@ -1951,18 +1826,18 @@ Item {
                                                 z: 1
                                                 cursorVisible: true
                                                 tabStopDistance: (theme ? theme.tabSize : 4) * root.charWidth
-                                                width: (theme && theme.enableWordWrap) ? secEditorFlickable.width : Math.max(secEditorFlickable.width, secEditorFlickable.contentWidth)
-                                                height: secEditorFlickable.contentHeight
+                                                width: Math.max(secEditorFlickable.width, secEditorFlickable.contentWidth)
+                                                height: Math.max(secEditorFlickable.height, contentHeight + topPadding + bottomPadding + 10)
                                                 topPadding: 6
                                                 bottomPadding: 16
-                                                leftPadding: 10
+                                                leftPadding: 8
                                                 rightPadding: 16
-                                                wrapMode: (theme && theme.enableWordWrap) ? TextArea.WrapAtWordBoundaryOrAnywhere : TextArea.NoWrap
+                                                wrapMode: (theme && theme.enableWordWrap) ? TextArea.Wrap : TextArea.NoWrap
                                                 color: theme ? theme.textPrimary : "#cccccc"
                                                 selectionColor: theme ? theme.synSelection : "#264f78"
                                                 selectedTextColor: theme ? theme.textBright : "#ffffff"
-                                                font.pixelSize: (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13
-                                                font.family: (typeof theme !== "undefined" && theme && (theme.editorFontFamily || theme.fontFamilyMono)) ? (theme.editorFontFamily || theme.fontFamilyMono) : "Consolas"
+                                                font.pixelSize: theme ? theme.editorFontSize : 13
+                                                font.family: (theme && theme.fontFamilyMono) ? theme.fontFamilyMono : "Consolas"
                                                 selectByMouse: true
                                                 textFormat: TextArea.PlainText
                                                 background: null

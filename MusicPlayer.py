@@ -178,8 +178,8 @@ class MusicPlayer(QObject):
 
         self.currentSongChanged.emit(self._current_title, self._current_artist, videoId, self._current_duration)
         self.coverUrlChanged.emit(self._current_cover_url)
-        self._set_state("playing")
-        print("Playing:", videoId, "Duration:", self._current_duration, "Cover:", self._current_cover_url)
+        self._set_state("loading")
+        print("Loading song:", videoId, "Duration:", self._current_duration, "Cover:", self._current_cover_url)
 
         # Create audio format
         format = QAudioFormat()
@@ -204,6 +204,130 @@ class MusicPlayer(QObject):
         )
         self._stream_thread.start()
 
+    @staticmethod
+    def _get_installed_browsers():
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        app_data = os.environ.get("APPDATA", "")
+        prog_files = os.environ.get("ProgramFiles", "")
+        prog_files_x86 = os.environ.get("ProgramFiles(x86)", "")
+
+        browser_paths = {
+            "chrome": [
+                os.path.join(local_app, "Google", "Chrome", "User Data"),
+                os.path.join(prog_files, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(prog_files_x86, "Google", "Chrome", "Application", "chrome.exe"),
+            ],
+            "edge": [
+                os.path.join(local_app, "Microsoft", "Edge", "User Data"),
+                os.path.join(prog_files_x86, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(prog_files, "Microsoft", "Edge", "Application", "msedge.exe"),
+            ],
+            "firefox": [
+                os.path.join(app_data, "Mozilla", "Firefox", "Profiles"),
+                os.path.join(prog_files, "Mozilla Firefox", "firefox.exe"),
+            ],
+            "brave": [
+                os.path.join(local_app, "BraveSoftware", "Brave-Browser", "User Data"),
+                os.path.join(prog_files, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            ],
+            "opera": [
+                os.path.join(app_data, "Opera Software", "Opera Stable"),
+                os.path.join(local_app, "Programs", "Opera"),
+            ],
+            "vivaldi": [
+                os.path.join(local_app, "Vivaldi", "User Data"),
+            ],
+            "chromium": [
+                os.path.join(local_app, "Chromium", "User Data"),
+            ],
+        }
+
+        order = ["chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi"]
+        installed = []
+        for b in order:
+            paths = browser_paths.get(b, [])
+            if any(os.path.exists(p) for p in paths):
+                installed.append(b)
+
+        # Include remaining browsers in fallback order
+        for b in order:
+            if b not in installed:
+                installed.append(b)
+
+        return installed
+
+    def _extract_stream_url(self, url):
+        # 1. Android / Mobile client extraction (Primary fast path)
+        for client in ["android", "ios", "tv_embedded"]:
+            cmd_client = [
+                sys.executable,
+                "-m",
+                "yt_dlp",
+                "-g",
+                "--no-playlist",
+                "--extractor-args",
+                f"youtube:player_client={client}",
+                url
+            ]
+            try:
+                res = subprocess.run(cmd_client, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0 and res.stdout.strip():
+                    print("Android client succeeded" if client == "android" else f"{client.capitalize()} client succeeded")
+                    return res.stdout.strip()
+            except Exception:
+                pass
+
+        # 2. Normal extraction fallback
+        print("Android client failed -> trying normal extraction")
+        cmd_normal = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-f",
+            "bestaudio/140/ba",
+            "-g",
+            "--no-playlist",
+            url
+        ]
+        try:
+            res = subprocess.run(cmd_normal, capture_output=True, text=True, timeout=20)
+            if res.returncode == 0 and res.stdout.strip():
+                print("Normal extraction succeeded")
+                return res.stdout.strip()
+        except Exception:
+            pass
+
+        # 3. Browser cookies fallback
+        print("Normal extraction failed -> trying browser cookies")
+        browsers = self._get_installed_browsers()
+
+        for b in browsers:
+            name = b.capitalize()
+            print(f"Trying {name}...")
+            cmd_browser = [
+                sys.executable,
+                "-m",
+                "yt_dlp",
+                "-f",
+                "bestaudio/140/ba",
+                "-g",
+                "--no-playlist",
+                "--cookies-from-browser",
+                b,
+                url
+            ]
+            try:
+                res = subprocess.run(cmd_browser, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0 and res.stdout.strip():
+                    print(f"{name} succeeded")
+                    return res.stdout.strip()
+                else:
+                    print(f"{name} failed")
+            except Exception:
+                print(f"{name} failed")
+
+        return None
+
     def _stream_song(self, videoId):
         actual_id = videoId
         if videoId.startswith("demo_"):
@@ -219,29 +343,10 @@ class MusicPlayer(QObject):
         print("Getting audio stream for:", url)
 
         try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "yt_dlp",
-                    "-f",
-                    "bestaudio/140/ba",
-                    "-g",
-                    "--no-playlist",
-                    url
-                ],
-                capture_output=True,
-                text=True,
-                timeout=25
-            )
-
-            if result.returncode != 0:
-                print("yt-dlp error:", result.stderr[-400:])
-                return
-
-            stream_url = result.stdout.strip()
-            if not stream_url:
-                print("No stream URL returned")
+            stream_url = self._extract_stream_url(url)
+            if not stream_url or self._current_video != videoId:
+                print("No stream URL returned after all fallbacks")
+                self._set_state("stopped")
                 return
 
             self._download_process = subprocess.Popen(
@@ -268,6 +373,7 @@ class MusicPlayer(QObject):
             )
 
             print("Streaming audio chunks...")
+            started_playback = False
             while True:
                 if self._current_video != videoId or self._playback_state == "stopped":
                     break
@@ -283,12 +389,17 @@ class MusicPlayer(QObject):
                 if not data:
                     break
 
+                if not started_playback:
+                    started_playback = True
+                    self._set_state("playing")
+
                 if self._audio_device:
                     self._audio_device.feed(data)
 
             print("Stream finished buffering for:", videoId)
         except Exception as e:
             print("Streaming error:", e)
+            self._set_state("stopped")
 
     @Slot()
     def pause(self):

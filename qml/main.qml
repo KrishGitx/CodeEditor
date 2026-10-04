@@ -233,6 +233,15 @@ Window {
         onActivated: editorArea.toggleSplitEditor()
     }
     Shortcut {
+        sequence: "Alt+Z"
+        onActivated: {
+            if (theme) {
+                theme.enableWordWrap = !theme.enableWordWrap;
+                theme.saveSettings();
+            }
+        }
+    }
+    Shortcut {
         sequence: "Escape"
         onActivated: {
             if (settingsOverlay.visible) {
