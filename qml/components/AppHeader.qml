@@ -30,6 +30,7 @@ Rectangle {
     signal undoRequested()
     signal redoRequested()
     signal settingsRequested()
+    signal extensionsRequested()
     signal openWebPreviewRequested()
     signal openColorPickerRequested()
     signal toggleWhiteboardRequested()
@@ -297,6 +298,7 @@ Rectangle {
                     Action { text: "Zen Mode\tCtrl+Shift+Z"; onTriggered: root.toggleZenRequested() }
                     MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
 
+                    Action { text: "Extensions...\tCtrl+Shift+X"; onTriggered: root.extensionsRequested() }
                     Action { text: "Preferences...\tCtrl+,"; onTriggered: root.settingsRequested() }
 
                     delegate: MenuItem {
@@ -423,6 +425,32 @@ Rectangle {
         RowLayout {
             spacing: 2
             z: 10
+
+            // Extensions Button
+            Rectangle {
+                width: 26
+                height: 24
+                radius: theme ? theme.radiusSm : 2
+                color: extensionsMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+
+                VectorIcon {
+                    anchors.centerIn: parent
+                    name: "puzzle"
+                    size: 13
+                    color: theme ? theme.textSecondary : "#858585"
+                }
+
+                ToolTip.visible: extensionsMa.containsMouse
+                ToolTip.text: "Extensions (Ctrl+Shift+X)"
+
+                MouseArea {
+                    id: extensionsMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.extensionsRequested()
+                }
+            }
 
             // Settings Button
             Rectangle {

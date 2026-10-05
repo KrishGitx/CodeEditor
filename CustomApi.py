@@ -8,6 +8,7 @@ import os
 import time
 import threading
 import queue
+import re
 
 
 class ChatGPTClient:
@@ -151,12 +152,18 @@ class ChatGPTClient:
 
                     # Enter prompt
                     textbox.click()
-                    textbox.fill(prompt)
+                    try:
+                        textbox.fill(prompt)
+                    except Exception:
+                        try:
+                            textbox.evaluate('(el, text) => { el.innerText = text; el.dispatchEvent(new Event("input", { bubbles: true })); }', prompt)
+                        except Exception:
+                            textbox.type(prompt)
                     time.sleep(0.2)
                     textbox.press("Enter")
 
                     try:
-                        send_btn = page.locator('button[data-testid="send-button"], button[aria-label="Send prompt"]').first
+                        send_btn = page.locator('button[data-testid="send-button"], button[aria-label="Send prompt"], button[data-testid="fruitjuice-send-button"]').first
                         if send_btn.count() > 0 and send_btn.is_enabled():
                             send_btn.click()
                     except Exception:
@@ -178,20 +185,53 @@ class ChatGPTClient:
                             continue
 
                         res = messages.nth(count - 1)
-                        current = ""
                         try:
-                            md = res.locator(".markdown, [data-assistant-markdown]").first
-                            if md.count() > 0:
-                                current = md.inner_text()
-                            else:
-                                current = res.inner_text()
+                            current = res.evaluate("""(el) => {
+                                const clone = el.cloneNode(true);
+                                // Remove sr-only / accessibility headers like 'ChatGPT said:'
+                                const srOnlyEls = clone.querySelectorAll('.sr-only, [aria-label*="ChatGPT said"], [aria-label*="ChatGPT"]');
+                                srOnlyEls.forEach(s => s.remove());
+                                const headers = clone.querySelectorAll('h1, h2, h3, h4, h5, h6, span, p, div');
+                                headers.forEach(h => {
+                                    if (h.innerText && /^\\s*Chat\\s*GPT\\s*said:?\\s*$/i.test(h.innerText.trim())) {
+                                        h.remove();
+                                    }
+                                });
+                                const pres = clone.querySelectorAll('pre');
+                                pres.forEach(pre => {
+                                    let codeEl = pre.querySelector('code');
+                                    let codeText = codeEl ? codeEl.innerText : pre.innerText;
+                                    let lang = '';
+                                    if (codeEl) {
+                                        const classes = codeEl.className || '';
+                                        const match = classes.match(/language-([a-zA-Z0-9_+.\\-]+)/);
+                                        if (match) lang = match[1];
+                                    }
+                                    if (!lang) {
+                                        const langSpan = pre.querySelector('span');
+                                        if (langSpan && !langSpan.innerText.toLowerCase().includes('copy')) {
+                                            lang = langSpan.innerText.trim();
+                                        }
+                                    }
+                                    const marker = document.createTextNode('\\n```' + lang + '\\n' + codeText + '\\n```\\n');
+                                    if (pre.parentNode) {
+                                        pre.parentNode.replaceChild(marker, pre);
+                                    }
+                                });
+                                return clone.innerText || clone.textContent || '';
+                            }""")
                         except Exception:
                             try:
-                                current = res.inner_text()
+                                md = res.locator(".markdown, [data-assistant-markdown]").first
+                                if md.count() > 0:
+                                    current = md.inner_text()
+                                else:
+                                    current = res.inner_text()
                             except Exception:
                                 current = ""
 
                         if current:
+                            current = re.sub(r'^\s*Chat\s*GPT\s*said:?\s*', '', current, flags=re.IGNORECASE)
                             if len(current) > last_reported_len and chunk_callback:
                                 chunk = current[last_reported_len:]
                                 chunk_callback(chunk)
@@ -211,7 +251,10 @@ class ChatGPTClient:
 
                             previous = current
 
-                    result_holder["response"] = full_response or previous
+                    final_resp = full_response or previous
+                    if final_resp:
+                        final_resp = re.sub(r'^\s*Chat\s*GPT\s*said:?\s*', '', final_resp, flags=re.IGNORECASE)
+                    result_holder["response"] = final_resp
 
             except Exception as e:
                 print(f"[CustomApi] Error during prompt execution: {e}")

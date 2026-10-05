@@ -19,6 +19,7 @@ Rectangle {
 
     signal closeRequested()
     signal themeSelected(string themeName)
+    signal extensionsRequested()
 
     width: 760
     height: 560
@@ -32,8 +33,29 @@ Rectangle {
         { name: "Appearance", icon: "sparkles" },
         { name: "Editor", icon: "file" },
         { name: "Terminal", icon: "code" },
-        { name: "Shortcuts", icon: "keyboard" }
+        { name: "Shortcuts", icon: "keyboard" },
+        { name: "Radial Menu", icon: "zen" }
     ]
+
+    property var radialConfigItems: []
+
+    function loadRadialConfig() {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_radial_menu_config) {
+            radialConfigItems = settingsBackend.get_radial_menu_config() || [];
+        }
+    }
+
+    function saveRadialConfig() {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.save_radial_menu_config) {
+            settingsBackend.save_radial_menu_config(JSON.stringify(radialConfigItems));
+        }
+    }
+
+    function resetRadialConfig() {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.reset_radial_menu_config) {
+            radialConfigItems = settingsBackend.reset_radial_menu_config() || [];
+        }
+    }
 
     property var themeList: [
         { id: "obsidian", name: "Obsidian Dark", color: "#181818" },
@@ -276,7 +298,7 @@ Rectangle {
                 StackLayout {
                     anchors.fill: parent
                     anchors.margins: 24
-                    currentIndex: root.searchQuery.length > 0 ? 5 : root.activeCategoryIndex
+                    currentIndex: root.searchQuery.length > 0 ? 6 : root.activeCategoryIndex
 
                     // =========================================================
                     // 0. GENERAL TAB
@@ -300,6 +322,7 @@ Rectangle {
                             }
 
                             Item { width: 1; height: 6 }
+
 
                             // AI Assistant (Beta) Toggle
                             SettingToggleItem {
@@ -783,6 +806,19 @@ Rectangle {
                                     }
                                 }
                             }
+                            // Setting: Enable Breadcrumbs
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Enable Breadcrumbs"
+                                subtitle: "Show file path and document symbol navigation bar above editor"
+                                checked: (typeof theme !== "undefined" && theme && typeof theme.enableBreadcrumbs !== "undefined") ? theme.enableBreadcrumbs : true
+                                onToggled: function(c) {
+                                    if (typeof theme !== "undefined" && theme) {
+                                        theme.enableBreadcrumbs = c;
+                                        if (theme.saveSettings) theme.saveSettings();
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -831,7 +867,7 @@ Rectangle {
                                     }
 
                                     Text {
-                                        text: "Shortcut: Ctrl+` | Clear screen with 'clear' or 'cls'"
+                                        text: "Shortcut: Ctrl+` | Split terminal with Split button"
                                         color: theme ? theme.textMuted : "#656565"
                                         font.pixelSize: 11
                                     }
@@ -915,13 +951,118 @@ Rectangle {
 
                             Item { width: 1; height: 4 }
 
-                            // Shortcut List Items
+                            // Navigation Shortcuts Section Header
+                            Text {
+                                text: "Navigation & Search"
+                                color: theme ? theme.accent : "#38bdf8"
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+
                             ShortcutSettingRow {
                                 width: parent.width
-                                title: "Run Active File"
-                                subtitle: "Compile / execute active file in integrated terminal"
-                                currentShortcut: theme ? theme.shortcutRun : "F5"
-                                onShortcutChanged: function(val) { if (theme) theme.shortcutRun = val; }
+                                title: "Quick Open File"
+                                subtitle: "Search files by name/path and open instantly"
+                                currentShortcut: theme ? theme.shortcutQuickOpen : "Ctrl+P"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutQuickOpen = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Go to Line"
+                                subtitle: "Jump directly to a specific line number"
+                                currentShortcut: theme ? theme.shortcutGoToLine : "Ctrl+G"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutGoToLine = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Rename Symbol"
+                                subtitle: "Semantic symbol rename across the document"
+                                currentShortcut: theme ? theme.shortcutRenameSymbol : "F2"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutRenameSymbol = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Find in Buffer"
+                                subtitle: "Search for text matching query in active editor"
+                                currentShortcut: theme ? theme.shortcutFind : "Ctrl+F"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutFind = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Find & Replace"
+                                subtitle: "Search and replace occurrences in active editor"
+                                currentShortcut: theme ? theme.shortcutReplace : "Ctrl+H"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutReplace = val; }
+                            }
+
+                            Item { width: 1; height: 4 }
+
+                            // Editing & Multi-Cursor Section Header
+                            Text {
+                                text: "Editing & Multi-Cursor"
+                                color: theme ? theme.accent : "#38bdf8"
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Undo"
+                                subtitle: "Undo last edit in active buffer"
+                                currentShortcut: theme ? theme.shortcutUndo : "Ctrl+Z"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutUndo = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Redo"
+                                subtitle: "Redo previously undone edit"
+                                currentShortcut: theme ? theme.shortcutRedo : "Ctrl+Y"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutRedo = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Copy / Copy Line"
+                                subtitle: "Copy selection, or copy entire line when no selection"
+                                currentShortcut: theme ? theme.shortcutCopy : "Ctrl+C"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutCopy = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Paste"
+                                subtitle: "Paste clipboard contents at cursor"
+                                currentShortcut: theme ? theme.shortcutPaste : "Ctrl+V"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutPaste = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Add Next Occurrence (Multi-Cursor)"
+                                subtitle: "Select next matching word occurrence and add a cursor"
+                                currentShortcut: theme ? theme.shortcutMultiCursor : "Ctrl+D"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutMultiCursor = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Add Cursor (Mouse)"
+                                subtitle: "Add another cursor at clicked position"
+                                currentShortcut: theme ? theme.shortcutAddCursor : "Alt+Click"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutAddCursor = val; }
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Toggle Line Comment"
+                                subtitle: "Comment or uncomment current line / selection"
+                                currentShortcut: theme ? theme.shortcutComment : "Ctrl+/"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutComment = val; }
                             }
 
                             ShortcutSettingRow {
@@ -930,6 +1071,24 @@ Rectangle {
                                 subtitle: "Auto-format active code buffer according to language standard"
                                 currentShortcut: theme ? theme.shortcutFormat : "Shift+Alt+F"
                                 onShortcutChanged: function(val) { if (theme) theme.shortcutFormat = val; }
+                            }
+
+                            Item { width: 1; height: 4 }
+
+                            // General Shortcuts
+                            Text {
+                                text: "General & Workspace"
+                                color: theme ? theme.accent : "#38bdf8"
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+
+                            ShortcutSettingRow {
+                                width: parent.width
+                                title: "Run Active File"
+                                subtitle: "Compile / execute active file in integrated terminal"
+                                currentShortcut: theme ? theme.shortcutRun : "F5"
+                                onShortcutChanged: function(val) { if (theme) theme.shortcutRun = val; }
                             }
 
                             ShortcutSettingRow {
@@ -962,22 +1121,6 @@ Rectangle {
                                 subtitle: "Show or hide left project file tree"
                                 currentShortcut: theme ? theme.shortcutToggleExplorer : "Ctrl+B"
                                 onShortcutChanged: function(val) { if (theme) theme.shortcutToggleExplorer = val; }
-                            }
-
-                            ShortcutSettingRow {
-                                width: parent.width
-                                title: "Find in Buffer"
-                                subtitle: "Search for text matching query in active editor"
-                                currentShortcut: theme ? theme.shortcutFind : "Ctrl+F"
-                                onShortcutChanged: function(val) { if (theme) theme.shortcutFind = val; }
-                            }
-
-                            ShortcutSettingRow {
-                                width: parent.width
-                                title: "Find & Replace"
-                                subtitle: "Search and replace occurrences in active editor"
-                                currentShortcut: theme ? theme.shortcutReplace : "Ctrl+H"
-                                onShortcutChanged: function(val) { if (theme) theme.shortcutReplace = val; }
                             }
 
                             ShortcutSettingRow {
@@ -1038,14 +1181,6 @@ Rectangle {
 
                             ShortcutSettingRow {
                                 width: parent.width
-                                title: "Toggle Line Comment"
-                                subtitle: "Comment or uncomment current line / selection"
-                                currentShortcut: theme ? theme.shortcutComment : "Ctrl+/"
-                                onShortcutChanged: function(val) { if (theme) theme.shortcutComment = val; }
-                            }
-
-                            ShortcutSettingRow {
-                                width: parent.width
                                 title: "Whiteboard Architecture Canvas"
                                 subtitle: "Open or close visual architecture design & plan canvas"
                                 currentShortcut: theme ? theme.shortcutWhiteboard : "Ctrl+Alt+W"
@@ -1065,7 +1200,458 @@ Rectangle {
                     }
 
                     // =========================================================
-                    // 5. SEARCH RESULTS TAB
+                    // 5. RADIAL CONTEXT MENU TAB (Live Visual Preview & Customizer)
+                    // =========================================================
+                    Item {
+                        id: radialSettingsTab
+                        clip: true
+
+                        RowLayout {
+                            anchors.fill: parent
+                            spacing: 16
+
+                            // Left Column: Configuration List & Controls
+                            ColumnLayout {
+                                Layout.fillHeight: true
+                                Layout.preferredWidth: 370
+                                spacing: 8
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text {
+                                        text: "Radial Context Menu"
+                                        color: theme ? theme.textBright : "#ffffff"
+                                        font.pixelSize: 15
+                                        font.bold: true
+                                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                        Layout.fillWidth: true
+                                    }
+
+                                    // Add Button
+                                    Rectangle {
+                                        width: 86
+                                        height: 24
+                                        radius: 4
+                                        color: addMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "+ Add Action"
+                                            color: "#ffffff"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+
+                                        MouseArea {
+                                            id: addMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                var arr = root.radialConfigItems.slice();
+                                                arr.push({
+                                                    id: "custom_" + Date.now(),
+                                                    label: "Custom " + (arr.length + 1),
+                                                    icon: "code",
+                                                    shortcut: "CMD",
+                                                    action_type: "bash",
+                                                    enabled: true,
+                                                    custom: true,
+                                                    action: "echo 'Custom action executed'"
+                                                });
+                                                root.radialConfigItems = arr;
+                                                root.saveRadialConfig();
+                                            }
+                                        }
+                                    }
+
+                                    // Reset Button
+                                    Rectangle {
+                                        width: 60
+                                        height: 24
+                                        radius: 4
+                                        color: resetMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#333333") : (theme ? theme.bgSurface : "#252526")
+                                        border.color: theme ? theme.borderNormal : "#3c3c3c"
+                                        border.width: 1
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Reset"
+                                            color: theme ? theme.textSecondary : "#cccccc"
+                                            font.pixelSize: 11
+                                        }
+
+                                        MouseArea {
+                                            id: resetMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.resetRadialConfig()
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Configure radial buttons, reorder, toggle, and add custom Bash / CMD commands."
+                                    color: theme ? theme.textMuted : "#888888"
+                                    font.pixelSize: 11
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+
+                                ScrollView {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+                                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                                    ListView {
+                                        id: radialConfigListView
+                                        width: parent.width
+                                        model: root.radialConfigItems
+                                        spacing: 6
+
+                                        delegate: Rectangle {
+                                            width: radialConfigListView.width - 8
+                                            height: modelData.custom ? 70 : 48
+                                            radius: 6
+                                            color: theme ? theme.bgSurface : "#252526"
+                                            border.color: modelData.custom ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.borderNormal : "#333333")
+                                            border.width: 1
+
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 6
+                                                spacing: 4
+
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 6
+
+                                                    // Reorder Buttons (Up / Down)
+                                                    Column {
+                                                        spacing: 2
+                                                        Rectangle {
+                                                            width: 16
+                                                            height: 14
+                                                            radius: 2
+                                                            color: upMa.containsMouse ? (theme ? theme.accent : "#0078d4") : "transparent"
+                                                            Text { anchors.centerIn: parent; text: "▲"; font.pixelSize: 8; color: "#cccccc" }
+                                                            MouseArea {
+                                                                id: upMa
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: {
+                                                                    if (index > 0) {
+                                                                        var arr = root.radialConfigItems.slice();
+                                                                        var tmp = arr[index];
+                                                                        arr[index] = arr[index - 1];
+                                                                        arr[index - 1] = tmp;
+                                                                        root.radialConfigItems = arr;
+                                                                        root.saveRadialConfig();
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Rectangle {
+                                                            width: 16
+                                                            height: 14
+                                                            radius: 2
+                                                            color: downMa.containsMouse ? (theme ? theme.accent : "#0078d4") : "transparent"
+                                                            Text { anchors.centerIn: parent; text: "▼"; font.pixelSize: 8; color: "#cccccc" }
+                                                            MouseArea {
+                                                                id: downMa
+                                                                anchors.fill: parent
+                                                                hoverEnabled: true
+                                                                cursorShape: Qt.PointingHandCursor
+                                                                onClicked: {
+                                                                    if (index < root.radialConfigItems.length - 1) {
+                                                                        var arr = root.radialConfigItems.slice();
+                                                                        var tmp = arr[index];
+                                                                        arr[index] = arr[index + 1];
+                                                                        arr[index + 1] = tmp;
+                                                                        root.radialConfigItems = arr;
+                                                                        root.saveRadialConfig();
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Enabled Checkbox
+                                                    CheckBox {
+                                                        checked: modelData.enabled !== false
+                                                        onToggled: {
+                                                            var arr = root.radialConfigItems.slice();
+                                                            arr[index].enabled = checked;
+                                                            root.radialConfigItems = arr;
+                                                            root.saveRadialConfig();
+                                                        }
+                                                    }
+
+                                                    // Icon
+                                                    VectorIcon {
+                                                        name: modelData.icon || "file"
+                                                        size: 14
+                                                        color: modelData.custom ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.textPrimary : "#cccccc")
+                                                    }
+
+                                                    // Label and Badge
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 6
+
+                                                            TextInput {
+                                                                Layout.fillWidth: true
+                                                                text: modelData.label || ""
+                                                                color: theme ? theme.textPrimary : "#ffffff"
+                                                                font.pixelSize: 12
+                                                                font.bold: true
+                                                                onEditingFinished: {
+                                                                    var arr = root.radialConfigItems.slice();
+                                                                    arr[index].label = text;
+                                                                    root.radialConfigItems = arr;
+                                                                    root.saveRadialConfig();
+                                                                }
+                                                            }
+
+                                                            // Distinguishing badge (Built-in vs Custom)
+                                                            Rectangle {
+                                                                height: 16
+                                                                width: badgeText.implicitWidth + 8
+                                                                radius: 3
+                                                                color: modelData.custom ? "#0c4a6e" : "#1e293b"
+                                                                border.color: modelData.custom ? "#38bdf8" : "#475569"
+                                                                border.width: 1
+
+                                                                Text {
+                                                                    id: badgeText
+                                                                    anchors.centerIn: parent
+                                                                    text: modelData.custom ? ((modelData.action_type === "bash" ? "Bash" : (modelData.action_type === "cmd" ? "CMD" : "Custom"))) : "Built-in"
+                                                                    color: modelData.custom ? "#7dd3fc" : "#94a3b8"
+                                                                    font.pixelSize: 9
+                                                                    font.bold: true
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Delete button (for custom buttons)
+                                                    Rectangle {
+                                                        width: 20
+                                                        height: 20
+                                                        radius: 3
+                                                        visible: modelData.custom === true
+                                                        color: delMa.containsMouse ? (theme ? theme.error : "#f14c4c") : "transparent"
+                                                        VectorIcon { anchors.centerIn: parent; name: "close"; size: 9; color: delMa.containsMouse ? "#ffffff" : "#888888" }
+                                                        MouseArea {
+                                                            id: delMa
+                                                            anchors.fill: parent
+                                                            hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: {
+                                                                var arr = root.radialConfigItems.slice();
+                                                                arr.splice(index, 1);
+                                                                root.radialConfigItems = arr;
+                                                                root.saveRadialConfig();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Custom button action configuration row
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    visible: modelData.custom === true
+                                                    spacing: 6
+
+                                                    // Action type selector (Bash / CMD)
+                                                    Rectangle {
+                                                        width: 80
+                                                        height: 20
+                                                        radius: 3
+                                                        color: theme ? theme.bgInput : "#181818"
+                                                        border.color: theme ? theme.borderSubtle : "#333333"
+
+                                                        Text {
+                                                            anchors.centerIn: parent
+                                                            text: (modelData.action_type || "bash").toUpperCase() + " ▼"
+                                                            color: theme ? theme.textSecondary : "#aaaaaa"
+                                                            font.pixelSize: 10
+                                                        }
+
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: {
+                                                                var arr = root.radialConfigItems.slice();
+                                                                arr[index].action_type = (arr[index].action_type === "bash") ? "cmd" : "bash";
+                                                                root.radialConfigItems = arr;
+                                                                root.saveRadialConfig();
+                                                            }
+                                                        }
+                                                    }
+
+                                                    TextInput {
+                                                        Layout.fillWidth: true
+                                                        text: modelData.action || ""
+                                                        color: theme ? theme.textSecondary : "#cccccc"
+                                                        font.pixelSize: 10
+                                                        font.family: "Consolas, monospace"
+                                                        onEditingFinished: {
+                                                            var arr = root.radialConfigItems.slice();
+                                                            arr[index].action = text;
+                                                            root.radialConfigItems = arr;
+                                                            root.saveRadialConfig();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Right Column: LIVE VISUAL RADIAL PREVIEW
+                            Rectangle {
+                                Layout.fillHeight: true
+                                Layout.fillWidth: true
+                                radius: 8
+                                color: theme ? theme.bgApp : "#141822"
+                                border.color: theme ? theme.borderNormal : "#2a3145"
+                                border.width: 1
+
+                                Text {
+                                    anchors.top: parent.top
+                                    anchors.left: parent.left
+                                    anchors.margins: 12
+                                    text: "LIVE RADIAL MENU PREVIEW"
+                                    color: theme ? theme.textMuted : "#64748b"
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                }
+
+                                Item {
+                                    id: radialPreviewContainer
+                                    anchors.centerIn: parent
+                                    width: 240
+                                    height: 240
+
+                                    // Filter enabled items for preview
+                                    readonly property var activeItems: {
+                                        var list = [];
+                                        if (root.radialConfigItems) {
+                                            for (var i = 0; i < root.radialConfigItems.length; i++) {
+                                                if (root.radialConfigItems[i].enabled !== false) {
+                                                    list.push(root.radialConfigItems[i]);
+                                                }
+                                            }
+                                        }
+                                        return list;
+                                    }
+                                    readonly property real previewRadius: 75
+
+                                    // Center Disc
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 64
+                                        height: 64
+                                        radius: 32
+                                        color: theme ? theme.bgPopup : "#151824"
+                                        border.color: theme ? theme.borderNormal : "#2a3145"
+                                        border.width: 2
+
+                                        Column {
+                                            anchors.centerIn: parent
+                                            spacing: 2
+                                            VectorIcon {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                name: "zen"
+                                                size: 14
+                                                color: theme ? theme.accent : "#3b82f6"
+                                            }
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: "DGX"
+                                                color: theme ? theme.textPrimary : "#f1f5f9"
+                                                font.pixelSize: 9
+                                                font.bold: true
+                                            }
+                                        }
+                                    }
+
+                                    // Radial Bubbles
+                                    Repeater {
+                                        model: radialPreviewContainer.activeItems
+
+                                        delegate: Item {
+                                            readonly property real angle: (index / Math.max(1, radialPreviewContainer.activeItems.length)) * (2 * Math.PI) - (Math.PI / 2)
+                                            readonly property real nodeX: (radialPreviewContainer.width / 2) + Math.cos(angle) * radialPreviewContainer.previewRadius - 20
+                                            readonly property real nodeY: (radialPreviewContainer.height / 2) + Math.sin(angle) * radialPreviewContainer.previewRadius - 20
+
+                                            x: nodeX
+                                            y: nodeY
+                                            width: 40
+                                            height: 40
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: 20
+                                                color: prevMa.containsMouse ? (theme ? theme.accent : "#3b82f6") : (theme ? theme.bgSurface : "#181c28")
+                                                border.color: modelData.custom ? "#38bdf8" : (prevMa.containsMouse ? "#ffffff" : (theme ? theme.borderNormal : "#2a3145"))
+                                                border.width: 1
+
+                                                scale: prevMa.containsMouse ? 1.15 : 1.0
+                                                Behavior on scale { NumberAnimation { duration: 100 } }
+
+                                                Column {
+                                                    anchors.centerIn: parent
+                                                    spacing: 1
+                                                    VectorIcon {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        name: modelData.icon || "file"
+                                                        size: 11
+                                                        color: prevMa.containsMouse ? "#ffffff" : (theme ? theme.textPrimary : "#e2e8f0")
+                                                    }
+                                                    Text {
+                                                        anchors.horizontalCenter: parent.horizontalCenter
+                                                        text: modelData.label || ""
+                                                        color: prevMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#94a3b8")
+                                                        font.pixelSize: 8
+                                                        font.bold: prevMa.containsMouse
+                                                    }
+                                                }
+
+                                                ToolTip.visible: prevMa.containsMouse
+                                                ToolTip.text: (modelData.label || "") + (modelData.action ? " [" + modelData.action + "]" : "")
+
+                                                MouseArea {
+                                                    id: prevMa
+                                                    anchors.fill: parent
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                                                            mainWindow.showNotification("Radial action: " + modelData.label, "info", "Radial Menu");
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // 6. SEARCH RESULTS TAB
                     // =========================================================
                     ScrollView {
                         id: searchScroll

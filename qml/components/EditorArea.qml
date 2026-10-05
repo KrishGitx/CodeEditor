@@ -22,6 +22,27 @@ Item {
     property string currentLanguage: currentTab ? (currentTab.languageName || "Plain Text") : "Plain Text"
     property string currentLanguageId: currentTab ? (currentTab.languageId || "text") : "text"
     property var extraCursors: [] // Array of character indices for Multi-Cursor editing
+    property bool copiedWholeLine: false
+    property string clipboardWholeLineText: ""
+    property var activeSnippetStops: []
+    property int activeSnippetStopIndex: -1
+            property var selectionOccurrences: []
+
+    Shortcut {
+        sequence: "Ctrl+P"
+        onActivated: quickOpenPalette.openQuickOpen()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+G"
+        onActivated: quickOpenPalette.openGotoLine(root.cursorLine)
+    }
+
+    Shortcut {
+        sequence: "F2"
+        onActivated: root.triggerRenameSymbol()
+    }
+
 
     // Split Window / Dual Editor Properties
     property bool isSplitEditor: false
@@ -34,6 +55,88 @@ Item {
     Shortcut {
         sequence: "Ctrl+\\"
         onActivated: root.toggleSplitEditor()
+    }
+
+    property bool isFormatting: false
+    property int formatRequestSeq: 0
+    property string activeFormatReqId: ""
+
+    Connections {
+        target: (typeof backend !== "undefined" && backend) ? backend : null
+        function onFormattingCompleted(reqId, filePath, success, formattedCode, message, available, extensionId) {
+            if (root.activeFormatReqId !== "" && reqId !== root.activeFormatReqId) {
+                return;
+            }
+            root.isFormatting = false;
+            root.activeFormatReqId = "";
+
+            if (!codeTextArea) return;
+            var currentText = codeTextArea.text;
+
+            if (available === false) {
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification(message || "No formatter available for this language.", "warning", "Formatter");
+                }
+                return;
+            }
+
+            if (!success) {
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification(message || "Formatting failed.", "error", "Formatter");
+                }
+                return;
+            }
+
+            var formattedText = formattedCode || currentText;
+            if (formattedText === currentText) {
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification(message || "Document is already formatted.", "info", "Formatter", 2500);
+                }
+                return;
+            }
+
+            var curLine = root.cursorLine;
+            var curCol = root.cursorColumn;
+            var oldScrollX = editorFlickable ? editorFlickable.contentX : 0;
+            var oldScrollY = editorFlickable ? editorFlickable.contentY : 0;
+
+            codeTextArea.text = formattedText;
+
+            // Mark document dirty
+            if (root.activeTabIndex >= 0 && root.activeTabIndex < tabModel.count) {
+                tabModel.setProperty(root.activeTabIndex, "isDirty", true);
+            }
+            root.isCurrentFileDirty = true;
+
+            // Restore cursor position by line and column in formatted text
+            var newLines = formattedText.split("\n");
+            var targetLine = Math.min(curLine, newLines.length);
+            var newCharPos = 0;
+            for (var l = 0; l < targetLine - 1; l++) {
+                newCharPos += newLines[l].length + 1;
+            }
+            if (targetLine - 1 < newLines.length) {
+                newCharPos += Math.min(curCol - 1, newLines[targetLine - 1].length);
+            }
+            codeTextArea.cursorPosition = Math.min(newCharPos, formattedText.length);
+
+            // Keep viewport steady
+            if (editorFlickable) {
+                editorFlickable.contentX = Math.max(0, oldScrollX);
+                editorFlickable.contentY = Math.max(0, oldScrollY);
+            }
+            root.updateCursorPosition();
+
+            // Refresh scopes and folding after format
+            if (root.activeEditorPane) {
+                root.activeEditorPane.updatePaneScopes();
+            }
+            root.recalculateFoldableLines();
+
+            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                mainWindow.showNotification(message || "Formatted successfully.", "success", "Formatter", 2500);
+            }
+        }
     }
 
     // Cursor and Line Metrics
@@ -69,39 +172,83 @@ Item {
         if (!docText) return [];
         var tabSize = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
         var lines = docText.split("\n");
-        var stack = [];
-        var scopes = [];
         var total = lines.length;
+        if (total === 0) return [];
 
-        for (var l = 0; l < total; l++) {
-            var line = lines[l];
+        function getRawLineIndent(line) {
             var trimmed = line.trim();
+            if (trimmed.length === 0) return -1;
             var cols = 0;
             for (var i = 0; i < line.length; i++) {
                 var ch = line.charAt(i);
-                if (ch === ' ') {
-                    cols += 1;
-                } else if (ch === '\t') {
-                    cols += tabSize - (cols % tabSize);
-                } else {
-                    break;
-                }
+                if (ch === ' ') cols += 1;
+                else if (ch === '\t') cols += tabSize - (cols % tabSize);
+                else break;
             }
-            var rawIndent = trimmed.length > 0 ? Math.floor(cols / tabSize) : -1;
+            return Math.floor(cols / tabSize);
+        }
 
+        var stack = [];
+        var scopes = [];
+        var inBlockComment = false;
+        var inTripleQuote = false;
+        var tripleQuoteChar = '';
+
+        for (var l = 0; l < total; l++) {
+            var line = lines[l];
+            var rawIndent = getRawLineIndent(line);
             var inStr = false;
             var strQuote = '';
+
             for (var c = 0; c < line.length; c++) {
                 var char = line.charAt(c);
-                if (char === '/' && c + 1 < line.length && line.charAt(c + 1) === '/' && !inStr) {
-                    break;
-                }
-                if (char === '"' || char === '\'' || char === '`') {
-                    if (!inStr) { inStr = true; strQuote = char; }
-                    else if (strQuote === char && (c === 0 || line.charAt(c - 1) !== '\\')) { inStr = false; }
+                var nextChar = c + 1 < line.length ? line.charAt(c + 1) : '';
+
+                if (inBlockComment) {
+                    if (char === '*' && nextChar === '/') {
+                        inBlockComment = false;
+                        c++;
+                    }
                     continue;
                 }
-                if (inStr) continue;
+
+                if (inTripleQuote) {
+                    if (char === tripleQuoteChar && nextChar === tripleQuoteChar && c + 2 < line.length && line.charAt(c + 2) === tripleQuoteChar) {
+                        inTripleQuote = false;
+                        c += 2;
+                    }
+                    continue;
+                }
+
+                if (inStr) {
+                    if (char === '\\') {
+                        c++;
+                    } else if (char === strQuote) {
+                        inStr = false;
+                    }
+                    continue;
+                }
+
+                if (char === '/' && nextChar === '*') {
+                    inBlockComment = true;
+                    c++;
+                    continue;
+                }
+                if (char === '/' && nextChar === '/') break;
+                if (char === '#') break;
+
+                if ((char === '"' || char === '\'') && nextChar === char && c + 2 < line.length && line.charAt(c + 2) === char) {
+                    inTripleQuote = true;
+                    tripleQuoteChar = char;
+                    c += 2;
+                    continue;
+                }
+
+                if (char === '"' || char === '\'' || char === '`') {
+                    inStr = true;
+                    strQuote = char;
+                    continue;
+                }
 
                 if (char === '{') {
                     var blockIndent = Math.max(0, rawIndent >= 0 ? rawIndent : 0);
@@ -109,7 +256,7 @@ Item {
                 } else if (char === '}') {
                     if (stack.length > 0) {
                         var top = stack.pop();
-                        if (l > top.startLine) {
+                        if (l >= top.startLine) {
                             scopes.push({
                                 startLine: top.startLine,
                                 endLine: l,
@@ -123,11 +270,249 @@ Item {
         return scopes;
     }
 
+    function computeGuideSegmentsForText(docText) {
+        if (!docText) return [];
+        var tabSize = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
+        var lines = docText.split("\n");
+        var total = lines.length;
+        if (total === 0) return [];
+
+        function getRawLineIndent(line) {
+            var trimmed = line.trim();
+            if (trimmed.length === 0) return -1;
+            var cols = 0;
+            for (var i = 0; i < line.length; i++) {
+                var ch = line.charAt(i);
+                if (ch === ' ') cols += 1;
+                else if (ch === '\t') cols += tabSize - (cols % tabSize);
+                else break;
+            }
+            return Math.floor(cols / tabSize);
+        }
+
+        function isCommentOnlyLine(line) {
+            var trimmed = line.trim();
+            return trimmed.startsWith("//") || trimmed.startsWith("#") || trimmed.startsWith("/*") || trimmed.startsWith("*");
+        }
+
+        var lineIndents = new Array(total);
+        var lineHasClosingBrace = new Array(total);
+        var lineHasOpeningBrace = new Array(total);
+        var lineEndsWithColon = new Array(total);
+
+        var inBlockComment = false;
+        var inTripleQuote = false;
+        var tripleQuoteChar = '';
+
+        for (var l = 0; l < total; l++) {
+            var line = lines[l];
+            lineIndents[l] = getRawLineIndent(line);
+            lineHasClosingBrace[l] = false;
+            lineHasOpeningBrace[l] = false;
+            var trimmed = line.trim();
+            lineEndsWithColon[l] = trimmed.endsWith(":");
+
+            var inStr = false;
+            var strQuote = '';
+
+            for (var c = 0; c < line.length; c++) {
+                var char = line.charAt(c);
+                var nextChar = c + 1 < line.length ? line.charAt(c + 1) : '';
+
+                if (inBlockComment) {
+                    if (char === '*' && nextChar === '/') {
+                        inBlockComment = false;
+                        c++;
+                    }
+                    continue;
+                }
+
+                if (inTripleQuote) {
+                    if (char === tripleQuoteChar && nextChar === tripleQuoteChar && c + 2 < line.length && line.charAt(c + 2) === tripleQuoteChar) {
+                        inTripleQuote = false;
+                        c += 2;
+                    }
+                    continue;
+                }
+
+                if (inStr) {
+                    if (char === '\\') {
+                        c++;
+                    } else if (char === strQuote) {
+                        inStr = false;
+                    }
+                    continue;
+                }
+
+                if (char === '/' && nextChar === '*') {
+                    inBlockComment = true;
+                    c++;
+                    continue;
+                }
+                if (char === '/' && nextChar === '/') break;
+                if (char === '#') break;
+
+                if ((char === '"' || char === '\'') && nextChar === char && c + 2 < line.length && line.charAt(c + 2) === char) {
+                    inTripleQuote = true;
+                    tripleQuoteChar = char;
+                    c += 2;
+                    continue;
+                }
+
+                if (char === '"' || char === '\'' || char === '`') {
+                    inStr = true;
+                    strQuote = char;
+                    continue;
+                }
+
+                if (char === '{') {
+                    lineHasOpeningBrace[l] = true;
+                } else if (char === '}') {
+                    lineHasClosingBrace[l] = true;
+                }
+            }
+        }
+
+        // 2. Resolve effective indentation for blank and comment-only lines
+        var effectiveIndents = new Array(total);
+
+        for (var l = 0; l < total; l++) {
+            var ind = lineIndents[l];
+            if (ind >= 0 && !isCommentOnlyLine(lines[l])) {
+                effectiveIndents[l] = ind;
+            } else {
+                var prevValidIndent = -1;
+                var prevValidLine = -1;
+                for (var pl = l - 1; pl >= 0; pl--) {
+                    if (lineIndents[pl] >= 0 && !isCommentOnlyLine(lines[pl])) {
+                        prevValidIndent = lineIndents[pl];
+                        prevValidLine = pl;
+                        break;
+                    }
+                }
+
+                var nextValidIndent = -1;
+                var nextValidLine = -1;
+                for (var nl = l + 1; nl < total; nl++) {
+                    if (lineIndents[nl] >= 0 && !isCommentOnlyLine(lines[nl])) {
+                        nextValidIndent = lineIndents[nl];
+                        nextValidLine = nl;
+                        break;
+                    }
+                }
+
+                if (prevValidIndent === -1 && nextValidIndent === -1) {
+                    effectiveIndents[l] = 0;
+                } else if (prevValidIndent === -1) {
+                    effectiveIndents[l] = 0;
+                } else if (nextValidIndent === -1) {
+                    effectiveIndents[l] = 0;
+                } else if (prevValidIndent === nextValidIndent) {
+                    effectiveIndents[l] = prevValidIndent;
+                } else if (nextValidIndent > prevValidIndent) {
+                    if (lineHasOpeningBrace[prevValidLine] || lineEndsWithColon[prevValidLine]) {
+                        effectiveIndents[l] = nextValidIndent;
+                    } else {
+                        effectiveIndents[l] = prevValidIndent;
+                    }
+                } else {
+                    if (lineHasClosingBrace[nextValidLine]) {
+                        effectiveIndents[l] = prevValidIndent;
+                    } else {
+                        effectiveIndents[l] = nextValidIndent;
+                    }
+                }
+            }
+        }
+
+        // 3. Build Continuous Logical Guide Segments
+        var segments = [];
+        var maxIndentObserved = 0;
+        for (var l = 0; l < total; l++) {
+            if (effectiveIndents[l] > maxIndentObserved) {
+                maxIndentObserved = effectiveIndents[l];
+            }
+        }
+        maxIndentObserved = Math.min(maxIndentObserved, 32);
+
+        var activeSegments = new Array(maxIndentObserved + 1);
+        for (var k = 0; k <= maxIndentObserved; k++) activeSegments[k] = null;
+
+        for (var l = 0; l < total; l++) {
+            var curEff = effectiveIndents[l];
+            var isClosingLine = lineHasClosingBrace[l];
+            var isOpeningLine = lineHasOpeningBrace[l];
+            var rawInd = lineIndents[l];
+
+            for (var k = 0; k <= maxIndentObserved; k++) {
+                var isLevelActiveOnLine = (curEff > k);
+                var isOpeningThisLevel = (isOpeningLine && rawInd === k);
+                var isColonOpeningThisLevel = (lineEndsWithColon[l] && rawInd === k && (l + 1 < total && effectiveIndents[l + 1] > k));
+                var isClosingThisLevel = (isClosingLine && rawInd === k);
+
+                if (isOpeningThisLevel || isColonOpeningThisLevel) {
+                    if (!activeSegments[k]) {
+                        activeSegments[k] = {
+                            startLine: l,
+                            endLine: l,
+                            level: k,
+                            hasClosingBrace: false
+                        };
+                    }
+                }
+
+                if (isLevelActiveOnLine) {
+                    if (!activeSegments[k]) {
+                        var sLine = l;
+                        for (var pl = l - 1; pl >= 0; pl--) {
+                            if (lineIndents[pl] === k && (lineHasOpeningBrace[pl] || lineEndsWithColon[pl])) {
+                                sLine = pl;
+                                break;
+                            }
+                        }
+                        activeSegments[k] = {
+                            startLine: sLine,
+                            endLine: l,
+                            level: k,
+                            hasClosingBrace: false
+                        };
+                    } else {
+                        activeSegments[k].endLine = l;
+                    }
+                } else if (isClosingThisLevel) {
+                    if (activeSegments[k]) {
+                        activeSegments[k].endLine = l;
+                        activeSegments[k].hasClosingBrace = true;
+                        segments.push(activeSegments[k]);
+                        activeSegments[k] = null;
+                    }
+                } else if (!isOpeningThisLevel && !isColonOpeningThisLevel) {
+                    if (activeSegments[k]) {
+                        segments.push(activeSegments[k]);
+                        activeSegments[k] = null;
+                    }
+                }
+            }
+        }
+
+        for (var k = 0; k <= maxIndentObserved; k++) {
+            if (activeSegments[k]) {
+                segments.push(activeSegments[k]);
+                activeSegments[k] = null;
+            }
+        }
+
+        return segments;
+    }
+
     function recomputeScopes(docText) {
         root.scopeDocRevision++;
-        var scopes = computeScopesForText(docText || (root.codeTextArea ? root.codeTextArea.text : ""));
+        var text = docText || (root.codeTextArea ? root.codeTextArea.text : "");
+        var scopes = computeScopesForText(text);
+        var segments = computeGuideSegmentsForText(text);
         if (root.activeEditorPane) {
             root.activeEditorPane.paneScopeRanges = scopes;
+            root.activeEditorPane.paneGuideSegments = segments;
             if (root.activeEditorPane.indentGuidesCanvas) {
                 root.activeEditorPane.indentGuidesCanvas.requestPaint();
             }
@@ -151,7 +536,38 @@ Item {
     signal requestOpenFolder()
     signal requestRunFile()
 
-    signal askAi(string code)
+    signal askAi(string code, int selectionStart, int selectionEnd, string languageId)
+
+    property string pendingAiCode: ""
+    property int pendingAiStart: -1
+    property int pendingAiEnd: -1
+    property string pendingAiOriginalText: ""
+    property bool isAiReplacementGenerating: false
+    property bool hasPendingAiReplacement: pendingAiStart >= 0 && (isAiReplacementGenerating || pendingAiCode.length > 0)
+
+    function startPendingAiReplacement(startPos, endPos, originalText) {
+        pendingAiStart = startPos;
+        pendingAiEnd = endPos;
+        pendingAiOriginalText = originalText || "";
+        pendingAiCode = "";
+        isAiReplacementGenerating = true;
+    }
+
+    function setPendingAiReplacement(startPos, endPos, code, originalText) {
+        pendingAiStart = startPos;
+        pendingAiEnd = endPos;
+        pendingAiCode = code;
+        pendingAiOriginalText = originalText || "";
+        isAiReplacementGenerating = false;
+    }
+
+    function clearPendingAiReplacement() {
+        pendingAiCode = "";
+        pendingAiStart = -1;
+        pendingAiEnd = -1;
+        pendingAiOriginalText = "";
+        isAiReplacementGenerating = false;
+    }
 
     FontMetrics {
         id: fontMetrics
@@ -238,8 +654,24 @@ Item {
                             color: theme ? theme.bgEditor : "#1e1e1e"
                         }
 
+                        // Breadcrumbs Hierarchy & Symbol Bar
+                        BreadcrumbsBar {
+                            id: breadcrumbsBar
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            filePath: root.activeFilePath
+                            z: 20
+                            onNavigateToLine: function(line) {
+                                root.jumpToLine(line);
+                            }
+                        }
+
                         RowLayout {
-                            anchors.fill: parent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.top: breadcrumbsBar.bottom
                             spacing: 0
 
                             StackLayout {
@@ -254,6 +686,7 @@ Item {
 
                                     delegate: Item {
                                         id: tabPane
+                                        property int index: (typeof model !== "undefined" && typeof model.index !== "undefined") ? model.index : (typeof index !== "undefined" ? index : 0)
                                         property alias gutter: gutter
                                         property alias gutterFlickable: gutterFlickable
                                         property alias textAreaContainer: textAreaContainer
@@ -263,9 +696,11 @@ Item {
                                         property alias currentLineHighlight: currentLineHighlight
                                         property int paneTotalLineCount: countLines(codeTextArea.text)
                                         property var paneScopeRanges: []
+                                        property var paneGuideSegments: []
 
                                         function updatePaneScopes() {
                                             paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                            paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
                                             indentGuidesCanvas.requestPaint();
                                         }
 
@@ -381,6 +816,7 @@ Item {
                                                             if (codeTextArea) {
                                                                 tabPane.paneTotalLineCount = codeTextArea.lineCount > 0 ? codeTextArea.lineCount : countLines(codeTextArea.text);
                                                                 tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                                                tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
                                                             }
                                                             indentGuidesCanvas.requestPaint();
                                                         }
@@ -405,139 +841,47 @@ Item {
                                                         var doc = codeTextArea.text;
                                                         if (!doc) return;
 
-                                                        var tabSize = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
                                                         var leftPadding = codeTextArea.leftPadding - editorFlickable.contentX;
                                                         var topPadding = codeTextArea.topPadding;
                                                         var lineH = root.editorLineHeight;
+                                                        var charW = root.charWidth;
                                                         var cachedWidths = root.cachedIndentLevelWidths;
 
                                                         var viewTop = editorFlickable.contentY;
-                                                        var startLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
-                                                        var endLine = startLine + Math.ceil(height / lineH) + 4;
+                                                        var visibleStartLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
+                                                        var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
 
-                                                        var currentLineIdx = 0;
-                                                        var charIdx = 0;
-                                                        var docLen = doc.length;
-                                                        while (currentLineIdx < startLine && charIdx < docLen) {
-                                                            var nl = doc.indexOf("\n", charIdx);
-                                                            if (nl === -1) { charIdx = docLen; break; }
-                                                            charIdx = nl + 1;
-                                                            currentLineIdx++;
+                                                        var segments = tabPane.paneGuideSegments;
+                                                        if (!segments || segments.length === 0) {
+                                                            segments = root.computeGuideSegmentsForText(doc);
+                                                            tabPane.paneGuideSegments = segments;
                                                         }
 
                                                         ctx.lineWidth = 1;
-                                                        ctx.strokeStyle = theme ? "#35383d" : "#303030";
+                                                        ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d";
                                                         ctx.globalAlpha = 0.35;
 
-                                                        function getLineIndent(text) {
-                                                            var trimmed = text.trim();
-                                                            if (trimmed.length === 0) return -1;
-                                                            var cols = 0;
-                                                            for (var c = 0; c < text.length; c++) {
-                                                                var ch = text.charAt(c);
-                                                                if (ch === ' ') {
-                                                                    cols += 1;
-                                                                } else if (ch === '\t') {
-                                                                    cols += tabSize - (cols % tabSize);
-                                                                } else {
-                                                                    break;
-                                                                }
+                                                        for (var i = 0; i < segments.length; i++) {
+                                                            var seg = segments[i];
+                                                            if (seg.endLine < visibleStartLine || seg.startLine > visibleEndLine) continue;
+
+                                                            var lvl = seg.level;
+                                                            var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
+                                                            var x = leftPadding + lvlWidth;
+                                                            var drawX = Math.round(x) + 0.5;
+
+                                                            if (drawX < -20 || drawX > width + 20) continue;
+
+                                                            var yStart = topPadding + (seg.startLine * lineH) - viewTop;
+                                                            var yEnd = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
+
+                                                            ctx.beginPath();
+                                                            ctx.moveTo(drawX, yStart);
+                                                            ctx.lineTo(drawX, yEnd);
+                                                            if (seg.hasClosingBrace) {
+                                                                ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
                                                             }
-                                                            return Math.floor(cols / tabSize);
-                                                        }
-
-                                                        var lastNonEmptyIndent = 0;
-                                                        if (startLine > 0) {
-                                                            var searchIdx = charIdx - 1;
-                                                            while (searchIdx > 0) {
-                                                                var pEnd = searchIdx;
-                                                                var pStart = doc.lastIndexOf("\n", pEnd - 1);
-                                                                var pLine = doc.substring(pStart === -1 ? 0 : pStart + 1, pEnd);
-                                                                var pInd = getLineIndent(pLine);
-                                                                if (pInd >= 0) {
-                                                                    lastNonEmptyIndent = pInd;
-                                                                    break;
-                                                                }
-                                                                if (pStart === -1) break;
-                                                                searchIdx = pStart;
-                                                            }
-                                                        }
-
-                                                        // 1. Regular indentation guides derived strictly from leading whitespace
-                                                        for (var l = startLine; l < endLine && charIdx < docLen; l++) {
-                                                            var lineEnd = doc.indexOf("\n", charIdx);
-                                                            if (lineEnd === -1) lineEnd = docLen;
-                                                            var lineText = doc.substring(charIdx, lineEnd);
-                                                            var nextCharIdx = lineEnd + 1;
-
-                                                            var indentCount = getLineIndent(lineText);
-                                                            if (indentCount >= 0) {
-                                                                lastNonEmptyIndent = indentCount;
-                                                            } else {
-                                                                // Blank line: determine effective indent from surrounding context
-                                                                var nextIndent = 0;
-                                                                var fIdx = nextCharIdx;
-                                                                while (fIdx < docLen) {
-                                                                    var fEnd = doc.indexOf("\n", fIdx);
-                                                                    if (fEnd === -1) fEnd = docLen;
-                                                                    var fLine = doc.substring(fIdx, fEnd);
-                                                                    var fInd = getLineIndent(fLine);
-                                                                    if (fInd >= 0) {
-                                                                        nextIndent = fInd;
-                                                                        break;
-                                                                    }
-                                                                    fIdx = fEnd + 1;
-                                                                }
-                                                                indentCount = Math.min(lastNonEmptyIndent, nextIndent);
-                                                            }
-
-                                                            if (indentCount > 0) {
-                                                                var y = topPadding + (l * lineH) - viewTop;
-                                                                for (var lvl = 0; lvl < indentCount; lvl++) {
-                                                                    var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
-                                                                    var x = leftPadding + lvlWidth;
-                                                                    var drawX = Math.round(x) + 0.5;
-                                                                    if (drawX >= 0 && drawX <= width) {
-                                                                        ctx.beginPath();
-                                                                        ctx.moveTo(drawX, y);
-                                                                        ctx.lineTo(drawX, y + lineH);
-                                                                        ctx.stroke();
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            charIdx = nextCharIdx;
-                                                        }
-
-                                                        // 2. Structural Scope Guides (handles outermost { at level 0, nested {, and blank lines)
-                                                        var scopes = tabPane.paneScopeRanges || [];
-                                                        for (var s = 0; s < scopes.length; s++) {
-                                                             var sc = scopes[s];
-                                                             if (sc.startLine < endLine && sc.endLine >= startLine) {
-                                                                 var sLvl = sc.level;
-                                                                 var sLvlWidth = (sLvl < cachedWidths.length) ? cachedWidths[sLvl] : (sLvl * cachedWidths[1]);
-                                                                 var sx = leftPadding + sLvlWidth;
-                                                                 var drawSx = Math.round(sx) + 0.5;
-                                                                 if (drawSx >= 0 && drawSx <= width) {
-                                                                     var lineStart = Math.max(startLine, sc.startLine + 1);
-                                                                     var lineEnd = Math.min(endLine - 1, sc.endLine);
-                                                                     for (var sl = lineStart; sl <= lineEnd; sl++) {
-                                                                         var sy = topPadding + (sl * lineH) - viewTop;
-                                                                         if (sl === sc.endLine) {
-                                                                             ctx.beginPath();
-                                                                             ctx.moveTo(drawSx, sy);
-                                                                             ctx.lineTo(drawSx, sy + lineH * 0.5);
-                                                                             ctx.lineTo(drawSx + root.charWidth * 0.75, sy + lineH * 0.5);
-                                                                             ctx.stroke();
-                                                                         } else {
-                                                                             ctx.beginPath();
-                                                                             ctx.moveTo(drawSx, sy);
-                                                                             ctx.lineTo(drawSx, sy + lineH);
-                                                                             ctx.stroke();
-                                                                         }
-                                                                     }
-                                                                 }
-                                                             }
+                                                            ctx.stroke();
                                                         }
                                                         ctx.globalAlpha = 1.0;
                                                     }
@@ -679,6 +1023,7 @@ Item {
                                                             Qt.callLater(function() {
                                                                 if (tabPane) {
                                                                     tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                                                    tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
                                                                     indentGuidesCanvas.requestPaint();
                                                                 }
                                                             });
@@ -690,7 +1035,55 @@ Item {
                                                             selection(codeTextArea.selectedText);
                                                         }
 
-                                                        // Multi-Cursor Caret Overlays
+                                                                                                                 // Selection Occurrences Highlight Overlays
+                                                         Repeater {
+                                                             model: (tabPane.index === root.activeTabIndex) ? root.selectionOccurrences : []
+                                                             delegate: Rectangle {
+                                                                 property var occRect: codeTextArea.positionToRectangle(modelData.start)
+                                                                 property var occEndRect: codeTextArea.positionToRectangle(modelData.end)
+                                                                 x: occRect.x
+                                                                 y: occRect.y
+                                                                 width: Math.max(8, occEndRect.x - occRect.x)
+                                                                 height: occRect.height > 0 ? occRect.height : root.editorLineHeight
+                                                                 color: "#38bdf8"
+                                                                 opacity: 0.14
+                                                                 border.color: "#38bdf840"
+                                                                 border.width: 1
+                                                                 radius: 2
+                                                                 z: 5
+                                                             }
+                                                         }
+
+                                                         // Bracket Matching Highlight Overlays
+                                                         Rectangle {
+                                                             property var b1Rect: (root.bracketMatchPos1 >= 0 && tabPane.index === root.activeTabIndex) ? codeTextArea.positionToRectangle(root.bracketMatchPos1) : null
+                                                             visible: b1Rect !== null && root.bracketMatchPos1 >= 0 && tabPane.index === root.activeTabIndex
+                                                             x: b1Rect ? b1Rect.x : 0
+                                                             y: b1Rect ? b1Rect.y : 0
+                                                             width: root.charWidth
+                                                             height: b1Rect && b1Rect.height > 0 ? b1Rect.height : root.editorLineHeight
+                                                             color: "transparent"
+                                                             border.color: theme ? theme.accent : "#38bdf8"
+                                                             border.width: 1.5
+                                                             radius: 2
+                                                             z: 14
+                                                         }
+
+                                                         Rectangle {
+                                                             property var b2Rect: (root.bracketMatchPos2 >= 0 && tabPane.index === root.activeTabIndex) ? codeTextArea.positionToRectangle(root.bracketMatchPos2) : null
+                                                             visible: b2Rect !== null && root.bracketMatchPos2 >= 0 && tabPane.index === root.activeTabIndex
+                                                             x: b2Rect ? b2Rect.x : 0
+                                                             y: b2Rect ? b2Rect.y : 0
+                                                             width: root.charWidth
+                                                             height: b2Rect && b2Rect.height > 0 ? b2Rect.height : root.editorLineHeight
+                                                             color: "transparent"
+                                                             border.color: theme ? theme.accent : "#38bdf8"
+                                                             border.width: 1.5
+                                                             radius: 2
+                                                             z: 14
+                                                         }
+
+                                                         // Multi-Cursor Caret Overlays
                                                         Repeater {
                                                             model: (tabPane.index === root.activeTabIndex) ? root.extraCursors : []
                                                             delegate: Rectangle {
@@ -714,7 +1107,69 @@ Item {
                                                             onTriggered: blinkOn = !blinkOn
                                                         }
 
-                                                        // Alt+Click Multi-Cursor TapHandler (does not block mouse selection)
+                                                        // Floating AI Replace Pill on top of original saved selection
+                                                        Rectangle {
+                                                            id: floatingAiSelectionPill
+                                                            z: 90
+
+                                                            readonly property bool hasActiveSelection: codeTextArea.selectionStart !== codeTextArea.selectionEnd
+                                                            readonly property int curSelStart: Math.min(codeTextArea.selectionStart, codeTextArea.selectionEnd)
+                                                            readonly property int curSelEnd: Math.max(codeTextArea.selectionStart, codeTextArea.selectionEnd)
+                                                            readonly property bool matchesPendingSelection: (curSelStart === root.pendingAiStart && curSelEnd === root.pendingAiEnd)
+
+                                                            visible: root.hasPendingAiReplacement && (tabPane.index === root.activeTabIndex) && !findReplaceBar.visible && hasActiveSelection && matchesPendingSelection
+
+                                                            readonly property bool isReady: !root.isAiReplacementGenerating && root.pendingAiCode.length > 0
+                                                            enabled: isReady
+                                                            opacity: isReady ? 1.0 : 0.55
+
+                                                            property var origSelRect: (root.hasPendingAiReplacement && hasActiveSelection && matchesPendingSelection) ? codeTextArea.positionToRectangle(root.pendingAiStart) : null
+                                                            x: origSelRect ? Math.max(codeTextArea.leftPadding, Math.min(codeTextArea.width - width - 12, origSelRect.x)) : 0
+                                                            y: origSelRect ? (origSelRect.y - height - 6 < 0 ? (origSelRect.y + (origSelRect.height > 0 ? origSelRect.height : root.editorLineHeight) + 4) : (origSelRect.y - height - 6)) : 0
+
+                                                            width: pillRow.implicitWidth + 18
+                                                            height: 24
+                                                            radius: 4
+                                                            color: !isReady ? (theme ? theme.bgSurfaceHover : "#333333") : (pillMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4"))
+                                                            border.color: !isReady ? (theme ? theme.borderSubtle : "#444444") : (theme ? theme.borderFocus : "#60a5fa")
+                                                            border.width: 1
+
+                                                            RowLayout {
+                                                                id: pillRow
+                                                                anchors.centerIn: parent
+                                                                spacing: 5
+
+                                                                VectorIcon {
+                                                                    name: "sparkles"
+                                                                    size: 11
+                                                                    color: floatingAiSelectionPill.isReady ? "#ffffff" : (theme ? theme.textMuted : "#888888")
+                                                                }
+
+                                                                Text {
+                                                                    text: "Replace with AI"
+                                                                    color: floatingAiSelectionPill.isReady ? "#ffffff" : (theme ? theme.textMuted : "#888888")
+                                                                    font.pixelSize: 11
+                                                                    font.bold: true
+                                                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                                                }
+                                                            }
+
+                                                            MouseArea {
+                                                                id: pillMa
+                                                                anchors.fill: parent
+                                                                hoverEnabled: floatingAiSelectionPill.enabled
+                                                                cursorShape: floatingAiSelectionPill.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                                onClicked: {
+                                                                    if (!floatingAiSelectionPill.enabled) return;
+                                                                    root.replaceSelection(root.pendingAiStart, root.pendingAiEnd, root.pendingAiCode, root.pendingAiOriginalText);
+                                                                    root.clearPendingAiReplacement();
+                                                                }
+                                                            }
+                                                        }
+
+                                                                                                                
+
+                                                         // Alt+Click Multi-Cursor TapHandler (does not block mouse selection)
                                                         TapHandler {
                                                             acceptedButtons: Qt.LeftButton
                                                             acceptedModifiers: Qt.AltModifier
@@ -773,6 +1228,12 @@ Item {
                                                         onCursorPositionChanged: {
                                                             if (tabPane.index === root.activeTabIndex) {
                                                                 root.updateCursorPosition();
+                                                                
+                                                                root.updateSelectionOccurrences();
+                                                                if (breadcrumbsBar && typeof breadcrumbsBar.updateActiveSymbolForLine === "function") {
+                                                                    breadcrumbsBar.updateActiveSymbolForLine(root.cursorLine);
+                                                                }
+                                                                root.saveWorkspaceSession();
                                                                 if (suggestionModel.count > 0 && !autocompleteTimer.running) {
                                                                     suggestionModel.clear();
                                                                 }
@@ -795,6 +1256,77 @@ Item {
                                                         }
 
                                                         Keys.onPressed: function(event) {
+                                                            // Whole-line copy / paste behavior
+                                                            if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_C)) {
+                                                                var sStart = codeTextArea.selectionStart;
+                                                                var sEnd = codeTextArea.selectionEnd;
+                                                                if (sStart === undefined || sEnd === undefined || sStart === sEnd) {
+                                                                    var docT = codeTextArea.text;
+                                                                    var cPos = codeTextArea.cursorPosition;
+                                                                    var lStart = docT.lastIndexOf("\n", cPos - 1) + 1;
+                                                                    var lEnd = docT.indexOf("\n", cPos);
+                                                                    if (lEnd === -1) lEnd = docT.length;
+                                                                    var lineCopy = docT.substring(lStart, lEnd) + "\n";
+                                                                    root.copiedWholeLine = true;
+                                                                    root.clipboardWholeLineText = lineCopy;
+                                                                    codeTextArea.select(lStart, lEnd < docT.length ? lEnd + 1 : lEnd);
+                                                                    codeTextArea.copy();
+                                                                    codeTextArea.deselect();
+                                                                    codeTextArea.cursorPosition = cPos;
+                                                                    event.accepted = true;
+                                                                    return;
+                                                                }
+                                                            }
+
+                                                            if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_V)) {
+                                                                var selS = codeTextArea.selectionStart;
+                                                                var selE = codeTextArea.selectionEnd;
+                                                                var hasSel = (selS !== undefined && selE !== undefined && selS !== selE);
+                                                                if (!hasSel && root.copiedWholeLine && root.clipboardWholeLineText) {
+                                                                    var dText = codeTextArea.text;
+                                                                    var curP = codeTextArea.cursorPosition;
+                                                                    var lineSt = dText.lastIndexOf("\n", curP - 1) + 1;
+                                                                    codeTextArea.insert(lineSt, root.clipboardWholeLineText);
+                                                                    codeTextArea.cursorPosition = lineSt;
+                                                                    event.accepted = true;
+                                                                    return;
+                                                                }
+                                                            }
+
+                                                            // Snippet Placeholders Tab Navigation
+                                                            if (root.activeSnippetStops && root.activeSnippetStops.length > 0) {
+                                                                if (event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier)) {
+                                                                    root.activeSnippetStopIndex += 1;
+                                                                    if (root.activeSnippetStopIndex < root.activeSnippetStops.length) {
+                                                                        var nStop = root.activeSnippetStops[root.activeSnippetStopIndex];
+                                                                        codeTextArea.select(nStop.start, nStop.end);
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    } else {
+                                                                        root.activeSnippetStops = [];
+                                                                        root.activeSnippetStopIndex = -1;
+                                                                    }
+                                                                } else if (event.key === Qt.Key_Backtab || ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_Tab)) {
+                                                                    if (root.activeSnippetStopIndex > 0) {
+                                                                        root.activeSnippetStopIndex -= 1;
+                                                                        var pStop = root.activeSnippetStops[root.activeSnippetStopIndex];
+                                                                        codeTextArea.select(pStop.start, pStop.end);
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
+                                                                } else if (event.key === Qt.Key_Escape) {
+                                                                    root.activeSnippetStops = [];
+                                                                    root.activeSnippetStopIndex = -1;
+                                                                }
+                                                            }
+
+                                                            // F2 Rename Symbol shortcut
+                                                            if (event.key === Qt.Key_F2) {
+                                                                root.triggerRenameSymbol();
+                                                                event.accepted = true;
+                                                                return;
+                                                            }
+
                                                             // 0. Multi-Cursor Next Occurrence: Ctrl+D
                                                             if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_D)) {
                                                                 root.addNextOccurrenceCursor();
@@ -1248,7 +1780,7 @@ Item {
                             }
                             Action {
                                 text: (root.codeTextArea && root.codeTextArea.selectedText) ? "Ask AI": "Run File\tF5"
-                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText) : root.requestRunFile()
+                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText, root.codeTextArea.selectionStart, root.codeTextArea.selectionEnd, root.currentLanguageId) : root.requestRunFile()
                             }
 
                             MenuSeparator {
@@ -1769,139 +2301,43 @@ Item {
                                                 var doc = secCodeTextArea.text;
                                                 if (!doc) return;
 
-                                                var tabSize = (theme && theme.tabSize) ? theme.tabSize : 4;
                                                 var leftPadding = secCodeTextArea.leftPadding - secEditorFlickable.contentX;
                                                 var topPadding = secCodeTextArea.topPadding;
                                                 var lineH = root.editorLineHeight;
+                                                var charW = root.charWidth;
                                                 var cachedWidths = root.cachedIndentLevelWidths;
 
                                                 var viewTop = secEditorFlickable.contentY;
-                                                var startLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
-                                                var endLine = startLine + Math.ceil(height / lineH) + 4;
+                                                var visibleStartLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
+                                                var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
 
-                                                var currentLineIdx = 0;
-                                                var charIdx = 0;
-                                                var docLen = doc.length;
-                                                while (currentLineIdx < startLine && charIdx < docLen) {
-                                                    var nl = doc.indexOf("\n", charIdx);
-                                                    if (nl === -1) { charIdx = docLen; break; }
-                                                    charIdx = nl + 1;
-                                                    currentLineIdx++;
-                                                }
-
+                                                var segments = root.computeGuideSegmentsForText(doc);
                                                 ctx.lineWidth = 1;
-                                                ctx.strokeStyle = theme ? "#35383d" : "#303030";
-                                                ctx.globalAlpha = 0.35;
 
-                                                        function getLineIndent(text) {
-                                                            var trimmed = text.trim();
-                                                            if (trimmed.length === 0) return -1;
-                                                            var cols = 0;
-                                                            for (var c = 0; c < text.length; c++) {
-                                                                var ch = text.charAt(c);
-                                                                if (ch === ' ') {
-                                                                    cols += 1;
-                                                                } else if (ch === '\t') {
-                                                                    cols += tabSize - (cols % tabSize);
-                                                                } else {
-                                                                    break;
-                                                                }
-                                                            }
-                                                            return Math.floor(cols / tabSize);
-                                                        }
+                                                for (var i = 0; i < segments.length; i++) {
+                                                    var seg = segments[i];
+                                                    if (seg.endLine < visibleStartLine || seg.startLine > visibleEndLine) continue;
 
-                                                        var lastNonEmptyIndent = 0;
-                                                        if (startLine > 0) {
-                                                            var searchIdx = charIdx - 1;
-                                                            while (searchIdx > 0) {
-                                                                var pEnd = searchIdx;
-                                                                var pStart = doc.lastIndexOf("\n", pEnd - 1);
-                                                                var pLine = doc.substring(pStart === -1 ? 0 : pStart + 1, pEnd);
-                                                                var pInd = getLineIndent(pLine);
-                                                                if (pInd >= 0) {
-                                                                    lastNonEmptyIndent = pInd;
-                                                                    break;
-                                                                }
-                                                                if (pStart === -1) break;
-                                                                searchIdx = pStart;
-                                                            }
-                                                        }
+                                                    var lvl = seg.level;
+                                                    var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
+                                                    var x = leftPadding + lvlWidth;
+                                                    var drawX = Math.round(x) + 0.5;
 
-                                                        // 1. Regular indentation guides derived strictly from leading whitespace
-                                                        for (var l = startLine; l < endLine && charIdx < docLen; l++) {
-                                                            var lineEnd = doc.indexOf("\n", charIdx);
-                                                            if (lineEnd === -1) lineEnd = docLen;
-                                                            var lineText = doc.substring(charIdx, lineEnd);
-                                                            var nextCharIdx = lineEnd + 1;
+                                                    if (drawX < -20 || drawX > width + 20) continue;
 
-                                                            var indentCount = getLineIndent(lineText);
-                                                            if (indentCount >= 0) {
-                                                                lastNonEmptyIndent = indentCount;
-                                                            } else {
-                                                                // Blank line: determine effective indent from surrounding context
-                                                                var nextIndent = 0;
-                                                                var fIdx = nextCharIdx;
-                                                                while (fIdx < docLen) {
-                                                                    var fEnd = doc.indexOf("\n", fIdx);
-                                                                    if (fEnd === -1) fEnd = docLen;
-                                                                    var fLine = doc.substring(fIdx, fEnd);
-                                                                    var fInd = getLineIndent(fLine);
-                                                                    if (fInd >= 0) {
-                                                                        nextIndent = fInd;
-                                                                        break;
-                                                                    }
-                                                                    fIdx = fEnd + 1;
-                                                                }
-                                                                indentCount = Math.min(lastNonEmptyIndent, nextIndent);
-                                                            }
+                                                    var yStart = topPadding + (seg.startLine * lineH) - viewTop;
+                                                    var yEnd = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
 
-                                                            if (indentCount > 0) {
-                                                                var y = topPadding + (l * lineH) - viewTop;
-                                                                for (var lvl = 0; lvl < indentCount; lvl++) {
-                                                                    var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
-                                                                    var x = leftPadding + lvlWidth;
-                                                                    var drawX = Math.round(x) + 0.5;
-                                                                    if (drawX >= 0 && drawX <= width) {
-                                                                        ctx.beginPath();
-                                                                        ctx.moveTo(drawX, y);
-                                                                        ctx.lineTo(drawX, y + lineH);
-                                                                        ctx.stroke();
-                                                                    }
-                                                                }
-                                                            }
+                                                    ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d";
+                                                    ctx.globalAlpha = 0.35;
 
-                                                            charIdx = nextCharIdx;
-                                                        }
-
-                                                // 2. Structural Scope Guides (handles outermost { at level 0, nested {, and blank lines)
-                                                var scopes = root.activeScopeRanges || [];
-                                                for (var s = 0; s < scopes.length; s++) {
-                                                    var sc = scopes[s];
-                                                    if (sc.startLine < endLine && sc.endLine >= startLine) {
-                                                        var sLvl = sc.level;
-                                                        var sLvlWidth = (sLvl < cachedWidths.length) ? cachedWidths[sLvl] : (sLvl * cachedWidths[1]);
-                                                        var sx = leftPadding + sLvlWidth;
-                                                        var drawSx = Math.round(sx) + 0.5;
-                                                        if (drawSx >= 0 && drawSx <= width) {
-                                                            var lineStart = Math.max(startLine, sc.startLine + 1);
-                                                            var lineEnd = Math.min(endLine - 1, sc.endLine);
-                                                            for (var sl = lineStart; sl <= lineEnd; sl++) {
-                                                                var sy = topPadding + (sl * lineH) - viewTop;
-                                                                if (sl === sc.endLine) {
-                                                                    ctx.beginPath();
-                                                                    ctx.moveTo(drawSx, sy);
-                                                                    ctx.lineTo(drawSx, sy + lineH * 0.5);
-                                                                    ctx.lineTo(drawSx + root.charWidth * 0.75, sy + lineH * 0.5);
-                                                                    ctx.stroke();
-                                                                } else {
-                                                                    ctx.beginPath();
-                                                                    ctx.moveTo(drawSx, sy);
-                                                                    ctx.lineTo(drawSx, sy + lineH);
-                                                                    ctx.stroke();
-                                                                }
-                                                            }
-                                                        }
+                                                    ctx.beginPath();
+                                                    ctx.moveTo(drawX, yStart);
+                                                    ctx.lineTo(drawX, yEnd);
+                                                    if (seg.hasClosingBrace) {
+                                                        ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
                                                     }
+                                                    ctx.stroke();
                                                 }
                                                 ctx.globalAlpha = 1.0;
                                             }
@@ -2023,13 +2459,13 @@ Item {
         if (actionId === "format") {
             root.formatDocument();
         } else if (actionId === "ask_ai") {
-            var code = codeTextArea.selectedText || "";
+            var code = (codeTextArea && codeTextArea.selectedText) ? codeTextArea.selectedText : "";
             if (code.length > 0) {
-                root.askAi(code);
+                root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
             }
         } else if (actionId === "run") {
-            if (codeTextArea.selectedText && codeTextArea.selectedText.trim().length > 0) {
-                root.askAi(codeTextArea.selectedText);
+            if (codeTextArea && codeTextArea.selectedText && codeTextArea.selectedText.trim().length > 0) {
+                root.askAi(codeTextArea.selectedText, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
                 return;
             }
             var ext = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
@@ -2055,61 +2491,106 @@ Item {
     }
 
     // =========================================================================
-    // ACCURATE MULTI-LANGUAGE CODE FORMATTER (Preserves Viewport & Cursor Position)
+    // ACCURATE MULTI-LANGUAGE CODE FORMATTER (Non-blocking & Asynchronous)
     // =========================================================================
     function formatDocument() {
+        if (!codeTextArea) return;
         var text = codeTextArea.text;
         if (!text || text.trim().length === 0) return;
+        if (root.isFormatting) return;
 
         var lang = root.currentLanguageId;
         var ext = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
         var tabSize = theme ? theme.tabSize : 4;
-        var tabSpaces = " ".repeat(tabSize);
-        var formattedText = text;
+        var effectivePath = root.activeFilePath || root.activeFileName || "";
 
-        if (typeof backend !== "undefined" && backend && backend.format_code) {
+        // Dispatch asynchronously to prevent freezing or locking the Qt UI thread
+        if (typeof backend !== "undefined" && backend && backend.request_format_code) {
+            root.formatRequestSeq++;
+            root.activeFormatReqId = "fmt_" + Date.now() + "_" + root.formatRequestSeq;
+            root.isFormatting = true;
             try {
-                formattedText = backend.format_code(lang, root.activeFilePath || root.activeFileName || "", text, tabSize);
+                backend.request_format_code(root.activeFormatReqId, lang, effectivePath, text, tabSize);
+                return;
             } catch (e) {
-                console.log("[EditorArea] Backend format notice:", e);
+                console.log("[EditorArea] Backend async format notice:", e);
+                root.isFormatting = false;
+                root.activeFormatReqId = "";
             }
         }
 
-        // Fallback local formatter if backend produced no change or is unavailable
-        if (!formattedText || formattedText === text) {
-            if (lang === "json" || ext === "json") {
-                try {
-                    var parsed = JSON.parse(text);
-                    formattedText = JSON.stringify(parsed, null, tabSize);
-                } catch (e) {}
+        // Local JSON fallback if backend is unavailable
+        if (lang === "json" || ext === "json") {
+            try {
+                var parsed = JSON.parse(text);
+                var formattedText = JSON.stringify(parsed, null, tabSize);
+                if (formattedText === text) {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification("Document is already formatted.", "info", "Formatter", 2500);
+                    }
+                    return;
+                }
+                codeTextArea.text = formattedText;
+                if (root.activeTabIndex >= 0 && root.activeTabIndex < tabModel.count) {
+                    tabModel.setProperty(root.activeTabIndex, "isDirty", true);
+                }
+                root.isCurrentFileDirty = true;
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification("JSON formatted successfully", "success", "Formatter", 2500);
+                }
+                return;
+            } catch (e) {
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification("JSON syntax error: " + e.message, "error", "Formatter");
+                }
+                return;
             }
         }
 
-        if (!formattedText || formattedText === text) return;
-
-        var curLine = root.cursorLine;
-        var curCol = root.cursorColumn;
-        var oldScrollX = editorFlickable.contentX;
-        var oldScrollY = editorFlickable.contentY;
-
-        codeTextArea.text = formattedText;
-
-        // Restore cursor position by line and column in formatted text
-        var newLines = formattedText.split("\n");
-        var targetLine = Math.min(curLine, newLines.length);
-        var newCharPos = 0;
-        for (var l = 0; l < targetLine - 1; l++) {
-            newCharPos += newLines[l].length + 1;
+        // Synchronous fallback if backend only supports format_code
+        if (typeof backend !== "undefined" && backend && backend.format_code) {
+            var formatResult = null;
+            try {
+                formatResult = backend.format_code(lang, effectivePath, text, tabSize);
+            } catch (e) {
+                console.log("[EditorArea] Backend format fallback error:", e);
+            }
+            if (formatResult) {
+                if (formatResult.available === false) {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(formatResult.message || "No formatter available for this language.", "warning", "Formatter");
+                    }
+                    return;
+                }
+                if (!formatResult.success) {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(formatResult.message || "Formatting failed.", "error", "Formatter");
+                    }
+                    return;
+                }
+                var resFormatted = formatResult.formatted || text;
+                if (resFormatted === text) {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(formatResult.message || "Document is already formatted.", "info", "Formatter", 2500);
+                    }
+                    return;
+                }
+                codeTextArea.text = resFormatted;
+                if (root.activeTabIndex >= 0 && root.activeTabIndex < tabModel.count) {
+                    tabModel.setProperty(root.activeTabIndex, "isDirty", true);
+                }
+                root.isCurrentFileDirty = true;
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification(formatResult.message || "Formatted successfully.", "success", "Formatter", 2500);
+                }
+                return;
+            }
         }
-        if (targetLine - 1 < newLines.length) {
-            newCharPos += Math.min(curCol - 1, newLines[targetLine - 1].length);
-        }
-        codeTextArea.cursorPosition = Math.min(newCharPos, formattedText.length);
 
-        // Keep viewport steady so code is never scrolled away or hidden
-        editorFlickable.contentX = Math.max(0, oldScrollX);
-        editorFlickable.contentY = Math.max(0, oldScrollY);
-        root.updateCursorPosition();
+        var warnMsg = "No formatter is currently installed for '" + (lang || ext || "this file") + "'.";
+        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+            mainWindow.showNotification(warnMsg, "warning", "Formatter");
+        }
     }
 
     // =========================================================================
@@ -2587,7 +3068,7 @@ Item {
     }
 
     function isFoldableLine(lineNum) {
-        return (root.foldableLinesMap && root.foldableLinesMap[lineNum] === true) || (foldedMap && foldedMap[lineNum] !== undefined);
+        return (root.foldableLinesMap && root.foldableLinesMap[lineNum] !== undefined) || (foldedMap && foldedMap[lineNum] !== undefined);
     }
 
     function getCanonicalText() {
@@ -2618,40 +3099,153 @@ Item {
     }
 
     function recalculateFoldableLines() {
-        var text = codeTextArea.text;
+        var text = codeTextArea ? codeTextArea.text : "";
         if (!text) {
             root.foldableLinesMap = {};
             return;
         }
         var map = {};
-        var tabSize = (theme && theme.tabSize) ? theme.tabSize : 4;
+        var tabSize = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
         var lines = text.split("\n");
-        var total = Math.min(lines.length, 3000);
+        var total = Math.min(lines.length, 5000);
 
-        for (var i = 0; i < total - 1; i++) {
-            var curL = lines[i];
-            var trimmed = curL.trim();
-            if (trimmed.length === 0) continue;
+        // 1. Structural brace-based blocks ({ ... }) across multiple lines
+        var stack = [];
+        var inBlockComment = false;
+        var inTripleQuote = false;
+        var tripleQuoteChar = '';
 
-            if (trimmed.endsWith("{") || trimmed.endsWith("(") || trimmed.endsWith("[") || trimmed.endsWith(":")) {
-                map[i + 1] = true;
-                continue;
-            }
+        for (var l = 0; l < total; l++) {
+            var line = lines[l];
+            var inStr = false;
+            var strQuote = '';
 
-            var matchLead = curL.match(/^(\s*)/);
-            var curLead = matchLead ? matchLead[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
-            for (var n = i + 1; n < Math.min(total, i + 6); n++) {
-                var nextL = lines[n];
-                if (nextL.trim().length > 0) {
-                    var nextMatch = nextL.match(/^(\s*)/);
-                    var nextLead = nextMatch ? nextMatch[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
-                    if (nextLead > curLead) {
-                        map[i + 1] = true;
+            for (var c = 0; c < line.length; c++) {
+                var char = line.charAt(c);
+                var nextChar = c + 1 < line.length ? line.charAt(c + 1) : '';
+
+                if (inBlockComment) {
+                    if (char === '*' && nextChar === '/') {
+                        inBlockComment = false;
+                        c++;
                     }
+                    continue;
+                }
+
+                if (inTripleQuote) {
+                    if (char === tripleQuoteChar && nextChar === tripleQuoteChar && c + 2 < line.length && line.charAt(c + 2) === tripleQuoteChar) {
+                        inTripleQuote = false;
+                        c += 2;
+                    }
+                    continue;
+                }
+
+                if (inStr) {
+                    if (char === '\\') {
+                        c++;
+                    } else if (char === strQuote) {
+                        inStr = false;
+                    }
+                    continue;
+                }
+
+                if (char === '/' && nextChar === '*') {
+                    inBlockComment = true;
+                    c++;
+                    continue;
+                }
+                if (char === '/' && nextChar === '/') {
                     break;
+                }
+                if (char === '#') {
+                    break;
+                }
+
+                if ((char === '"' || char === '\'') && nextChar === char && c + 2 < line.length && line.charAt(c + 2) === char) {
+                    inTripleQuote = true;
+                    tripleQuoteChar = char;
+                    c += 2;
+                    continue;
+                }
+
+                if (char === '"' || char === '\'' || char === '`') {
+                    inStr = true;
+                    strQuote = char;
+                    continue;
+                }
+
+                if (char === '{') {
+                    stack.push({ startLine: l });
+                } else if (char === '}') {
+                    if (stack.length > 0) {
+                        var top = stack.pop();
+                        if (l > top.startLine) {
+                            var foldLine = top.startLine + 1; // 1-indexed
+                            map[foldLine] = { endLine: l + 1, type: "brace" };
+
+                            // If opening brace was alone on its line (Allman style),
+                            // also allow folding from the preceding declaration line
+                            if (top.startLine > 0 && lines[top.startLine].trim() === "{") {
+                                var prevNonEmpty = top.startLine - 1;
+                                while (prevNonEmpty >= 0 && lines[prevNonEmpty].trim().length === 0) {
+                                    prevNonEmpty--;
+                                }
+                                if (prevNonEmpty >= 0 && lines[prevNonEmpty].trim().length > 0) {
+                                    map[prevNonEmpty + 1] = { endLine: l + 1, type: "brace" };
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        // 2. Indentation-based blocks (Python, YAML, Markdown, general block indentations)
+        for (var i = 0; i < total - 1; i++) {
+            var curL = lines[i];
+            var trimmed = curL.trim();
+            if (trimmed.length === 0 || trimmed.startsWith("#") || trimmed.startsWith("//")) continue;
+
+            var curCols = 0;
+            for (var ci = 0; ci < curL.length; ci++) {
+                var cch = curL.charAt(ci);
+                if (cch === ' ') curCols += 1;
+                else if (cch === '\t') curCols += tabSize - (curCols % tabSize);
+                else break;
+            }
+
+            var blockEnd = -1;
+            var foundDeeper = false;
+            for (var n = i + 1; n < total; n++) {
+                var nextL = lines[n];
+                var nextTrimmed = nextL.trim();
+                if (nextTrimmed.length === 0 || nextTrimmed.startsWith("#") || nextTrimmed.startsWith("//")) {
+                    continue;
+                }
+
+                var nextCols = 0;
+                for (var nci = 0; nci < nextL.length; nci++) {
+                    var nch = nextL.charAt(nci);
+                    if (nch === ' ') nextCols += 1;
+                    else if (nch === '\t') nextCols += tabSize - (nextCols % tabSize);
+                    else break;
+                }
+
+                if (nextCols > curCols) {
+                    foundDeeper = true;
+                    blockEnd = n;
+                } else {
+                    break;
+                }
+            }
+
+            if (foundDeeper && blockEnd > i) {
+                if (!map[i + 1]) {
+                    map[i + 1] = { endLine: blockEnd + 1, type: "indent" };
+                }
+            }
+        }
+
         root.foldableLinesMap = map;
     }
 
@@ -2698,27 +3292,38 @@ Item {
             root.foldedMap = newMap;
             codeTextArea.text = lines.join("\n");
         } else {
-            // FOLD: Find block boundary and visually collapse
-            var tabSize = (theme && theme.tabSize) ? theme.tabSize : 4;
-            var curLeadMatch = curLine.match(/^(\s*)/);
-            var baseLead = curLeadMatch ? curLeadMatch[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
-            var endIdx = startIdx + 1;
+            // FOLD: Find block boundary from foldableLinesMap or compute boundary
+            var foldData = root.foldableLinesMap ? root.foldableLinesMap[lineNum] : null;
+            var endIdx = -1;
 
-            while (endIdx < lines.length) {
-                var nextL = lines[endIdx];
-                if (nextL.trim().length > 0) {
-                    var nextLeadMatch = nextL.match(/^(\s*)/);
-                    var nextLead = nextLeadMatch ? nextLeadMatch[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
-                    var trimmedNext = nextL.trim();
-                    if (nextLead <= baseLead && !trimmedNext.startsWith("}") && !trimmedNext.startsWith(")") && !trimmedNext.startsWith("]")) {
-                        break;
-                    }
-                    if (nextLead <= baseLead && (trimmedNext.startsWith("}") || trimmedNext.startsWith(")") || trimmedNext.startsWith("]"))) {
-                        endIdx++;
-                        break;
-                    }
+            if (foldData && foldData.endLine && foldData.endLine > lineNum) {
+                endIdx = Math.min(foldData.endLine, lines.length);
+                if (foldData.type === "brace" && endIdx > startIdx + 1 && lines[endIdx - 1].trim().startsWith("}")) {
+                    // Keep closing brace line visible: collapse up to endIdx - 1
+                    endIdx = endIdx - 1;
                 }
-                endIdx++;
+            } else {
+                // Fallback boundary scanner
+                var tabSize = (theme && theme.tabSize) ? theme.tabSize : 4;
+                var curLeadMatch = curLine.match(/^(\s*)/);
+                var baseLead = curLeadMatch ? curLeadMatch[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
+                endIdx = startIdx + 1;
+
+                while (endIdx < lines.length) {
+                    var nextL = lines[endIdx];
+                    if (nextL.trim().length > 0) {
+                        var nextLeadMatch = nextL.match(/^(\s*)/);
+                        var nextLead = nextLeadMatch ? nextLeadMatch[1].replace(/\t/g, " ".repeat(tabSize)).length : 0;
+                        var trimmedNext = nextL.trim();
+                        if (nextLead <= baseLead && !trimmedNext.startsWith("}") && !trimmedNext.startsWith(")") && !trimmedNext.startsWith("]")) {
+                            break;
+                        }
+                        if (nextLead <= baseLead && (trimmedNext.startsWith("}") || trimmedNext.startsWith(")") || trimmedNext.startsWith("]"))) {
+                            break;
+                        }
+                    }
+                    endIdx++;
+                }
             }
 
             while (endIdx > startIdx + 1 && lines[endIdx - 1].trim().length === 0) {
@@ -2930,20 +3535,104 @@ Item {
         }
     }
 
-    function undo() { codeTextArea.undo(); }
-    function redo() { codeTextArea.redo(); }
+    function undo() {
+        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
+            var ta = root.activeEditorPane.codeTextArea;
+            if (ta.canUndo) {
+                ta.undo();
+                root.updateCursorPosition();
+                root.ensureCursorVisible();
+                if (root.activeEditorPane.updatePaneScopes) {
+                    root.activeEditorPane.updatePaneScopes();
+                }
+            }
+        }
+    }
+
+    function redo() {
+        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
+            var ta = root.activeEditorPane.codeTextArea;
+            if (ta.canRedo) {
+                ta.redo();
+                root.updateCursorPosition();
+                root.ensureCursorVisible();
+                if (root.activeEditorPane.updatePaneScopes) {
+                    root.activeEditorPane.updatePaneScopes();
+                }
+            }
+        }
+    }
 
     function insertSnippet(code) {
-        var pos = codeTextArea.cursorPosition;
-        codeTextArea.insert(pos, code);
-        codeTextArea.cursorPosition = pos + code.length;
+        if (!codeTextArea) return;
+        var cleanCode = code || "";
+        var start = codeTextArea.selectionStart;
+        var end = codeTextArea.selectionEnd;
+        if (start !== end) {
+            var minPos = Math.min(start, end);
+            var maxPos = Math.max(start, end);
+            codeTextArea.remove(minPos, maxPos);
+            codeTextArea.insert(minPos, cleanCode);
+            codeTextArea.cursorPosition = minPos + cleanCode.length;
+        } else {
+            var cur = codeTextArea.cursorPosition;
+            codeTextArea.insert(cur, cleanCode);
+            codeTextArea.cursorPosition = cur + cleanCode.length;
+        }
         codeTextArea.forceActiveFocus();
+        root.updateCursorPosition();
+        root.ensureCursorVisible();
+        if (root.activeEditorPane && root.activeEditorPane.updatePaneScopes) {
+            root.activeEditorPane.updatePaneScopes();
+        }
+    }
+
+    function insertCode(code) {
+        insertSnippet(code);
+    }
+
+    function replaceSelection(startPos, endPos, newCode, originalText) {
+        if (!codeTextArea) return false;
+        var docText = codeTextArea.text;
+        var textLen = docText.length;
+        if (startPos === undefined || startPos < 0 || endPos === undefined || endPos < startPos) {
+            return false;
+        }
+        var s = Math.min(startPos, textLen);
+        var e = Math.min(endPos, textLen);
+
+        // Safety check: if originalText was provided, verify if the range or nearby text matches
+        if (originalText && originalText.length > 0) {
+            var currentRangeText = codeTextArea.getText(s, e);
+            if (currentRangeText !== originalText) {
+                var foundIndex = docText.indexOf(originalText, Math.max(0, s - 500));
+                if (foundIndex !== -1 && Math.abs(foundIndex - s) < 1000) {
+                    s = foundIndex;
+                    e = foundIndex + originalText.length;
+                } else {
+                    console.warn("[EditorArea] Selection text mismatch, skipping replace to avoid altering wrong code.");
+                    return false;
+                }
+            }
+        }
+
+        // Replace ONLY the saved selection range using native remove & insert to preserve undo/redo history
+        codeTextArea.remove(s, e);
+        codeTextArea.insert(s, newCode || "");
+        codeTextArea.select(s, s + (newCode ? newCode.length : 0));
+        codeTextArea.cursorPosition = s + (newCode ? newCode.length : 0);
+        codeTextArea.forceActiveFocus();
+        root.clearPendingAiReplacement();
+        root.updateCursorPosition();
+        root.ensureCursorVisible();
+        return true;
     }
 
     function showFind(showReplace) {
         findReplaceBar.isReplaceMode = showReplace;
-        if (codeTextArea && codeTextArea.selectedText && codeTextArea.selectedText.indexOf("\n") === -1) {
-            findReplaceBar.setFindText(codeTextArea.selectedText);
+        // Strictly search ONLY the actual editor document (codeTextArea)
+        if (root.codeTextArea && root.codeTextArea.selectedText && root.codeTextArea.selectedText.indexOf("\n") === -1) {
+            findReplaceBar.setFindText(root.codeTextArea.selectedText);
         }
         findReplaceBar.visible = true;
         findReplaceBar.focusInput();
@@ -3278,4 +3967,180 @@ Item {
         colorPickerPopup.y = (pt.y + colorPickerPopup.height > textAreaContainer.height - 10) ? Math.max(10, pt.y - colorPickerPopup.height - codeTextArea.cursorRectangle.height - 8) : Math.max(10, pt.y);
         colorPickerPopup.visible = true;
     }
+
+    // =========================================================================
+    // VS CODE ADVANCED NAVIGATION, HOVER, RENAME & QUICK OPEN OVERLAYS
+    // =========================================================================
+    
+
+    RenameSymbolDialog {
+        id: renameSymbolDialog
+        onRenameConfirmed: function(oldName, newName) {
+            if (!codeTextArea) return;
+            if (typeof backend !== "undefined" && backend && backend.rename_symbol) {
+                var res = backend.rename_symbol(root.activeFilePath, root.cursorLine, root.cursorColumn, oldName, newName, codeTextArea.text);
+                if (res && res.success) {
+                    codeTextArea.text = res.new_code;
+                    if (root.activeTabIndex >= 0 && root.activeTabIndex < tabModel.count) {
+                        tabModel.setProperty(root.activeTabIndex, "isDirty", true);
+                    }
+                    root.isCurrentFileDirty = true;
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(res.message || "Renamed successfully.", "success", "Rename Symbol");
+                    }
+                } else {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification((res && res.message) ? res.message : "Rename failed.", "error", "Rename Symbol");
+                    }
+                }
+            }
+        }
+    }
+
+    QuickOpenPalette {
+        id: quickOpenPalette
+        onFileSelected: function(filePath) {
+            if (typeof backend !== "undefined" && backend && backend.open_file) {
+                backend.open_file(filePath);
+            }
+        }
+        onLineSelected: function(lineNum) {
+            root.jumpToLine(lineNum);
+        }
+    }
+
+    function jumpToLine(targetLine, targetCol) {
+        if (!codeTextArea) return;
+        var lines = codeTextArea.text.split("\n");
+        var line = Math.max(1, Math.min(targetLine, lines.length));
+        var col = targetCol !== undefined ? Math.max(1, targetCol) : 1;
+        var charPos = 0;
+        for (var l = 0; l < line - 1; l++) {
+            charPos += lines[l].length + 1;
+        }
+        charPos += Math.min(col - 1, lines[line - 1].length);
+        codeTextArea.cursorPosition = charPos;
+        codeTextArea.forceActiveFocus();
+        if (editorFlickable) {
+            var targetY = (line - 1) * root.editorLineHeight;
+            editorFlickable.contentY = Math.max(0, targetY - (editorFlickable.height / 2));
+        }
+        root.updateCursorPosition();
+    }
+
+    function triggerRenameSymbol() {
+        if (!codeTextArea) return;
+        var text = codeTextArea.text;
+        var curPos = codeTextArea.cursorPosition;
+        var wStart = curPos;
+        while (wStart > 0 && /[a-zA-Z0-9_]/.test(text[wStart - 1])) wStart--;
+        var wEnd = curPos;
+        while (wEnd < text.length && /[a-zA-Z0-9_]/.test(text[wEnd])) wEnd++;
+        var sym = text.substring(wStart, wEnd).trim();
+        if (!sym) return;
+
+        var r = codeTextArea.positionToRectangle(wStart);
+        var pt = codeTextArea.mapToItem(root, r.x, r.y);
+        renameSymbolDialog.openAt(pt.x, pt.y, sym, root.cursorLine, root.cursorColumn);
+    }
+
+    
+
+        function updateSelectionOccurrences() {
+        if (!codeTextArea) {
+            root.selectionOccurrences = [];
+            return;
+        }
+        var sel = codeTextArea.selectedText;
+        if (!sel || sel.trim().length < 2 || sel.indexOf("
+") !== -1) {
+            root.selectionOccurrences = [];
+            return;
+        }
+        var doc = codeTextArea.text;
+        var selStart = Math.min(codeTextArea.selectionStart, codeTextArea.selectionEnd);
+        var selEnd = Math.max(codeTextArea.selectionStart, codeTextArea.selectionEnd);
+        var occs = [];
+        var idx = 0;
+        var maxOcc = 100;
+        var isWord = /^[a-zA-Z0-9_]+$/.test(sel);
+
+        while ((idx = doc.indexOf(sel, idx)) !== -1) {
+            if (idx !== selStart) {
+                // If it's a word, enforce word boundary so substrings aren't highlighted
+                var valid = true;
+                if (isWord) {
+                    if (idx > 0 && /[a-zA-Z0-9_]/.test(doc.charAt(idx - 1))) valid = false;
+                    if (idx + sel.length < doc.length && /[a-zA-Z0-9_]/.test(doc.charAt(idx + sel.length))) valid = false;
+                }
+                if (valid) {
+                    occs.push({ start: idx, end: idx + sel.length });
+                    if (occs.length >= maxOcc) break;
+                }
+            }
+            idx += sel.length;
+        }
+        root.selectionOccurrences = occs;
+    }
+
+    function saveWorkspaceSession() {
+        if (typeof settingsBackend === "undefined" || !settingsBackend || !settingsBackend.save_session_state) return;
+        var tabsData = [];
+        for (var i = 0; i < tabModel.count; i++) {
+            var t = tabModel.get(i);
+            if (t && t.path && !t.isWhiteboard && !t.isWebPreview) {
+                var pane = (tabEditorRepeater && i < tabEditorRepeater.count) ? tabEditorRepeater.itemAt(i) : null;
+                var cursorPos = (pane && pane.codeTextArea) ? pane.codeTextArea.cursorPosition : 0;
+                var scrollY = (pane && pane.editorFlickable) ? pane.editorFlickable.contentY : 0;
+                tabsData.push({
+                    path: t.path,
+                    title: t.title,
+                    isDirty: t.isDirty || false,
+                    draftContent: t.isDirty ? (pane && pane.codeTextArea ? pane.codeTextArea.text : "") : "",
+                    cursorPosition: cursorPos,
+                    scrollY: scrollY
+                });
+            }
+        }
+        var sessionObj = {
+            activeTabIndex: root.activeTabIndex,
+            isSplitEditor: root.isSplitEditor,
+            splitRatio: root.splitRatio,
+            secondaryTabIndex: root.secondaryTabIndex,
+            tabs: tabsData
+        };
+        settingsBackend.save_session_state(JSON.stringify(sessionObj));
+    }
+
+    function restoreWorkspaceSession() {
+        if (typeof settingsBackend === "undefined" || !settingsBackend || !settingsBackend.get_session_state) return;
+        var stateJson = settingsBackend.get_session_state();
+        if (!stateJson || stateJson === "{}") return;
+        try {
+            var session = JSON.parse(stateJson);
+            if (session && session.tabs && Array.isArray(session.tabs)) {
+                for (var i = 0; i < session.tabs.length; i++) {
+                    var tabInfo = session.tabs[i];
+                    if (tabInfo && tabInfo.path) {
+                        var cleanPath = tabInfo.path.replace("file:///", "");
+                        if (typeof backend !== "undefined" && backend && backend.open_file) {
+                            backend.open_file(cleanPath);
+                        }
+                    }
+                }
+                if (session.activeTabIndex !== undefined && session.activeTabIndex >= 0) {
+                    root.activeTabIndex = session.activeTabIndex;
+                }
+                if (session.isSplitEditor !== undefined) {
+                    root.isSplitEditor = session.isSplitEditor;
+                }
+                if (session.splitRatio !== undefined) {
+                    root.splitRatio = session.splitRatio;
+                }
+            }
+        } catch (e) {
+            console.log("Error restoring workspace session:", e);
+        }
+    }
 }
+

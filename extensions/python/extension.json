@@ -1,0 +1,22 @@
+{
+  "id": "dgx.python",
+  "name": "Python Language Extension",
+  "version": "1.0.0",
+  "description": "Python language support and PEP 8 formatter for DGX Studio",
+  "author": "DGX Studio",
+  "languages": ["python"],
+  "extensions": [".py", ".pyw"],
+  "formatter": {
+    "provider": "autopep8 / black / ruff",
+    "type": "python",
+    "executable": "autopep8",
+    "priority": ["autopep8", "black", "ruff"],
+    "installGuide": {
+      "windows": "pip install autopep8 black",
+      "macos": "pip install autopep8 black",
+      "linux": "pip install autopep8 black",
+      "docsUrl": "https://pypi.org/project/autopep8/",
+      "instructions": "Install autopep8 or black via pip in your active Python environment."
+    }
+  }
+}

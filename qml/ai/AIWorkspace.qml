@@ -2,18 +2,23 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "../components"
+import "CodeExtractor.js" as CodeExtractor
 
 Rectangle {
     id: root
 
     property string aiStatus: "idle" // "idle", "thinking", "streaming", "error"
+    property var pendingSelectionContext: null
+    property var activeSelectionContext: null
 
     signal insertCodeRequested(string code)
+    signal replaceSelectionRequested(int startPos, int endPos, string newCode, string originalText)
+    signal aiReplacementStarted(int startPos, int endPos, string originalText)
+    signal aiReplacementReady(int startPos, int endPos, string newCode, string originalText)
+    signal aiReplacementFailed()
     signal closeRequested()
 
-
     color: theme ? theme.bgSidebar : "#181818"
-    
 
     // Disabled Overlay when AI Assistant is turned off in Settings
     Rectangle {
@@ -88,10 +93,15 @@ Rectangle {
 
         Component.onCompleted: {
             append({
-                    msgId: "welcome_1",
-                    role: "assistant",
-                    content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
-                });
+                msgId: "welcome_1",
+                role: "assistant",
+                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code.",
+                isSelectionRequest: false,
+                selectionStart: -1,
+                selectionEnd: -1,
+                originalSelectedText: "",
+                languageId: ""
+            });
         }
     }
 
@@ -100,21 +110,47 @@ Rectangle {
         ignoreUnknownSignals: true
 
         function onMessageReceived(msgId, role, content) {
+            var ctx = root.activeSelectionContext;
             for (var i = 0; i < chatHistoryModel.count; i++) {
                 if (chatHistoryModel.get(i).msgId === msgId) {
                     chatHistoryModel.setProperty(i, "content", content);
+                    if (role === "assistant" && ctx) {
+                        chatHistoryModel.setProperty(i, "isSelectionRequest", ctx.isSelectionRequest || false);
+                        chatHistoryModel.setProperty(i, "selectionStart", ctx.selectionStart !== undefined ? ctx.selectionStart : -1);
+                        chatHistoryModel.setProperty(i, "selectionEnd", ctx.selectionEnd !== undefined ? ctx.selectionEnd : -1);
+                        chatHistoryModel.setProperty(i, "originalSelectedText", ctx.originalSelectedText || "");
+                        chatHistoryModel.setProperty(i, "languageId", ctx.languageId || "");
+                        if (ctx.isSelectionRequest) {
+                            var cleanCode = CodeExtractor.extractCodeFromMarkdown(content, ctx.languageId);
+                            if (cleanCode && cleanCode.trim().length > 0) {
+                                root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanCode, ctx.originalSelectedText);
+                            }
+                        }
+                    }
                     return;
                 }
             }
             chatHistoryModel.append({
-                    msgId: msgId,
-                    role: role,
-                    content: content
-                });
+                msgId: msgId,
+                role: role,
+                content: content,
+                isSelectionRequest: (role === "assistant" && ctx) ? (ctx.isSelectionRequest || false) : false,
+                selectionStart: (role === "assistant" && ctx) ? (ctx.selectionStart !== undefined ? ctx.selectionStart : -1) : -1,
+                selectionEnd: (role === "assistant" && ctx) ? (ctx.selectionEnd !== undefined ? ctx.selectionEnd : -1) : -1,
+                originalSelectedText: (role === "assistant" && ctx) ? (ctx.originalSelectedText || "") : "",
+                languageId: (role === "assistant" && ctx) ? (ctx.languageId || "") : ""
+            });
+            if (role === "assistant" && ctx && ctx.isSelectionRequest) {
+                var cleanCode2 = CodeExtractor.extractCodeFromMarkdown(content, ctx.languageId);
+                if (cleanCode2 && cleanCode2.trim().length > 0) {
+                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanCode2, ctx.originalSelectedText);
+                }
+            }
             chatListView.positionViewAtEnd();
         }
 
         function onChunkReceived(msgId, chunk) {
+            var ctx = root.activeSelectionContext;
             for (var i = 0; i < chatHistoryModel.count; i++) {
                 if (chatHistoryModel.get(i).msgId === msgId) {
                     var current = chatHistoryModel.get(i).content;
@@ -124,10 +160,15 @@ Rectangle {
                 }
             }
             chatHistoryModel.append({
-                    msgId: msgId,
-                    role: "assistant",
-                    content: chunk
-                });
+                msgId: msgId,
+                role: "assistant",
+                content: chunk,
+                isSelectionRequest: ctx ? (ctx.isSelectionRequest || false) : false,
+                selectionStart: ctx ? (ctx.selectionStart !== undefined ? ctx.selectionStart : -1) : -1,
+                selectionEnd: ctx ? (ctx.selectionEnd !== undefined ? ctx.selectionEnd : -1) : -1,
+                originalSelectedText: ctx ? (ctx.originalSelectedText || "") : "",
+                languageId: ctx ? (ctx.languageId || "") : ""
+            });
             chatListView.positionViewAtEnd();
         }
 
@@ -137,10 +178,15 @@ Rectangle {
 
         function onErrorOccurred(err) {
             chatHistoryModel.append({
-                    msgId: "err_" + Date.now(),
-                    role: "assistant",
-                    content: "Error: " + err
-                });
+                msgId: "err_" + Date.now(),
+                role: "assistant",
+                content: "Error: " + err,
+                isSelectionRequest: false,
+                selectionStart: -1,
+                selectionEnd: -1,
+                originalSelectedText: "",
+                languageId: ""
+            });
             root.aiStatus = "idle";
         }
     }
@@ -195,10 +241,17 @@ Rectangle {
                         onClicked: {
                             chatHistoryModel.clear();
                             chatHistoryModel.append({
-                                    msgId: "welcome_" + Date.now(),
-                                    role: "assistant",
-                                    content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code."
-                                });
+                                msgId: "welcome_" + Date.now(),
+                                role: "assistant",
+                                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code.",
+                                isSelectionRequest: false,
+                                selectionStart: -1,
+                                selectionEnd: -1,
+                                originalSelectedText: "",
+                                languageId: ""
+                            });
+                            root.pendingSelectionContext = null;
+                            root.activeSelectionContext = null;
                             root.aiStatus = "idle";
                             if (typeof aiBackend !== "undefined" && aiBackend && aiBackend.clear_chat) {
                                 aiBackend.clear_chat();
@@ -246,13 +299,28 @@ Rectangle {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
 
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 8
+                    active: true
+                }
+
                 delegate: ChatMessageItem {
                     role: model.role
                     contentText: model.content
+                    isSelectionRequest: model.isSelectionRequest || false
+                    selectionStart: model.selectionStart !== undefined ? model.selectionStart : -1
+                    selectionEnd: model.selectionEnd !== undefined ? model.selectionEnd : -1
+                    originalSelectedText: model.originalSelectedText || ""
+                    languageId: model.languageId || ""
                     width: chatListView.width
 
                     onInsertCodeRequested: function(code) {
                         root.insertCodeRequested(code);
+                    }
+
+                    onReplaceSelectionRequested: function(startPos, endPos, code, originalText) {
+                        root.replaceSelectionRequested(startPos, endPos, code, originalText);
                     }
                 }
             }
@@ -315,8 +383,6 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (root.aiStatus === "thinking" || root.aiStatus === "streaming") {
-                                // TODO: Connect CustomApi.py here.
-                                // TODO: Connect AIBackend.py here.
                                 if (typeof aiBackend !== "undefined" && aiBackend) {
                                     aiBackend.cancel();
                                 }
@@ -330,13 +396,44 @@ Rectangle {
             }
         }
     }
+
+    function askAboutSelection(code, startPos, endPos, langId, customPrompt) {
+        var langTag = (langId || "").toLowerCase().trim();
+        var basePrompt = (customPrompt && customPrompt.trim().length > 0) ? customPrompt.trim() : ("Please review and improve the selected " + (langTag ? langTag + " " : "") + "code:");
+        var userMsg = basePrompt + "\n\n```" + (langTag || "") + "\n" + code + "\n```";
+
+        var internalInstruction = "You are reviewing and improving a selected portion of an existing source file.\n" +
+            "Please provide a clear and helpful explanation of:\n" +
+            "- What was wrong or could be improved with the selected code\n" +
+            "- What changes you made\n" +
+            "- Why you made those changes\n" +
+            "\n" +
+            "IMPORTANT RULES FOR THE CODE BLOCK:\n" +
+            "- Put the corrected code inside a Markdown code block (```" + (langTag || "") + " ... ```).\n" +
+            "- The code block must contain ONLY the replacement code for the exact selected fragment.\n" +
+            "- Do NOT return the entire document or recreate outer enclosing file structure (such as <!DOCTYPE html>, <html>, <body>, or outer class/module definitions) unless they were actually part of the selected text.\n" +
+            "- The code inside the code block must be directly usable as a drop-in replacement for the selected portion.";
+
+        root.pendingSelectionContext = {
+            isSelectionRequest: true,
+            selectionStart: (startPos !== undefined ? startPos : -1),
+            selectionEnd: (endPos !== undefined ? endPos : -1),
+            originalSelectedText: code,
+            languageId: langTag,
+            internalInstruction: internalInstruction
+        };
+
+        if (startPos !== undefined && startPos >= 0) {
+            root.aiReplacementStarted(startPos, endPos, code);
+        }
+
+        inputTextArea.text = userMsg;
+        submitPrompt();
+    }
+
     function askAboutCode(code) {
-    console.log("AIWorkspace RECEIVED:", code)
-
-    inputTextArea.text = "Please Review the Following code:\n" + code
-
-    submitPrompt()
-}
+        askAboutSelection(code, -1, -1, "");
+    }
 
     function submitPrompt() {
         var query = inputTextArea.text.trim();
@@ -344,18 +441,28 @@ Rectangle {
 
         inputTextArea.text = "";
 
-        // TODO: Connect CustomApi.py here.
-        // TODO: Connect AIBackend.py here.
+        var context = root.pendingSelectionContext;
+        root.pendingSelectionContext = null;
+        root.activeSelectionContext = context;
+
+        var internalInstr = context && context.internalInstruction ? context.internalInstruction : "";
+
         if (typeof aiBackend !== "undefined" && aiBackend && aiBackend.send_message) {
-            aiBackend.send_message(query);
+            aiBackend.send_message(query, internalInstr);
         } else {
             chatHistoryModel.append({
-                    msgId: "usr_" + Date.now(),
-                    role: "user",
-                    content: query
-                });
+                msgId: "usr_" + Date.now(),
+                role: "user",
+                content: query,
+                isSelectionRequest: context ? context.isSelectionRequest : false,
+                selectionStart: context ? context.selectionStart : -1,
+                selectionEnd: context ? context.selectionEnd : -1,
+                originalSelectedText: context ? context.originalSelectedText : "",
+                languageId: context ? context.languageId : ""
+            });
 
             root.aiStatus = "thinking";
+            simTimer.targetContext = context;
             simTimer.targetQuery = query;
             simTimer.restart();
         }
@@ -365,14 +472,28 @@ Rectangle {
         id: simTimer
         interval: 400
         repeat: false
+        property var targetContext: null
         property string targetQuery: ""
         onTriggered: {
             root.aiStatus = "idle";
+            var ctx = simTimer.targetContext;
+            var responseContent = "```" + (ctx ? ctx.languageId : "") + "\n" + (ctx ? ctx.originalSelectedText : "// generated code") + "\n```";
             chatHistoryModel.append({
-                    msgId: "ai_" + Date.now(),
-                    role: "assistant",
-                    content: "DGX AI response for: " + simTimer.targetQuery
-                });
+                msgId: "ai_" + Date.now(),
+                role: "assistant",
+                content: responseContent,
+                isSelectionRequest: ctx ? (ctx.isSelectionRequest || false) : false,
+                selectionStart: ctx ? (ctx.selectionStart !== undefined ? ctx.selectionStart : -1) : -1,
+                selectionEnd: ctx ? (ctx.selectionEnd !== undefined ? ctx.selectionEnd : -1) : -1,
+                originalSelectedText: ctx ? (ctx.originalSelectedText || "") : "",
+                languageId: ctx ? (ctx.languageId || "") : ""
+            });
+            if (ctx && ctx.isSelectionRequest) {
+                var cleanSim = CodeExtractor.extractCodeFromMarkdown(responseContent, ctx.languageId);
+                if (cleanSim && cleanSim.trim().length > 0) {
+                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanSim, ctx.originalSelectedText);
+                }
+            }
             chatListView.positionViewAtEnd();
         }
     }

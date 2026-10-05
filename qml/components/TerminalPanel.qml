@@ -11,10 +11,16 @@ Rectangle {
 
     color: theme ? theme.bgTerminal : "#181818"
 
+        property bool isSplitTerminal: false
+    property string secTerminalBuffer: "Windows PowerShell (Split Session 2)\nCopyright (C) Microsoft Corporation. All rights reserved.\n\n"
+    property bool isSecCommandRunning: false
     property string activeTab: "TERMINAL" // "TERMINAL", "OUTPUT", "PROBLEMS"
     property var commandHistory: []
     property int historyIndex: -1
-    property string terminalBuffer: "PowerShell 7.x / DGX Integrated Terminal\nReady for input.\n"
+    property bool isCommandRunning: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.is_running_cmd) ? terminalBackend.is_running_cmd() : false
+    property string currentCwd: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_cwd) ? terminalBackend.get_cwd() : ((typeof backend !== "undefined" && backend && backend.folder_path) ? backend.folder_path : "C:\\")
+    property string currentPrompt: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_prompt) ? terminalBackend.get_prompt() : ("PS " + currentCwd + "> ")
+    property string terminalBuffer: "Windows PowerShell\nCopyright (C) Microsoft Corporation. All rights reserved.\n\n"
     property string outputBuffer: "[DGX Output & Execution Channel Ready]\n"
 
     ListModel {
@@ -25,12 +31,36 @@ Rectangle {
         target: typeof terminalBackend !== "undefined" ? terminalBackend : null
         ignoreUnknownSignals: true
 
+                function onSessionOutputReceived(sessionId, text) {
+            if (sessionId === 1) {
+                if (text === "__CLEAR_BUFFER__") {
+                    root.secTerminalBuffer = "";
+                } else {
+                    root.secTerminalBuffer += text;
+                    scrollTimer.restart();
+                }
+            }
+        }
+
         function onOutputReceived(text) {
             if (text === "__CLEAR_BUFFER__") {
                 root.terminalBuffer = "";
             } else {
                 root.terminalBuffer += text;
                 scrollTimer.restart();
+            }
+        }
+
+        function onCommandRunningChanged(running) {
+            root.isCommandRunning = running;
+        }
+
+        function onCwdChanged(newCwd) {
+            root.currentCwd = newCwd;
+            if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_prompt) {
+                root.currentPrompt = terminalBackend.get_prompt();
+            } else {
+                root.currentPrompt = "PS " + newCwd + "> ";
             }
         }
     }
@@ -227,6 +257,38 @@ Rectangle {
                 RowLayout {
                     spacing: 4
 
+                                        // Split Terminal Button
+                    Rectangle {
+                        width: 20
+                        height: 20
+                        radius: 2
+                        visible: root.activeTab === "TERMINAL"
+                        color: root.isSplitTerminal ? (theme ? theme.accent : "#0078d4") : (splitMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: "zen"
+                            size: 11
+                            color: root.isSplitTerminal ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                        }
+
+                        ToolTip.visible: splitMa.containsMouse
+                        ToolTip.text: root.isSplitTerminal ? "Unsplit Terminal" : "Split Terminal"
+
+                        MouseArea {
+                            id: splitMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.isSplitTerminal = !root.isSplitTerminal;
+                                if (root.isSplitTerminal && typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.create_session) {
+                                    terminalBackend.create_session();
+                                }
+                            }
+                        }
+                    }
+
                     // + (New Session / Restart)
                     Rectangle {
                         width: 20
@@ -328,102 +390,342 @@ Rectangle {
             clip: true
 
             // =================================================================
-            // VIEW A: INTERACTIVE TERMINAL
+            // VIEW A: INTERACTIVE TERMINAL (Supports Split Sessions)
             // =================================================================
             Item {
                 anchors.fill: parent
                 visible: root.activeTab === "TERMINAL"
 
-                MouseArea {
+                RowLayout {
                     anchors.fill: parent
-                    cursorShape: Qt.IBeamCursor
-                    onClicked: activeTerminalInput.forceActiveFocus()
-                }
+                    spacing: 0
 
-                Flickable {
-                    id: terminalFlickable
-                    anchors.fill: parent
-                    contentWidth: width
-                    contentHeight: Math.max(height, terminalContentColumn.height + 24)
-                    boundsBehavior: Flickable.StopAtBounds
-                    clip: true
+                    // Primary Terminal Pane
+                    ColumnLayout {
+                        Layout.fillHeight: true
+                        Layout.fillWidth: true
+                        spacing: 0
 
-                    TapHandler {
-                        onTapped: activeTerminalInput.forceActiveFocus()
-                    }
+                        // Split pane header (only shown when split is active)
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 22
+                            visible: root.isSplitTerminal
+                            color: theme ? theme.bgHeader : "#1f1f1f"
 
-                    ScrollBar.vertical: ScrollBar {
-                        policy: ScrollBar.AsNeeded
-                        width: 8
-                    }
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 6
+                                spacing: 4
 
-                    Column {
-                        id: terminalContentColumn
-                        width: parent.width - 16
-                        x: 8
-                        y: 6
-                        spacing: 2
+                                Text {
+                                    text: "1: PowerShell"
+                                    color: theme ? theme.textSecondary : "#999999"
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                    Layout.fillWidth: true
+                                }
 
-                        TextEdit {
-                            id: terminalHistoryView
-                            width: parent.width
-                            readOnly: true
-                            selectByMouse: true
-                            color: theme ? theme.textPrimary : "#cccccc"
-                            font.pixelSize: 12
-                            font.family: theme ? theme.fontFamilyMono : "monospace"
-                            wrapMode: TextEdit.Wrap
-                            text: root.terminalBuffer
-                            textFormat: TextEdit.PlainText
+                                Rectangle {
+                                    width: 16
+                                    height: 16
+                                    radius: 2
+                                    color: pCloseMa.containsMouse ? (theme ? theme.error : "#f14c4c") : "transparent"
 
-                            TapHandler {
-                                onTapped: activeTerminalInput.forceActiveFocus()
+                                    VectorIcon {
+                                        anchors.centerIn: parent
+                                        name: "close"
+                                        size: 8
+                                        color: pCloseMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                    }
+
+                                    ToolTip.visible: pCloseMa.containsMouse
+                                    ToolTip.text: "Close Terminal Split 1"
+
+                                    MouseArea {
+                                        id: pCloseMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.close_session) {
+                                                terminalBackend.close_session(0);
+                                            }
+                                            root.terminalBuffer = root.secTerminalBuffer;
+                                            root.secTerminalBuffer = "";
+                                            root.isSplitTerminal = false;
+                                        }
+                                    }
+                                }
                             }
                         }
 
-                        RowLayout {
-                            width: parent.width
-                            spacing: 4
+                        Item {
+                            Layout.fillHeight: true
+                            Layout.fillWidth: true
 
-                            Text {
-                                text: "PS >"
-                                color: theme ? theme.accent : "#0078d4"
-                                font.pixelSize: 12
-                                font.bold: true
-                                font.family: theme ? theme.fontFamilyMono : "monospace"
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.IBeamCursor
+                                onClicked: activeTerminalInput.forceActiveFocus()
                             }
 
-                            TextInput {
-                                id: activeTerminalInput
-                                Layout.fillWidth: true
-                                color: theme ? theme.textBright : "#ffffff"
-                                font.pixelSize: 12
-                                font.family: theme ? theme.fontFamilyMono : "monospace"
-                                selectByMouse: true
-                                focus: root.activeTab === "TERMINAL"
-                                cursorVisible: activeFocus
+                            Flickable {
+                                id: terminalFlickable
+                                anchors.fill: parent
+                                contentWidth: width
+                                contentHeight: Math.max(height, terminalContentColumn.height + 24)
+                                boundsBehavior: Flickable.StopAtBounds
+                                clip: true
 
-                                Keys.onPressed: function(event) {
-                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                                        root.executeCommand();
-                                        event.accepted = true;
-                                    } else if (event.key === Qt.Key_Up) {
-                                        if (root.commandHistory.length > 0) {
-                                            if (root.historyIndex < root.commandHistory.length - 1) {
-                                                root.historyIndex++;
-                                                activeTerminalInput.text = root.commandHistory[root.commandHistory.length - 1 - root.historyIndex];
+                                TapHandler {
+                                    onTapped: activeTerminalInput.forceActiveFocus()
+                                }
+
+                                ScrollBar.vertical: ScrollBar {
+                                    policy: ScrollBar.AsNeeded
+                                    width: 8
+                                }
+
+                                Column {
+                                    id: terminalContentColumn
+                                    width: parent.width - 16
+                                    x: 8
+                                    y: 6
+                                    spacing: 2
+
+                                    TextEdit {
+                                        id: terminalHistoryView
+                                        width: parent.width
+                                        readOnly: true
+                                        selectByMouse: true
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 12
+                                        font.family: theme ? theme.fontFamilyMono : "monospace"
+                                        wrapMode: TextEdit.Wrap
+                                        text: root.terminalBuffer
+                                        textFormat: TextEdit.PlainText
+
+                                        TapHandler {
+                                            onTapped: activeTerminalInput.forceActiveFocus()
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        width: parent.width
+                                        spacing: 4
+
+                                        Text {
+                                            id: activeTerminalPrompt
+                                            text: root.currentPrompt
+                                            color: theme ? theme.textSecondary : "#858585"
+                                            font.pixelSize: 12
+                                            font.family: theme ? theme.fontFamilyMono : "monospace"
+                                            visible: !root.isCommandRunning
+                                            Layout.preferredWidth: visible ? implicitWidth : 0
+                                        }
+
+                                        TextInput {
+                                            id: activeTerminalInput
+                                            Layout.fillWidth: true
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 12
+                                            font.family: theme ? theme.fontFamilyMono : "monospace"
+                                            selectByMouse: true
+                                            focus: root.activeTab === "TERMINAL"
+                                            cursorVisible: activeFocus
+
+                                            Keys.onPressed: function(event) {
+                                                if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+                                                    if (root.isCommandRunning || activeTerminalInput.selectedText.length === 0) {
+                                                        if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.send_interrupt) {
+                                                            terminalBackend.send_interrupt();
+                                                        }
+                                                        activeTerminalInput.text = "";
+                                                        scrollTimer.restart();
+                                                        event.accepted = true;
+                                                        return;
+                                                    }
+                                                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                                    root.executeCommand();
+                                                    event.accepted = true;
+                                                } else if (event.key === Qt.Key_Up) {
+                                                    if (!root.isCommandRunning && root.commandHistory.length > 0) {
+                                                        if (root.historyIndex < root.commandHistory.length - 1) {
+                                                            root.historyIndex++;
+                                                            activeTerminalInput.text = root.commandHistory[root.commandHistory.length - 1 - root.historyIndex];
+                                                        }
+                                                    }
+                                                    event.accepted = true;
+                                                } else if (event.key === Qt.Key_Down) {
+                                                    if (!root.isCommandRunning) {
+                                                        if (root.historyIndex > 0) {
+                                                            root.historyIndex--;
+                                                            activeTerminalInput.text = root.commandHistory[root.commandHistory.length - 1 - root.historyIndex];
+                                                        } else if (root.historyIndex === 0) {
+                                                            root.historyIndex = -1;
+                                                            activeTerminalInput.text = "";
+                                                        }
+                                                    }
+                                                    event.accepted = true;
+                                                }
                                             }
                                         }
-                                        event.accepted = true;
-                                    } else if (event.key === Qt.Key_Down) {
-                                        if (root.historyIndex > 0) {
-                                            root.historyIndex--;
-                                            activeTerminalInput.text = root.commandHistory[root.commandHistory.length - 1 - root.historyIndex];
-                                        } else if (root.historyIndex === 0) {
-                                            root.historyIndex = -1;
-                                            activeTerminalInput.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Split Divider & Secondary Split Pane
+                    Rectangle {
+                        visible: root.isSplitTerminal
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: 1
+                        color: (typeof theme !== "undefined" && theme && theme.borderNormal) ? theme.borderNormal : "#2a3145"
+                    }
+
+                    ColumnLayout {
+                        visible: root.isSplitTerminal
+                        Layout.fillHeight: true
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        // Split pane header
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 22
+                            color: theme ? theme.bgHeader : "#1f1f1f"
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 6
+                                spacing: 4
+
+                                Text {
+                                    text: "2: PowerShell"
+                                    color: theme ? theme.textSecondary : "#999999"
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                    Layout.fillWidth: true
+                                }
+
+                                Rectangle {
+                                    width: 16
+                                    height: 16
+                                    radius: 2
+                                    color: sCloseMa.containsMouse ? (theme ? theme.error : "#f14c4c") : "transparent"
+
+                                    VectorIcon {
+                                        anchors.centerIn: parent
+                                        name: "close"
+                                        size: 8
+                                        color: sCloseMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                    }
+
+                                    ToolTip.visible: sCloseMa.containsMouse
+                                    ToolTip.text: "Close Terminal Split 2"
+
+                                    MouseArea {
+                                        id: sCloseMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.close_session) {
+                                                terminalBackend.close_session(1);
+                                            }
+                                            root.secTerminalBuffer = "";
+                                            root.isSplitTerminal = false;
                                         }
-                                        event.accepted = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        Item {
+                            Layout.fillHeight: true
+                            Layout.fillWidth: true
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.IBeamCursor
+                                onClicked: secTerminalInput.forceActiveFocus()
+                            }
+
+                            Flickable {
+                                id: secTerminalFlickable
+                                anchors.fill: parent
+                                contentWidth: width
+                                contentHeight: Math.max(height, secTerminalContentCol.height + 24)
+                                boundsBehavior: Flickable.StopAtBounds
+                                clip: true
+
+                                ScrollBar.vertical: ScrollBar {
+                                    policy: ScrollBar.AsNeeded
+                                    width: 8
+                                }
+
+                                Column {
+                                    id: secTerminalContentCol
+                                    width: parent.width - 16
+                                    x: 8
+                                    y: 6
+                                    spacing: 2
+
+                                    TextEdit {
+                                        id: secTerminalHistoryView
+                                        width: parent.width
+                                        readOnly: true
+                                        selectByMouse: true
+                                        color: theme ? theme.textPrimary : "#cccccc"
+                                        font.pixelSize: 12
+                                        font.family: theme ? theme.fontFamilyMono : "monospace"
+                                        wrapMode: TextEdit.Wrap
+                                        text: root.secTerminalBuffer
+                                        textFormat: TextEdit.PlainText
+                                    }
+
+                                    RowLayout {
+                                        width: parent.width
+                                        spacing: 4
+
+                                        Text {
+                                            text: root.currentPrompt
+                                            color: theme ? theme.textSecondary : "#858585"
+                                            font.pixelSize: 12
+                                            font.family: theme ? theme.fontFamilyMono : "monospace"
+                                        }
+
+                                        TextInput {
+                                            id: secTerminalInput
+                                            Layout.fillWidth: true
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 12
+                                            font.family: theme ? theme.fontFamilyMono : "monospace"
+                                            selectByMouse: true
+                                            cursorVisible: activeFocus
+
+                                            Keys.onPressed: function(event) {
+                                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                                    var cmd = secTerminalInput.text;
+                                                    secTerminalInput.text = "";
+                                                    if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.send_session_command) {
+                                                        terminalBackend.send_session_command(1, cmd);
+                                                    }
+                                                    event.accepted = true;
+                                                } else if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+                                                    if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.send_session_interrupt) {
+                                                        terminalBackend.send_session_interrupt(1);
+                                                    }
+                                                    event.accepted = true;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -589,27 +891,29 @@ Rectangle {
     }
 
     function executeCommand(customCmd) {
-        var cmd = customCmd || activeTerminalInput.text.trim();
-        if (!cmd) return;
-
+        var cmd = (typeof customCmd !== "undefined") ? customCmd : activeTerminalInput.text;
         if (!customCmd) {
-            root.commandHistory.push(cmd);
-            root.historyIndex = -1;
+            if (cmd.trim().length > 0) {
+                root.commandHistory.push(cmd);
+                root.historyIndex = -1;
+            }
             activeTerminalInput.text = "";
         }
 
-        // Support 'clear' and 'cls' commands directly
-        if (cmd.toLowerCase() === "clear" || cmd.toLowerCase() === "cls") {
-            root.clearTerminal();
-            return;
+        if (!root.isCommandRunning) {
+            // Support 'clear' and 'cls' commands directly when at shell prompt
+            if (cmd.trim().toLowerCase() === "clear" || cmd.trim().toLowerCase() === "cls") {
+                root.clearTerminal();
+                return;
+            }
         }
-
-        root.terminalBuffer += "PS > " + cmd + "\n";
-        scrollTimer.restart();
 
         if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.send_command) {
             terminalBackend.send_command(cmd);
         } else {
+            if (!root.isCommandRunning) {
+                root.terminalBuffer += root.currentPrompt + cmd + "\n";
+            }
             root.terminalBuffer += "[DGX Simulated]: " + cmd + "\n";
             scrollTimer.restart();
         }

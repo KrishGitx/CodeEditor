@@ -92,14 +92,7 @@ Window {
             statusBar.currentLanguage = lang;
         }
     }
-    Connections {
-        target: editorArea
 
-        function onAskAi(code) {
-            console.log("asking")
-            aiWorkspace.askAboutCode(code)
-        }
-    }
 
     // Native File Dialogs
     FileDialog {
@@ -183,6 +176,10 @@ Window {
         onActivated: editorArea.redo()
     }
     Shortcut {
+        sequence: "Ctrl+Shift+Z"
+        onActivated: editorArea.redo()
+    }
+    Shortcut {
         sequence: (theme && theme.shortcutFormat) ? theme.shortcutFormat : "Shift+Alt+F"
         onActivated: editorArea.formatDocument()
     }
@@ -199,7 +196,7 @@ Window {
         onActivated: mainWindow.terminalVisible = !mainWindow.terminalVisible
     }
     Shortcut {
-        sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+Shift+Z"
+        sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+K Z"
         onActivated: mainWindow.zenMode = !mainWindow.zenMode
     }
     Shortcut {
@@ -353,6 +350,18 @@ Window {
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
 
+                        onAskAi: function(code, startPos, endPos, langId) {
+                            if (!mainWindow.rightPanelVisible) {
+                                mainWindow.rightPanelVisible = true;
+                            }
+                            mainWindow.aiVisible = true;
+                            if (startPos !== undefined && endPos !== undefined && startPos >= 0 && endPos >= startPos) {
+                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage);
+                            } else {
+                                aiWorkspace.askAboutCode(code);
+                            }
+                        }
+
                         onActiveFileChanged: function(path, name, lang, dirty) {
                             appHeader.activeFileName = name;
                             appHeader.activeFilePath = path;
@@ -401,6 +410,18 @@ Window {
 
                             onInsertCodeRequested: function(code) {
                                 editorArea.insertSnippet(code);
+                            }
+                            onReplaceSelectionRequested: function(startPos, endPos, code, originalText) {
+                                editorArea.replaceSelection(startPos, endPos, code, originalText);
+                            }
+                            onAiReplacementStarted: function(startPos, endPos, originalText) {
+                                editorArea.startPendingAiReplacement(startPos, endPos, originalText);
+                            }
+                            onAiReplacementReady: function(startPos, endPos, code, originalText) {
+                                editorArea.setPendingAiReplacement(startPos, endPos, code, originalText);
+                            }
+                            onAiReplacementFailed: {
+                                editorArea.clearPendingAiReplacement();
                             }
                             onCloseRequested: mainWindow.aiVisible = false
                         }

@@ -91,6 +91,19 @@ Window {
         function onCurrentLanguageChanged(lang) {
             statusBar.currentLanguage = lang;
         }
+
+        function onNotificationRequested(msg, type, title) {
+            mainWindow.showNotification(msg, type, title);
+        }
+    }
+
+    Connections {
+        target: typeof aiBackend !== "undefined" ? aiBackend : null
+        ignoreUnknownSignals: true
+
+        function onErrorOccurred(err) {
+            mainWindow.showNotification(err, "error", "AI Assistant");
+        }
     }
 
     // Native File Dialogs
@@ -175,6 +188,10 @@ Window {
         onActivated: editorArea.redo()
     }
     Shortcut {
+        sequence: "Ctrl+Shift+Z"
+        onActivated: editorArea.redo()
+    }
+    Shortcut {
         sequence: (theme && theme.shortcutFormat) ? theme.shortcutFormat : "Shift+Alt+F"
         onActivated: editorArea.formatDocument()
     }
@@ -191,12 +208,22 @@ Window {
         onActivated: mainWindow.terminalVisible = !mainWindow.terminalVisible
     }
     Shortcut {
-        sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+Shift+Z"
+        sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+K Z"
         onActivated: mainWindow.zenMode = !mainWindow.zenMode
     }
     Shortcut {
         sequence: (theme && theme.shortcutSettings) ? theme.shortcutSettings : "Ctrl+,"
         onActivated: settingsOverlay.visible = true
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+X"
+        onActivated: {
+            if (extensionsOverlay.visible) {
+                extensionsOverlay.visible = false;
+            } else {
+                mainWindow.showExtensions();
+            }
+        }
     }
     Shortcut {
         sequence: (theme && theme.shortcutToggleAI) ? theme.shortcutToggleAI : "Ctrl+Shift+A"
@@ -290,6 +317,7 @@ Window {
             onUndoRequested: editorArea.undo()
             onRedoRequested: editorArea.redo()
             onSettingsRequested: settingsOverlay.visible = true
+            onExtensionsRequested: mainWindow.showExtensions()
             onRunFileRequested: mainWindow.runActiveFile()
             onPresetSelected: function(preset) { mainWindow.applyPreset(preset); }
             onThemeSelected: function(tName) { theme.setTheme(tName); }
@@ -355,12 +383,16 @@ Window {
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
 
-                        onAskAi: function(code) {
+                        onAskAi: function(code, startPos, endPos, langId) {
                             if (!mainWindow.rightPanelVisible) {
                                 mainWindow.rightPanelVisible = true;
                             }
                             mainWindow.aiVisible = true;
-                            aiWorkspace.askAboutCode(code);
+                            if (startPos !== undefined && endPos !== undefined && startPos >= 0 && endPos >= startPos) {
+                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage);
+                            } else {
+                                aiWorkspace.askAboutCode(code);
+                            }
                         }
 
                         onActiveFileChanged: function(path, name, lang, dirty) {
@@ -411,6 +443,18 @@ Window {
 
                             onInsertCodeRequested: function(code) {
                                 editorArea.insertSnippet(code);
+                            }
+                            onReplaceSelectionRequested: function(startPos, endPos, code, originalText) {
+                                editorArea.replaceSelection(startPos, endPos, code, originalText);
+                            }
+                            onAiReplacementStarted: function(startPos, endPos, originalText) {
+                                editorArea.startPendingAiReplacement(startPos, endPos, originalText);
+                            }
+                            onAiReplacementReady: function(startPos, endPos, code, originalText) {
+                                editorArea.setPendingAiReplacement(startPos, endPos, code, originalText);
+                            }
+                            onAiReplacementFailed: {
+                                editorArea.clearPendingAiReplacement();
                             }
                             onCloseRequested: mainWindow.aiVisible = false
                         }
@@ -518,10 +562,66 @@ Window {
             y: Math.round((parent.height - height) / 2)
 
             onCloseRequested: settingsOverlay.visible = false
+            onExtensionsRequested: {
+                settingsOverlay.visible = false;
+                mainWindow.showExtensions();
+            }
             onThemeSelected: function(tName) {
                 theme.setTheme(tName);
             }
         }
+    }
+
+    // =========================================================================
+    // EXTENSIONS MANAGER MODAL OVERLAY
+    // =========================================================================
+    Rectangle {
+        id: extensionsOverlay
+        anchors.fill: parent
+        color: "#00000077"
+        visible: false
+        z: 220
+
+        onVisibleChanged: {
+            if (visible) {
+                extensionsDialog.x = Math.round((extensionsOverlay.width - extensionsDialog.width) / 2);
+                extensionsDialog.y = Math.round((extensionsOverlay.height - extensionsDialog.height) / 2);
+                extensionsDialog.refreshExtensions();
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: extensionsOverlay.visible = false
+        }
+
+        ExtensionsDialog {
+            id: extensionsDialog
+            x: Math.round((parent.width - width) / 2)
+            y: Math.round((parent.height - height) / 2)
+
+            onCloseRequested: extensionsOverlay.visible = false
+        }
+    }
+
+    function showExtensions() {
+        extensionsOverlay.visible = true;
+    }
+
+    // =========================================================================
+    // VS CODE-STYLE BOTTOM-RIGHT NOTIFICATION POPUP
+    // =========================================================================
+    NotificationToast {
+        id: notificationToast
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 16
+        anchors.bottomMargin: (statusBar && statusBar.visible ? statusBar.height : 0) + 12
+        z: 999
+    }
+
+    function showNotification(msg, type, title, duration) {
+        notificationToast.show(msg, type, title, duration);
     }
 
     // =========================================================================

@@ -86,27 +86,61 @@ function getSnippetsForLanguage(langId) {
     return SNIPPETS["javascript"];
 }
 
-function expandSnippetTemplate(template) {
-    var marker = "___CURSOR_MARKER___";
-    var replaced = template;
+function expandSnippetTemplate(template, baseIndent) {
+    if (!template) return { text: "", cursorOffset: 0, tabstops: [] };
+    baseIndent = baseIndent || "";
 
-    if (replaced.indexOf("${0}") !== -1) {
-        replaced = replaced.replace("${0}", marker);
-    } else if (/\$\{\d+:([^}]+)\}/.test(replaced)) {
-        replaced = replaced.replace(/\$\{\d+:([^}]+)\}/, "$1" + marker);
+    var lines = template.split("\n");
+    var indentedTemplate = lines.map(function(line, idx) {
+        if (idx === 0) return line;
+        return baseIndent + line;
+    }).join("\n");
+
+    var tabstopMap = {};
+    var pattern = /\$(?:\{(\d+)(?::([^}]*))?\}|(\d+))/g;
+    var match;
+    var cleanText = "";
+    var lastIndex = 0;
+    var stops = [];
+
+    // Parse placeholders and compute accurate text positions
+    while ((match = pattern.exec(indentedTemplate)) !== null) {
+        var pre = indentedTemplate.substring(lastIndex, match.index);
+        cleanText += pre;
+        var stopIndex = parseInt(match[1] || match[3], 10);
+        var defaultVal = match[2] !== undefined ? match[2] : "";
+
+        var startOffset = cleanText.length;
+        cleanText += defaultVal;
+        var endOffset = cleanText.length;
+
+        stops.push({
+            tabstop: stopIndex,
+            start: startOffset,
+            end: endOffset,
+            length: defaultVal.length,
+            placeholder: defaultVal
+        });
+        lastIndex = pattern.lastIndex;
+    }
+    cleanText += indentedTemplate.substring(lastIndex);
+
+    // Sort tabstops in ascending order: 1, 2, ..., then 0 (final cursor destination)
+    stops.sort(function(a, b) {
+        if (a.tabstop === 0) return 1;
+        if (b.tabstop === 0) return -1;
+        return a.tabstop - b.tabstop;
+    });
+
+    var cursorOffset = cleanText.length;
+    if (stops.length > 0) {
+        cursorOffset = stops[0].start;
     }
 
-    // Strip tabstop markers e.g. ${1:name} -> name, ${0} -> ""
-    replaced = replaced.replace(/\$\{\d+:([^}]+)\}/g, "$1");
-    replaced = replaced.replace(/\$\{\d+\}/g, "");
-    replaced = replaced.replace(/\$\d+/g, "");
-
-    var cursorOffset = replaced.indexOf(marker);
-    if (cursorOffset !== -1) {
-        replaced = replaced.replace(marker, "");
-    } else {
-        cursorOffset = replaced.length;
-    }
-
-    return { text: replaced, cursorOffset: cursorOffset };
+    return {
+        text: cleanText,
+        cursorOffset: cursorOffset,
+        tabstops: stops
+    };
 }
+

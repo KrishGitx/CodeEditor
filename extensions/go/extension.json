@@ -1,0 +1,23 @@
+{
+  "id": "dgx.go",
+  "name": "Go Language Extension",
+  "version": "1.0.0",
+  "description": "Go language support and gofmt provider",
+  "author": "DGX Studio",
+  "languages": ["go"],
+  "extensions": [".go"],
+  "formatter": {
+    "provider": "gofmt",
+    "type": "cli",
+    "executable": "gofmt",
+    "command": "gofmt",
+    "args": [],
+    "installGuide": {
+      "windows": "winget install GoLang.Go",
+      "macos": "brew install go",
+      "linux": "sudo apt install golang-go",
+      "docsUrl": "https://go.dev/doc/install",
+      "instructions": "Install the official Go distribution which includes gofmt."
+    }
+  }
+}

@@ -12,7 +12,7 @@ QtObject {
     property bool enableVinylAnimation: true
     property bool enableMinimap: true
     property bool enableLineNumbers: true
-    property bool enableBracketMatching: true
+    property bool enableBreadcrumbs: true
     property bool enableAutocomplete: true
     property bool enableWordWrap: false
     property bool enableMouseWheelZoom: true
@@ -43,6 +43,15 @@ QtObject {
     property string shortcutToggleMusic: "Ctrl+Shift+M"
     property string shortcutComment: "Ctrl+/"
     property string shortcutWhiteboard: "Ctrl+Alt+W"
+    property string shortcutQuickOpen: "Ctrl+P"
+    property string shortcutGoToLine: "Ctrl+G"
+    property string shortcutRenameSymbol: "F2"
+    property string shortcutUndo: "Ctrl+Z"
+    property string shortcutRedo: "Ctrl+Y"
+    property string shortcutCopy: "Ctrl+C"
+    property string shortcutPaste: "Ctrl+V"
+    property string shortcutMultiCursor: "Ctrl+D"
+    property string shortcutAddCursor: "Alt+Click"
 
     Component.onCompleted: {
         if (typeof settingsBackend !== "undefined" && settingsBackend) {
@@ -56,6 +65,7 @@ QtObject {
                     if (s.enable_word_wrap !== undefined) root.enableWordWrap = (s.enable_word_wrap === true || s.enable_word_wrap === "true");
                     if (s.enable_minimap !== undefined) root.enableMinimap = (s.enable_minimap === true || s.enable_minimap === "true");
                     if (s.enable_line_numbers !== undefined) root.enableLineNumbers = (s.enable_line_numbers === true || s.enable_line_numbers === "true");
+                    if (s.enable_breadcrumbs !== undefined) root.enableBreadcrumbs = (s.enable_breadcrumbs === true || s.enable_breadcrumbs === "true");
                     if (s.enable_ai !== undefined) root.enableAI = (s.enable_ai === true || s.enable_ai === "true");
                     if (s.html_run_target) root.htmlRunTarget = s.html_run_target;
                     if (s.tab_size) root.tabSize = parseInt(s.tab_size);
@@ -83,6 +93,7 @@ QtObject {
             settingsBackend.set_value("enable_word_wrap", "" + root.enableWordWrap);
             settingsBackend.set_value("enable_minimap", "" + root.enableMinimap);
             settingsBackend.set_value("enable_line_numbers", "" + root.enableLineNumbers);
+            settingsBackend.set_value("enable_breadcrumbs", "" + root.enableBreadcrumbs);
             settingsBackend.set_value("enable_ai", "" + root.enableAI);
             settingsBackend.set_value("html_run_target", root.htmlRunTarget);
             settingsBackend.set_value("tab_size", "" + root.tabSize);
@@ -106,7 +117,16 @@ QtObject {
                 shortcutToggleAI: root.shortcutToggleAI,
                 shortcutToggleMusic: root.shortcutToggleMusic,
                 shortcutComment: root.shortcutComment,
-                shortcutWhiteboard: root.shortcutWhiteboard
+                shortcutWhiteboard: root.shortcutWhiteboard,
+                shortcutQuickOpen: root.shortcutQuickOpen,
+                shortcutGoToLine: root.shortcutGoToLine,
+                shortcutRenameSymbol: root.shortcutRenameSymbol,
+                shortcutUndo: root.shortcutUndo,
+                shortcutRedo: root.shortcutRedo,
+                shortcutCopy: root.shortcutCopy,
+                shortcutPaste: root.shortcutPaste,
+                shortcutMultiCursor: root.shortcutMultiCursor,
+                shortcutAddCursor: root.shortcutAddCursor
             };
             settingsBackend.set_value("shortcuts", JSON.stringify(sc));
         }
@@ -131,6 +151,15 @@ QtObject {
         shortcutToggleMusic = "Ctrl+Shift+M";
         shortcutComment = "Ctrl+/";
         shortcutWhiteboard = "Ctrl+Alt+W";
+        shortcutQuickOpen = "Ctrl+P";
+        shortcutGoToLine = "Ctrl+G";
+        shortcutRenameSymbol = "F2";
+        shortcutUndo = "Ctrl+Z";
+        shortcutRedo = "Ctrl+Y";
+        shortcutCopy = "Ctrl+C";
+        shortcutPaste = "Ctrl+V";
+        shortcutMultiCursor = "Ctrl+D";
+        shortcutAddCursor = "Alt+Click";
         saveSettings();
     }
 

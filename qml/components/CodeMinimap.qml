@@ -10,7 +10,7 @@ Rectangle {
     signal scrollRequested(real ratio)
 
     width: 64
-    color: theme ? theme.bgSidebar : "#181818"
+    color: (typeof theme !== "undefined" && theme && theme.bgSidebar) ? theme.bgSidebar : "#18181b"
 
     Canvas {
         id: minimapCanvas
@@ -26,53 +26,76 @@ Rectangle {
             var lines = text.split("\n");
             var lineCount = Math.max(1, lines.length);
 
-            // Cap max bars rendered on canvas to at most 300 for instant 60fps rendering
-            var maxBars = Math.min(300, Math.max(1, Math.floor(height / 2.2)));
-            var step = lineCount / maxBars;
-            var barHeight = Math.max(1.2, Math.min(3.5, height / maxBars));
+            var kwColor = (typeof theme !== "undefined" && theme && theme.synKeyword) ? theme.synKeyword : "#569cd6";
+            var fnColor = (typeof theme !== "undefined" && theme && theme.synFunction) ? theme.synFunction : "#dcdcaa";
+            var comColor = (typeof theme !== "undefined" && theme && theme.synComment) ? theme.synComment : "#6a9955";
+            var strColor = (typeof theme !== "undefined" && theme && theme.synString) ? theme.synString : "#ce9178";
+            var defaultColor = (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#52525b";
 
-            var kwColor = theme ? theme.synKeyword : "#569cd6";
-            var fnColor = theme ? theme.synFunction : "#dcdcaa";
-            var comColor = theme ? theme.synComment : "#6a9955";
-            var strColor = theme ? theme.synString : "#ce9178";
-            var typeColor = theme ? theme.synType : "#4ec9b0";
-            var defaultColor = theme ? theme.textDisabled : "#4d4d4d";
+            var totalH = height;
+            var numLinesToRender = Math.min(lineCount, Math.floor(totalH / 2.0));
+            var step = lineCount / numLinesToRender;
+            var lineH = Math.max(1.2, Math.min(2.8, totalH / numLinesToRender));
 
-            for (var b = 0; b < maxBars; b++) {
-                var lineIdx = Math.floor(b * step);
-                if (lineIdx >= lineCount) break;
+            for (var i = 0; i < numLinesToRender; i++) {
+                var lIdx = Math.floor(i * step);
+                if (lIdx >= lineCount) break;
 
-                var lineStr = lines[lineIdx] || "";
+                var lineStr = lines[lIdx] || "";
+                if (lineStr.trim().length === 0) continue;
+
+                var indent = 0;
+                while (indent < lineStr.length && (lineStr.charAt(indent) === ' ' || lineStr.charAt(indent) === '\t')) {
+                    indent += (lineStr.charAt(indent) === '\t' ? 4 : 1);
+                }
+
+                var startX = Math.min(width * 0.5, Math.max(2, indent * 1.5));
+                var y = i * (totalH / numLinesToRender);
+
                 var trimmed = lineStr.trim();
-                if (trimmed.length > 0) {
-                    var indent = 0;
-                    while (indent < lineStr.length && (lineStr.charAt(indent) === ' ' || lineStr.charAt(indent) === '\t')) {
-                        indent++;
+                var firstChar = trimmed.charAt(0);
+
+                if (firstChar === '#' || (firstChar === '/' && trimmed.length > 1 && trimmed.charAt(1) === '/')) {
+                    ctx.fillStyle = comColor;
+                    var barW = Math.min(width - startX - 2, Math.max(4, trimmed.length * 0.7));
+                    ctx.fillRect(startX, y, barW, lineH);
+                } else if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
+                    ctx.fillStyle = strColor;
+                    var barW = Math.min(width - startX - 2, Math.max(4, trimmed.length * 0.7));
+                    ctx.fillRect(startX, y, barW, lineH);
+                } else {
+                    // Render multi-word token chunks for realistic code appearance
+                    var tokens = trimmed.split(/(\s+|[(),.:;={}[\]<>]+)/).filter(function(t) { return t.length > 0; });
+                    var curX = startX;
+
+                    for (var t = 0; t < tokens.length; t++) {
+                        var tok = tokens[t];
+                        if (tok.trim().length === 0) {
+                            curX += Math.max(2, tok.length * 1.2);
+                            continue;
+                        }
+
+                        if (tok === "def" || tok === "class" || tok === "function" || tok === "const" ||
+                            tok === "let" || tok === "var" || tok === "if" || tok === "else" ||
+                            tok === "for" || tok === "while" || tok === "return" || tok === "import" ||
+                            tok === "from" || tok === "export" || tok === "property" || tok === "Item" ||
+                            tok === "Rectangle") {
+                            ctx.fillStyle = kwColor;
+                        } else if (tok.startsWith('"') || tok.startsWith("'") || tok.startsWith('`')) {
+                            ctx.fillStyle = strColor;
+                        } else if (t + 1 < tokens.length && (tokens[t + 1] === "(" || tokens[t + 1] === ":")) {
+                            ctx.fillStyle = fnColor;
+                        } else {
+                            ctx.fillStyle = defaultColor;
+                        }
+
+                        var tokW = Math.min(width - curX - 2, Math.max(2, tok.length * 0.75));
+                        if (tokW > 0 && curX < width - 2) {
+                            ctx.fillRect(curX, y, tokW, lineH);
+                        }
+                        curX += tokW + 1.5;
+                        if (curX >= width - 2) break;
                     }
-
-                    var startX = Math.min(width * 0.55, Math.max(3, indent * 1.8));
-                    var barWidth = Math.min(width - startX - 4, Math.max(3, trimmed.length * 0.7));
-                    var y = b * (height / maxBars);
-
-                    var firstChar = trimmed.charAt(0);
-                    if (firstChar === '#' || (firstChar === '/' && trimmed.length > 1 && trimmed.charAt(1) === '/')) {
-                        ctx.fillStyle = comColor;
-                    } else if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
-                        ctx.fillStyle = strColor;
-                    } else if (trimmed.startsWith("def ") || trimmed.startsWith("class ") || trimmed.startsWith("function ") ||
-                               trimmed.startsWith("const ") || trimmed.startsWith("import ") || trimmed.startsWith("from ") ||
-                               trimmed.startsWith("return ") || trimmed.startsWith("var ") || trimmed.startsWith("let ") ||
-                               trimmed.startsWith("property ") || trimmed.startsWith("if ") || trimmed.startsWith("for ")) {
-                        ctx.fillStyle = kwColor;
-                    } else if (trimmed.indexOf("(") !== -1) {
-                        ctx.fillStyle = fnColor;
-                    } else if (firstChar === '{' || firstChar === '}' || firstChar === '[' || firstChar === ']') {
-                        ctx.fillStyle = typeColor;
-                    } else {
-                        ctx.fillStyle = defaultColor;
-                    }
-
-                    ctx.fillRect(startX, y, barWidth, Math.max(1.0, barHeight - 0.4));
                 }
             }
         }
@@ -80,7 +103,7 @@ Rectangle {
 
     Timer {
         id: paintDebounceTimer
-        interval: 100
+        interval: 60
         repeat: false
         onTriggered: minimapCanvas.requestPaint()
     }
@@ -96,14 +119,14 @@ Rectangle {
         x: 0
         y: Math.max(0, Math.min(root.height - height, root.scrollRatio * (root.height - height)))
         width: parent.width
-        height: Math.max(20, Math.min(root.height, root.visibleRatio * root.height))
-        color: theme ? theme.accentMuted : "#0078d420"
-        border.color: theme ? theme.borderNormal : "#333333"
+        height: Math.max(16, Math.min(root.height, root.visibleRatio * root.height))
+        color: (typeof theme !== "undefined" && theme && theme.accentMuted) ? theme.accentMuted : "#3b82f615"
+        border.color: (typeof theme !== "undefined" && theme && theme.borderNormal) ? theme.borderNormal : "#3f3f46"
         border.width: 1
-        opacity: mapArea.containsMouse || mapArea.pressed ? 0.9 : 0.55
+        opacity: mapArea.containsMouse || mapArea.pressed ? 0.85 : 0.45
 
         Behavior on opacity {
-            NumberAnimation { duration: 100 }
+            NumberAnimation { duration: 80 }
         }
     }
 

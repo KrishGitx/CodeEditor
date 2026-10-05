@@ -255,6 +255,63 @@ Item {
                 ctx.closePath();
                 ctx.fill();
             }
+            else if (n === "puzzle" || n === "extension" || n === "plugin") {
+                var pX = pad;
+                var pY = pad;
+                var pW = w - pad * 2;
+                var pH = h - pad * 2;
+                var r = pW * 0.16;
+
+                ctx.beginPath();
+                ctx.moveTo(pX, pY);
+                ctx.lineTo(pX + pW * 0.35, pY);
+                ctx.arc(pX + pW * 0.5, pY, r, Math.PI, 0, false);
+                ctx.lineTo(pX + pW, pY);
+                ctx.lineTo(pX + pW, pY + pH * 0.35);
+                ctx.arc(pX + pW, pY + pH * 0.5, r, -Math.PI / 2, Math.PI / 2, true);
+                ctx.lineTo(pX + pW, pY + pH);
+                ctx.lineTo(pX + pW * 0.65, pY + pH);
+                ctx.arc(pX + pW * 0.5, pY + pH, r, 0, Math.PI, true);
+                ctx.lineTo(pX, pY + pH);
+                ctx.lineTo(pX, pY + pH * 0.65);
+                ctx.arc(pX, pY + pH * 0.5, r, Math.PI / 2, -Math.PI / 2, false);
+                ctx.closePath();
+                ctx.stroke();
+            }
+            else if (n === "bolt" || n === "lightning" || n === "flash") {
+                ctx.beginPath();
+                ctx.moveTo(w * 0.55, pad);
+                ctx.lineTo(pad + w * 0.15, h * 0.52);
+                ctx.lineTo(w * 0.48, h * 0.52);
+                ctx.lineTo(w * 0.42, h - pad);
+                ctx.lineTo(w - pad - w * 0.1, h * 0.44);
+                ctx.lineTo(w * 0.55, h * 0.44);
+                ctx.closePath();
+                ctx.fill();
+            }
+            else if (n === "download") {
+                ctx.beginPath();
+                ctx.moveTo(w / 2, pad);
+                ctx.lineTo(w / 2, h * 0.65);
+                ctx.moveTo(w * 0.3, h * 0.45);
+                ctx.lineTo(w / 2, h * 0.65);
+                ctx.lineTo(w * 0.7, h * 0.45);
+                ctx.moveTo(pad, h - pad);
+                ctx.lineTo(w - pad, h - pad);
+                ctx.stroke();
+            }
+            else if (n === "code" || n === "brackets" || n === "syntax") {
+                ctx.beginPath();
+                ctx.moveTo(pad + w * 0.28, pad + h * 0.15);
+                ctx.lineTo(pad + w * 0.06, h / 2);
+                ctx.lineTo(pad + w * 0.28, h - pad - h * 0.15);
+                ctx.moveTo(w * 0.62, pad + h * 0.1);
+                ctx.lineTo(w * 0.38, h - pad - h * 0.1);
+                ctx.moveTo(w - pad - w * 0.28, pad + h * 0.15);
+                ctx.lineTo(w - pad - w * 0.06, h / 2);
+                ctx.lineTo(w - pad - w * 0.28, h - pad - h * 0.15);
+                ctx.stroke();
+            }
             else if (n === "terminal") {
                 ctx.beginPath();
                 ctx.moveTo(pad, pad);

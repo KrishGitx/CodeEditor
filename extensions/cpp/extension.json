@@ -1,0 +1,24 @@
+{
+  "id": "dgx.cpp",
+  "name": "C/C++ Language Extension",
+  "version": "1.0.0",
+  "description": "C and C++ language support with clang-format provider",
+  "author": "DGX Studio",
+  "languages": ["c", "cpp", "c++", "cuda", "csharp", "java"],
+  "extensions": [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cu", ".cs", ".java"],
+  "formatter": {
+    "provider": "clang-format",
+    "type": "cli",
+    "executable": "clang-format",
+    "command": "clang-format",
+    "args": ["-style={IndentWidth: ${tabSize}}"],
+    "installGuide": {
+      "lightweight": "pip install clang-format",
+      "windows": "pip install clang-format",
+      "macos": "brew install clang-format",
+      "linux": "sudo apt install clang-format",
+      "docsUrl": "https://clang.llvm.org/docs/ClangFormat.html",
+      "instructions": "Requires standalone clang-format (~3MB). Click 'Install Formatter' for automated lightweight installation, or locate an existing binary on your disk."
+    }
+  }
+}

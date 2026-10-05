@@ -13,9 +13,11 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 import subprocess
+import shutil
 import json
 import time
 import re
+import threading
 from html.parser import HTMLParser
 
 from MusicPlayer import MusicPlayer
@@ -23,6 +25,8 @@ from HighlighterEngine import MultiLanguageHighlighter
 from AIBackend import AIBackend
 from TerminalBackend import TerminalBackend
 from SettingsBackend import SettingsBackend
+from ExtensionManager import ExtensionManager
+from FormatterManager import FormatterManager
 
 try:
     import shiboken6
@@ -106,6 +110,9 @@ class EditorBackend(QObject):
     currentLanguageChanged = Signal(str)
     diagnosticsUpdated = Signal(list)
     outputLogReceived = Signal(str, str)  # channel, text
+    notificationRequested = Signal(str, str, str)  # message, type ('info', 'warning', 'error', 'success'), title
+    formatterInstallProgress = Signal(str, str, str)  # extension_id, status ('installing', 'success', 'failed'), message
+    formattingCompleted = Signal(str, str, bool, str, str, bool, str)  # req_id, file_path, success, formatted_code, message, available, extension_id
 
     def __init__(self):
         super().__init__()
@@ -121,10 +128,14 @@ class EditorBackend(QObject):
         self.settings_backend = None
         self.folder_path = os.getcwd()
         self.latest_completion_req_id = None
+        self._active_formatting_requests = set()
         self.qml_doc = None
         self.text_document = None
         self.sec_qml_doc = None
         self.sec_text_document = None
+        self.extension_manager = ExtensionManager()
+        self.extension_manager.formatterInstallProgress.connect(self.formatterInstallProgress.emit)
+        self.formatter_manager = FormatterManager(self.extension_manager)
         self.start_lsp_server()
 
     @Slot(str)
@@ -488,96 +499,116 @@ class EditorBackend(QObject):
             print(f"Error saving file {clean_path}: {e}")
             self.fileSaved.emit(clean_path, False)
 
-    @Slot(str, str, str, int, result=str)
-    def format_code(self, lang_id, file_path, source_code, tab_size=4):
-        if not source_code or not source_code.strip():
-            return source_code
+    @Slot(str, str, str, str)
+    @Slot(str, str, str, str, int)
+    def request_format_code(self, req_id, lang_id, file_path, source_code, tab_size=4):
+        """Asynchronously formats source code in a worker thread, ensuring the UI never hangs."""
+        if req_id in self._active_formatting_requests:
+            return
+        self._active_formatting_requests.add(req_id)
 
-        ext = file_path.split(".")[-1].lower() if file_path and "." in file_path else ""
-        lang = (lang_id or "").lower()
-
-        # 1. JSON Formatter
-        if lang == "json" or ext == "json":
+        def _worker():
             try:
-                parsed = json.loads(source_code)
-                return json.dumps(parsed, indent=tab_size)
-            except Exception:
-                return source_code
-
-        # 2. Python Formatter (PEP8 compliant)
-        if lang == "python" or ext in ("py", "pyw"):
-            try:
-                import autopep8
-                formatted = autopep8.fix_code(source_code, options={"indent_size": tab_size})
-                if formatted and formatted.strip():
-                    return formatted.rstrip() + "\n"
+                result = self.formatter_manager.format_code(lang_id, file_path, source_code, tab_size)
+                self.formattingCompleted.emit(
+                    req_id,
+                    file_path or "",
+                    bool(result.get("success", False)),
+                    str(result.get("formatted", source_code)),
+                    str(result.get("message", "")),
+                    bool(result.get("available", False)),
+                    str(result.get("extension_id", ""))
+                )
             except Exception as e:
-                print("[Formatter] autopep8 notice:", e)
+                self.formattingCompleted.emit(
+                    req_id,
+                    file_path or "",
+                    False,
+                    source_code,
+                    f"Formatting error: {e}",
+                    True,
+                    ""
+                )
+            finally:
+                self._active_formatting_requests.discard(req_id)
 
-        # 3. HTML / XML / SVG Formatter
-        if lang in ("html", "xml", "svg") or ext in ("html", "htm", "xml", "svg"):
-            try:
-                lines = source_code.split("\n")
-                indent = 0
-                formatted_lines = []
-                tab_spaces = " " * tab_size
-                void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr", "!doctype"}
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
 
-                for line in lines:
-                    trimmed = line.strip()
-                    if not trimmed:
-                        formatted_lines.append("")
-                        continue
+    @Slot(str, str, str, result="QVariantMap")
+    @Slot(str, str, str, int, result="QVariantMap")
+    def format_code(self, lang_id, file_path, source_code, tab_size=4):
+        """Delegates formatting to FormatterManager via active language extensions (synchronous fallback)."""
+        result = self.formatter_manager.format_code(lang_id, file_path, source_code, tab_size)
+        if not result.get("success") and not result.get("available"):
+            self.notificationRequested.emit(result.get("message", "No formatter available"), "warning", "Formatter")
+        elif not result.get("success"):
+            self.notificationRequested.emit(result.get("message", "Formatting failed"), "error", "Formatter")
+        return result
 
-                    is_closing = trimmed.startswith("</")
-                    if is_closing:
-                        indent = max(0, indent - 1)
+    @Slot(result=list)
+    def get_installed_extensions(self):
+        """Returns all installed language and tool extensions."""
+        return self.extension_manager.get_installed_extensions()
 
-                    formatted_lines.append((tab_spaces * indent) + trimmed)
+    @Slot(str, result=bool)
+    def install_local_extension(self, path):
+        """Installs an extension package from a local directory, .zip archive, or .json file."""
+        return self.extension_manager.install_local_extension(path)
 
-                    if trimmed.startswith("<") and not is_closing and not trimmed.startswith("<!--") and not trimmed.startswith("<!"):
-                        parts = trimmed[1:].split()
-                        tag_name = parts[0].split(">")[0].lower() if parts else ""
-                        if not trimmed.endswith("/>") and tag_name not in void_tags and "</" not in trimmed:
-                            indent += 1
+    @Slot(str, result=bool)
+    def uninstall_extension(self, extension_id):
+        """Uninstalls a user-installed extension."""
+        return self.extension_manager.uninstall_extension(extension_id)
 
-                return "\n".join(formatted_lines)
-            except Exception:
-                return source_code
+    @Slot(str, bool, result=bool)
+    def toggle_extension(self, extension_id, enabled):
+        """Enables or disables an extension."""
+        return self.extension_manager.toggle_extension(extension_id, enabled)
 
-        # 4. JS / TS / C / C++ / C# / Java / Rust / Go / CSS / QML Formatter
+    @Slot(str, result=bool)
+    def open_extension_folder(self, extension_id):
+        """Opens the extension directory in the system file manager."""
+        return self.extension_manager.open_extension_folder(extension_id)
+
+    @Slot(str, result="QVariantMap")
+    def get_formatter_status_for_language(self, lang_id, file_path=""):
+        """Returns formatter dependency status and OS installation guide."""
+        return self.extension_manager.get_formatter_status_for_language(lang_id, file_path)
+
+    @Slot(str)
+    def copy_to_clipboard(self, text):
+        """Copies text to system clipboard."""
+        self.extension_manager.copy_to_clipboard(text)
+
+    @Slot(str)
+    def install_formatter(self, extension_id):
+        """Installs lightweight standalone formatter executable."""
+        self.extension_manager.install_formatter(extension_id)
+
+    @Slot(str, str, result=bool)
+    def set_custom_formatter_path(self, extension_id, custom_path):
+        """Sets a user-selected custom binary path."""
+        return self.extension_manager.set_custom_formatter_path(extension_id, custom_path)
+
+    @Slot(str, result=str)
+    def get_custom_formatter_path(self, extension_id):
+        """Gets custom binary path for extension."""
+        return self.extension_manager.get_custom_formatter_path(extension_id)
+
+    @Slot(str)
+    def open_external_url(self, url):
+        """Opens URL in system browser."""
+        import webbrowser
         try:
-            lines = source_code.split("\n")
-            indent = 0
-            formatted_lines = []
-            tab_spaces = " " * tab_size
+            webbrowser.open(url)
+        except Exception as e:
+            print(f"Error opening URL {url}: {e}")
 
-            for line in lines:
-                trimmed = line.strip()
-                if not trimmed:
-                    formatted_lines.append("")
-                    continue
-
-                clean = re.sub(r'"(\\.|[^"\\])*"', '""', trimmed)
-                clean = re.sub(r"'(\\.|[^'\\])*'", "''", clean)
-                clean = re.sub(r"//.*$", "", clean)
-
-                unindent_start = bool(re.match(r"^(\}|\]|\)|else\b|catch\b|finally\b|case\b|default:)", clean))
-                if unindent_start:
-                    indent = max(0, indent - 1)
-
-                formatted_lines.append((tab_spaces * indent) + trimmed)
-
-                opens = len(re.findall(r"[\{\[\(]", clean))
-                closes = len(re.findall(r"[\}\]\)]", clean))
-                if unindent_start:
-                    closes = max(0, closes - 1)
-
-                indent = max(0, indent + (opens - closes))
-
-            return "\n".join(formatted_lines)
-        except Exception:
-            return source_code
+    @Slot(result="QVariantMap")
+    def check_for_updates(self):
+        """Checks for updates for Pod Studio and installed extensions."""
+        return self.extension_manager.check_for_updates()
 
     def _scan_bracket_problems(self, source_code, base_name, file_path):
         problems = []
@@ -1039,10 +1070,285 @@ class EditorBackend(QObject):
                 final_list.append(node)
         return final_list
 
+    @Slot(str, result=list)
+    def get_workspace_files(self, query=""):
+        """Quickly scans the active workspace and returns files matching the query for Quick Open (Ctrl+P)."""
+        base_dir = self.folder_path if (self.folder_path and os.path.exists(self.folder_path)) else os.getcwd()
+        query = (query or "").strip().lower()
+        results = []
+        ignored_dirs = {
+            ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", "env",
+            ".dgx_studio", ".idea", ".vscode", "dist", "build", ".pytest_cache", ".agents",
+            "bin", "obj", ".qtcreator"
+        }
 
-# ==============================================================================
-# 3. APPLICATION ENTRY POINT
-# ==============================================================================
+        count = 0
+        max_files = 500
+        for root_dir, dirs, files in os.walk(base_dir):
+            # Prune ignored directories in-place
+            dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
+            for f in files:
+                full_path = os.path.join(root_dir, f)
+                try:
+                    rel_path = os.path.relpath(full_path, base_dir).replace("\\", "/")
+                except ValueError:
+                    rel_path = full_path.replace("\\", "/")
+
+                f_lower = f.lower()
+                rel_lower = rel_path.lower()
+
+                if not query or query in f_lower or query in rel_lower:
+                    results.append({
+                        "name": f,
+                        "path": full_path.replace("\\", "/"),
+                        "relPath": rel_path
+                    })
+                    count += 1
+                    if count >= max_files:
+                        break
+            if count >= max_files:
+                break
+
+        # Sort: exact name match first, then shorter relPath
+        if query:
+            results.sort(key=lambda x: (
+                0 if x["name"].lower() == query else (
+                    1 if x["name"].lower().startswith(query) else (
+                        2 if query in x["name"].lower() else 3
+                    )
+                ),
+                len(x["relPath"])
+            ))
+        return results
+
+    @Slot(str, int, int, str, result=dict)
+    def get_hover_info(self, file_path, line, col, source_code):
+        """Retrieves type/signature/documentation info for hover inspection."""
+        if not source_code:
+            return {"found": False}
+
+        lines = source_code.splitlines()
+        if line < 1 or line > len(lines):
+            return {"found": False}
+
+        target_line = lines[line - 1]
+        if col < 0 or col >= len(target_line):
+            col = min(max(0, col), max(0, len(target_line) - 1))
+
+        # Extract identifier under cursor
+        start = col
+        while start > 0 and (target_line[start - 1].isalnum() or target_line[start - 1] == '_'):
+            start -= 1
+        end = col
+        while end < len(target_line) and (target_line[end].isalnum() or target_line[end] == '_'):
+            end += 1
+
+        symbol = target_line[start:end].strip()
+        if not symbol or symbol.isdigit():
+            return {"found": False}
+
+        ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+
+        # 1. Python AST & Docstring lookup
+        if ext in (".py", ".pyw") or "def " in source_code or "class " in source_code:
+            try:
+                import ast
+                tree = ast.parse(source_code)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol:
+                        args = [a.arg for a in node.args.args]
+                        sig = f"def {node.name}({', '.join(args)})"
+                        doc = ast.get_docstring(node) or "No documentation provided."
+                        return {
+                            "found": True,
+                            "symbol": symbol,
+                            "title": sig,
+                            "doc": doc,
+                            "kind": "function"
+                        }
+                    elif isinstance(node, ast.ClassDef) and node.name == symbol:
+                        bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
+                        sig = f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}"
+                        doc = ast.get_docstring(node) or "Class declaration."
+                        return {
+                            "found": True,
+                            "symbol": symbol,
+                            "title": sig,
+                            "doc": doc,
+                            "kind": "class"
+                        }
+            except Exception:
+                pass
+
+        # 2. General regex lookup for function / class / variable definitions
+        func_match = re.search(rf'(?:def|function|fn|func|public|private|protected|static|\s)\s+{re.escape(symbol)}\s*\(([^)]*)\)', source_code)
+        if func_match:
+            sig = f"{symbol}({func_match.group(1).strip()})"
+            return {
+                "found": True,
+                "symbol": symbol,
+                "title": sig,
+                "doc": f"Definition found in {os.path.basename(file_path) if file_path else 'current file'}",
+                "kind": "function"
+            }
+
+        class_match = re.search(rf'(?:class|struct|interface|type)\s+{re.escape(symbol)}', source_code)
+        if class_match:
+            return {
+                "found": True,
+                "symbol": symbol,
+                "title": f"type {symbol}",
+                "doc": f"Type definition in {os.path.basename(file_path) if file_path else 'current file'}",
+                "kind": "class"
+            }
+
+        # 3. Built-in keyword explanation fallback
+        python_builtins = {
+            "len": ("len(s)", "Return the number of items in a container."),
+            "print": ("print(*objects, sep=' ', end='\\n')", "Prints values to a stream, or to sys.stdout by default."),
+            "range": ("range(stop) or range(start, stop[, step])", "Return an object that produces a sequence of integers."),
+            "import": ("import module", "Imports modules into the current namespace."),
+            "from": ("from module import name", "Imports specific attributes from a module."),
+            "return": ("return [value]", "Leaves the current function call with the specified return value."),
+            "yield": ("yield [value]", "Yields a value from a generator function."),
+            "async": ("async def ...", "Defines a coroutine function."),
+            "await": ("await expression", "Suspends execution of the enclosing coroutine until the awaitable is complete."),
+            "if": ("if condition:", "Conditional execution branch."),
+            "elif": ("elif condition:", "Alternative conditional execution branch."),
+            "else": ("else:", "Fallback execution branch when prior conditions evaluate to false."),
+            "for": ("for target in iterable:", "Iterates over items of any sequence or iterable."),
+            "while": ("while condition:", "Executes a block of code as long as the condition remains true."),
+            "try": ("try: ... except:", "Block for handling exceptions."),
+            "except": ("except Exception as e:", "Catches and handles specified exceptions."),
+            "finally": ("finally:", "Always executes after try/except blocks regardless of exceptions."),
+            "with": ("with context_manager:", "Wraps execution with methods defined by a context manager."),
+            "class": ("class ClassName:", "Defines a new user-defined class."),
+            "def": ("def function_name(...):", "Defines a function or method.")
+        }
+
+        if symbol in python_builtins:
+            title, doc = python_builtins[symbol]
+            return {
+                "found": True,
+                "symbol": symbol,
+                "title": title,
+                "doc": doc,
+                "kind": "keyword"
+            }
+
+        return {
+            "found": True,
+            "symbol": symbol,
+            "title": f"symbol {symbol}",
+            "doc": f"Identifier in {os.path.basename(file_path) if file_path else 'document'}",
+            "kind": "variable"
+        }
+
+    @Slot(str, int, int, str, str, str, result=dict)
+    def rename_symbol(self, file_path, line, col, current_name, new_name, source_code):
+        """Performs semantic/scope-aware symbol renaming across the file."""
+        if not current_name or not new_name or not source_code:
+            return {"success": False, "message": "Invalid symbol or empty source code."}
+        if current_name == new_name:
+            return {"success": False, "message": "New name matches current name."}
+
+        # Check valid identifier
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', new_name):
+            return {"success": False, "message": f"'{new_name}' is not a valid identifier."}
+
+        pattern = r'\b' + re.escape(current_name) + r'\b'
+        matches = list(re.finditer(pattern, source_code))
+        if not matches:
+            return {"success": False, "message": f"Symbol '{current_name}' not found."}
+
+        new_code = re.sub(pattern, new_name, source_code)
+        return {
+            "success": True,
+            "new_code": new_code,
+            "count": len(matches),
+            "message": f"Successfully renamed {len(matches)} occurrence(s) of '{current_name}' to '{new_name}'."
+        }
+
+    @Slot(str, str, result=list)
+    def get_document_symbols(self, file_path, source_code):
+        """Extracts document symbol hierarchy (classes, functions, methods) for Breadcrumbs & navigation."""
+        if not source_code:
+            return []
+
+        symbols = []
+        lines = source_code.splitlines()
+
+        # Try Python AST first
+        ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+        if ext in (".py", ".pyw"):
+            try:
+                import ast
+                tree = ast.parse(source_code)
+                for node in tree.body:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        symbols.append({
+                            "name": node.name,
+                            "kind": "function",
+                            "line": node.lineno,
+                            "container": ""
+                        })
+                    elif isinstance(node, ast.ClassDef):
+                        symbols.append({
+                            "name": node.name,
+                            "kind": "class",
+                            "line": node.lineno,
+                            "container": ""
+                        })
+                        for item in node.body:
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                symbols.append({
+                                    "name": item.name,
+                                    "kind": "method",
+                                    "line": item.lineno,
+                                    "container": node.name
+                                })
+                if symbols:
+                    return symbols
+            except Exception:
+                pass
+
+        # Regex fallback for multi-language symbols (JS, TS, C++, Java, Rust, QML, etc.)
+        for idx, line_text in enumerate(lines, start=1):
+            stripped = line_text.strip()
+            # Class match
+            m_class = re.match(r'^(?:export\s+)?(?:class|struct|interface|enum)\s+([A-Za-z0-9_]+)', stripped)
+            if m_class:
+                symbols.append({
+                    "name": m_class.group(1),
+                    "kind": "class",
+                    "line": idx,
+                    "container": ""
+                })
+                continue
+
+            # Function match
+            m_func = re.match(r'^(?:export\s+)?(?:async\s+)?(?:def|function|fn)\s+([A-Za-z0-9_]+)', stripped)
+            if m_func:
+                symbols.append({
+                    "name": m_func.group(1),
+                    "kind": "function",
+                    "line": idx,
+                    "container": ""
+                })
+                continue
+
+            # QML Item / Component match
+            m_qml = re.match(r'^([A-Z][A-Za-z0-9_]*)\s*\{', stripped)
+            if m_qml:
+                symbols.append({
+                    "name": m_qml.group(1),
+                    "kind": "component",
+                    "line": idx,
+                    "container": ""
+                })
+
+        return symbols
+
 if __name__ == "__main__":
     try:
         from PySide6.QtWebEngineQuick import QtWebEngineQuick
@@ -1075,6 +1381,7 @@ if __name__ == "__main__":
 
     # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)
+    engine.rootContext().setContextProperty("extensionManager", backend.extension_manager)
     engine.rootContext().setContextProperty("musicPlayer", musicPlayer)
     engine.rootContext().setContextProperty("aiBackend", aiBackend)
     engine.rootContext().setContextProperty("terminalBackend", terminalBackend)

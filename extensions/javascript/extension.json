@@ -1,0 +1,23 @@
+{
+  "id": "dgx.javascript",
+  "name": "JavaScript & TypeScript Extension",
+  "version": "1.0.0",
+  "description": "JavaScript, TypeScript, HTML, CSS formatting with Prettier provider",
+  "author": "DGX Studio",
+  "languages": ["javascript", "typescript", "javascriptreact", "typescriptreact", "html", "css", "scss", "less", "yaml", "markdown"],
+  "extensions": [".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".html", ".htm", ".css", ".scss", ".less", ".yaml", ".yml", ".md"],
+  "formatter": {
+    "provider": "prettier",
+    "type": "cli",
+    "executable": "prettier",
+    "command": "prettier",
+    "args": ["--stdin-filepath", "${filePath}", "--tab-width", "${tabSize}"],
+    "installGuide": {
+      "windows": "npm install -g prettier",
+      "macos": "npm install -g prettier",
+      "linux": "npm install -g prettier",
+      "docsUrl": "https://prettier.io/docs/en/install.html",
+      "instructions": "Install prettier globally via npm (or yarn / pnpm)."
+    }
+  }
+}

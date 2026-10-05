@@ -1,0 +1,19 @@
+{
+  "id": "dgx.json",
+  "name": "JSON Language Extension",
+  "version": "1.0.0",
+  "description": "Standard JSON formatting and validation for DGX Studio",
+  "author": "DGX Studio",
+  "languages": ["json"],
+  "extensions": [".json"],
+  "formatter": {
+    "provider": "json_builtin",
+    "type": "json",
+    "executable": "Built-in (Python Standard Library)",
+    "installGuide": {
+      "all": "Included in standard DGX Studio runtime environment.",
+      "docsUrl": "https://docs.python.org/3/library/json.html",
+      "instructions": "Built-in JSON parser and formatter is always available."
+    }
+  }
+}

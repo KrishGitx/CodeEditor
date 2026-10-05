@@ -1,0 +1,23 @@
+{
+  "id": "dgx.rust",
+  "name": "Rust Language Extension",
+  "version": "1.0.0",
+  "description": "Rust language support and rustfmt provider",
+  "author": "DGX Studio",
+  "languages": ["rust"],
+  "extensions": [".rs"],
+  "formatter": {
+    "provider": "rustfmt",
+    "type": "cli",
+    "executable": "rustfmt",
+    "command": "rustfmt",
+    "args": ["--emit=stdout"],
+    "installGuide": {
+      "windows": "rustup component add rustfmt",
+      "macos": "rustup component add rustfmt",
+      "linux": "rustup component add rustfmt",
+      "docsUrl": "https://github.com/rust-lang/rustfmt",
+      "instructions": "Add rustfmt component to your Rust toolchain via rustup."
+    }
+  }
+}
