@@ -294,6 +294,8 @@ Rectangle {
                     radius: 4
                     color: reloadMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2d2d30") : "transparent"
                     border.color: reloadMa.containsMouse ? (theme ? theme.borderSubtle : "#3e3e42") : "transparent"
+                    ToolTip.visible: reloadMa.containsMouse
+                    ToolTip.text: "Refresh"
 
                     VectorIcon {
                         anchors.centerIn: parent
@@ -324,6 +326,8 @@ Rectangle {
                     height: 26
                     radius: 4
                     color: closeMa.containsMouse ? "#e81123" : "transparent"
+                    ToolTip.visible: closeMa.containsMouse
+                    ToolTip.text: "Close"
 
                     VectorIcon {
                         anchors.centerIn: parent
@@ -351,9 +355,12 @@ Rectangle {
         }
 
         // 2. Main Body Split Area
-        Item {
+        Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            color: "transparent"
+            border.color: theme ? theme.borderSubtle : "#282828"
+            border.width: 1
 
             RowLayout {
                 anchors.fill: parent

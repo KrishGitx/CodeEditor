@@ -4,13 +4,132 @@ Rectangle {
     id: root
 
     property string documentText: ""
+    property string activeTabKey: ""
     property real visibleRatio: 0.2
     property real scrollRatio: 0.0
 
     signal scrollRequested(real ratio)
 
-    width: 64
+    width: 90
     color: (typeof theme !== "undefined" && theme && theme.bgSidebar) ? theme.bgSidebar : "#18181b"
+    clip: true
+
+    readonly property real lineSpacing: 4.8
+    readonly property real charScale: 2.7
+    readonly property real topOffset: 6.0
+
+    property int totalLineCount: 1
+    readonly property real totalMinimapDocHeight: topOffset + (totalLineCount * lineSpacing) + 20
+    readonly property bool needsMinimapScroll: totalMinimapDocHeight > height
+    readonly property real maxMinimapScrollY: Math.max(0, totalMinimapDocHeight - height)
+    readonly property real currentMinimapScrollY: needsMinimapScroll ? (root.scrollRatio * maxMinimapScrollY) : 0
+
+    // Per-tab cache mapping tab key -> { lines: [], totalLineCount: int }
+    property var tabCache: ({})
+    property var currentLines: []
+
+    function setTabAndText(tabKey, text) {
+        activeTabKey = tabKey || "default";
+        if (text && text.length > 0) {
+            documentText = text;
+        }
+        if (tabCache[activeTabKey]) {
+            var cached = tabCache[activeTabKey];
+            currentLines = cached.lines;
+            if (cached.totalLineCount > 1) {
+                totalLineCount = cached.totalLineCount;
+            }
+            minimapCanvas.requestPaint();
+        } else if (text && text.length > 0) {
+            parseDebounceTimer.restart();
+        }
+    }
+
+    function rebuildCache() {
+        console.log("[Timing] Minimap generation start");
+        var text = root.documentText;
+        var key = root.activeTabKey || "default";
+
+        if (!text || text.length === 0) {
+            if (!tabCache[key] || tabCache[key].lines.length === 0) {
+                currentLines = [];
+                totalLineCount = Math.max(1, root.totalLineCount);
+                tabCache[key] = { lines: [], totalLineCount: totalLineCount };
+                minimapCanvas.requestPaint();
+            }
+            console.log("[Timing] Minimap generation complete");
+            return;
+        }
+
+        var rawLines = text.split("\n");
+        var docLines = rawLines.length;
+        totalLineCount = Math.max(root.totalLineCount, docLines);
+
+        var linesData = [];
+        var maxCharsPerLine = 45;
+
+        for (var i = 0; i < docLines; i++) {
+            var line = rawLines[i];
+            if (!line || line.length === 0) {
+                linesData.push(null);
+                continue;
+            }
+
+            var indent = 0;
+            var len = line.length;
+            while (indent < len && (line.charCodeAt(indent) === 32 || line.charCodeAt(indent) === 9)) {
+                indent += (line.charCodeAt(indent) === 9 ? 4 : 1);
+            }
+
+            var trimmed = line.substring(indent, Math.min(len, indent + maxCharsPerLine));
+            if (trimmed.length === 0) {
+                linesData.push(null);
+                continue;
+            }
+
+            // Syntax color classification for accurate miniature code text
+            var colorType = 0;
+            var firstChar = trimmed.charAt(0);
+            if (firstChar === '#' || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+                colorType = 1; // comment
+            } else if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
+                colorType = 2; // string
+            } else if (firstChar === '<' || firstChar === '@') {
+                colorType = 3; // keyword / tag
+            } else {
+                var spaceIdx = trimmed.indexOf(" ");
+                var token = (spaceIdx !== -1) ? trimmed.substring(0, spaceIdx) : trimmed;
+                if (token === "def" || token === "class" || token === "function" ||
+                    token === "const" || token === "let" || token === "var" ||
+                    token === "if" || token === "for" || token === "while" ||
+                    token === "return" || token === "import" || token === "export" ||
+                    token === "public" || token === "private" || token === "int" ||
+                    token === "void" || token === "bool" || token === "struct") {
+                    colorType = 3;
+                }
+            }
+
+            linesData.push({
+                indent: Math.min(24, indent),
+                text: trimmed,
+                colorType: colorType
+            });
+        }
+
+        currentLines = linesData;
+        tabCache[key] = { lines: linesData, totalLineCount: totalLineCount };
+        minimapCanvas.requestPaint();
+        console.log("[Timing] Minimap generation complete");
+    }
+
+    Timer {
+        id: parseDebounceTimer
+        interval: 100
+        repeat: false
+        onTriggered: root.rebuildCache()
+    }
+
+    onDocumentTextChanged: parseDebounceTimer.restart()
 
     Canvas {
         id: minimapCanvas
@@ -20,110 +139,76 @@ Rectangle {
             var ctx = getContext("2d");
             ctx.clearRect(0, 0, width, height);
 
-            var text = root.documentText;
-            if (!text || text.length === 0) return;
+            var lines = root.currentLines;
+            var count = lines ? lines.length : 0;
+            if (count === 0) return;
 
-            var lines = text.split("\n");
-            var lineCount = Math.max(1, lines.length);
+            var kwColor = (typeof theme !== "undefined" && theme && theme.synKeyword) ? theme.synKeyword : "#c678dd";
+            var comColor = (typeof theme !== "undefined" && theme && theme.synComment) ? theme.synComment : "#5c6478";
+            var strColor = (typeof theme !== "undefined" && theme && theme.synString) ? theme.synString : "#98c379";
+            var defColor = (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#8b949e";
 
-            var kwColor = (typeof theme !== "undefined" && theme && theme.synKeyword) ? theme.synKeyword : "#569cd6";
-            var fnColor = (typeof theme !== "undefined" && theme && theme.synFunction) ? theme.synFunction : "#dcdcaa";
-            var comColor = (typeof theme !== "undefined" && theme && theme.synComment) ? theme.synComment : "#6a9955";
-            var strColor = (typeof theme !== "undefined" && theme && theme.synString) ? theme.synString : "#ce9178";
-            var defaultColor = (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#52525b";
+            var colors = [defColor, comColor, strColor, kwColor];
 
-            var totalH = height;
-            var numLinesToRender = Math.min(lineCount, Math.floor(totalH / 2.0));
-            var step = lineCount / numLinesToRender;
-            var lineH = Math.max(1.2, Math.min(2.8, totalH / numLinesToRender));
+            ctx.font = "4.5px 'Consolas', 'Courier New', monospace";
+            ctx.textBaseline = "top";
 
-            for (var i = 0; i < numLinesToRender; i++) {
-                var lIdx = Math.floor(i * step);
-                if (lIdx >= lineCount) break;
+            var scrollOffY = root.currentMinimapScrollY;
+            var startIdx = Math.max(0, Math.floor((scrollOffY - 10) / root.lineSpacing));
+            var endIdx = Math.min(count - 1, Math.ceil((scrollOffY + height + 10) / root.lineSpacing));
 
-                var lineStr = lines[lIdx] || "";
-                if (lineStr.trim().length === 0) continue;
+            var maxDrawX = width - 4;
 
-                var indent = 0;
-                while (indent < lineStr.length && (lineStr.charAt(indent) === ' ' || lineStr.charAt(indent) === '\t')) {
-                    indent += (lineStr.charAt(indent) === '\t' ? 4 : 1);
-                }
+            for (var i = startIdx; i <= endIdx; i++) {
+                var lData = lines[i];
+                if (!lData) continue;
 
-                var startX = Math.min(width * 0.5, Math.max(2, indent * 1.5));
-                var y = i * (totalH / numLinesToRender);
+                var y = root.topOffset + (i * root.lineSpacing) - scrollOffY;
+                if (y < -6 || y > height + 6) continue;
 
-                var trimmed = lineStr.trim();
-                var firstChar = trimmed.charAt(0);
-
-                if (firstChar === '#' || (firstChar === '/' && trimmed.length > 1 && trimmed.charAt(1) === '/')) {
-                    ctx.fillStyle = comColor;
-                    var barW = Math.min(width - startX - 2, Math.max(4, trimmed.length * 0.7));
-                    ctx.fillRect(startX, y, barW, lineH);
-                } else if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
-                    ctx.fillStyle = strColor;
-                    var barW = Math.min(width - startX - 2, Math.max(4, trimmed.length * 0.7));
-                    ctx.fillRect(startX, y, barW, lineH);
-                } else {
-                    // Render multi-word token chunks for realistic code appearance
-                    var tokens = trimmed.split(/(\s+|[(),.:;={}[\]<>]+)/).filter(function(t) { return t.length > 0; });
-                    var curX = startX;
-
-                    for (var t = 0; t < tokens.length; t++) {
-                        var tok = tokens[t];
-                        if (tok.trim().length === 0) {
-                            curX += Math.max(2, tok.length * 1.2);
-                            continue;
-                        }
-
-                        if (tok === "def" || tok === "class" || tok === "function" || tok === "const" ||
-                            tok === "let" || tok === "var" || tok === "if" || tok === "else" ||
-                            tok === "for" || tok === "while" || tok === "return" || tok === "import" ||
-                            tok === "from" || tok === "export" || tok === "property" || tok === "Item" ||
-                            tok === "Rectangle") {
-                            ctx.fillStyle = kwColor;
-                        } else if (tok.startsWith('"') || tok.startsWith("'") || tok.startsWith('`')) {
-                            ctx.fillStyle = strColor;
-                        } else if (t + 1 < tokens.length && (tokens[t + 1] === "(" || tokens[t + 1] === ":")) {
-                            ctx.fillStyle = fnColor;
-                        } else {
-                            ctx.fillStyle = defaultColor;
-                        }
-
-                        var tokW = Math.min(width - curX - 2, Math.max(2, tok.length * 0.75));
-                        if (tokW > 0 && curX < width - 2) {
-                            ctx.fillRect(curX, y, tokW, lineH);
-                        }
-                        curX += tokW + 1.5;
-                        if (curX >= width - 2) break;
-                    }
-                }
+                var startX = Math.max(2, Math.min(maxDrawX - 10, lData.indent * root.charScale));
+                ctx.fillStyle = colors[lData.colorType] || defColor;
+                ctx.fillText(lData.text, startX, y);
             }
         }
     }
 
     Timer {
         id: paintDebounceTimer
-        interval: 60
+        interval: 16
         repeat: false
         onTriggered: minimapCanvas.requestPaint()
     }
 
-    onDocumentTextChanged: paintDebounceTimer.restart()
+    onScrollRatioChanged: paintDebounceTimer.restart()
+    onVisibleRatioChanged: paintDebounceTimer.restart()
     onWidthChanged: minimapCanvas.requestPaint()
     onHeightChanged: minimapCanvas.requestPaint()
-    Component.onCompleted: paintDebounceTimer.restart()
 
-    // Highlighted Viewport Box Indicator
+    // Viewport Range Indicator Box
     Rectangle {
         id: viewportBox
         x: 0
-        y: Math.max(0, Math.min(root.height - height, root.scrollRatio * (root.height - height)))
+        y: {
+            if (root.needsMinimapScroll) {
+                var availH = root.height - height;
+                return Math.max(0, Math.min(availH, root.scrollRatio * availH));
+            } else {
+                var docH = Math.min(root.height, root.totalMinimapDocHeight);
+                var availDocH = docH - height;
+                if (availDocH <= 0) return root.topOffset;
+                return root.topOffset + Math.max(0, Math.min(availDocH, root.scrollRatio * availDocH));
+            }
+        }
         width: parent.width
-        height: Math.max(16, Math.min(root.height, root.visibleRatio * root.height))
-        color: (typeof theme !== "undefined" && theme && theme.accentMuted) ? theme.accentMuted : "#3b82f615"
-        border.color: (typeof theme !== "undefined" && theme && theme.borderNormal) ? theme.borderNormal : "#3f3f46"
+        height: {
+            var totalH = root.needsMinimapScroll ? root.height : Math.min(root.height, root.totalMinimapDocHeight);
+            return Math.max(18, Math.min(totalH, root.visibleRatio * totalH));
+        }
+        color: (typeof theme !== "undefined" && theme && theme.accentMuted) ? theme.accentMuted : "#38bdf818"
+        border.color: (typeof theme !== "undefined" && theme && theme.accent) ? theme.accent : "#38bdf8"
         border.width: 1
-        opacity: mapArea.containsMouse || mapArea.pressed ? 0.85 : 0.45
+        opacity: mapArea.containsMouse || mapArea.pressed ? 0.9 : 0.55
 
         Behavior on opacity {
             NumberAnimation { duration: 80 }
@@ -147,12 +232,12 @@ Rectangle {
         }
 
         function updateScroll(mouseY) {
-            var halfBox = viewportBox.height / 2;
-            var availableH = root.height - viewportBox.height;
-            if (availableH <= 0) return;
+            var availH = root.height - viewportBox.height;
+            if (availH <= 0) return;
 
+            var halfBox = viewportBox.height / 2;
             var targetY = mouseY - halfBox;
-            var ratio = Math.max(0.0, Math.min(1.0, targetY / availableH));
+            var ratio = Math.max(0.0, Math.min(1.0, targetY / availH));
             root.scrollRequested(ratio);
         }
     }

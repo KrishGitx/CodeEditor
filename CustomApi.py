@@ -74,14 +74,60 @@ class ChatGPTClient:
             if not p or p.is_closed():
                 return
             try:
+                # 1. Detect #mobile-auth-dialog or auth/login modal and click its Close button
+                dialog = p.locator('#mobile-auth-dialog, [data-testid="auth-dialog"]').first
+                if dialog.count() > 0 and dialog.is_visible():
+                    print("[CustomApi] ChatGPT auth dialog detected — closing popup")
+                    closed = False
+                    try:
+                        close_btn = dialog.locator('button[aria-label="Close"], button[aria-label="close"]').first
+                        if close_btn.count() > 0 and close_btn.is_visible():
+                            close_btn.click(timeout=1500)
+                            closed = True
+                        else:
+                            close_btn_alt = p.locator('#mobile-auth-dialog button[aria-label="Close"], #mobile-auth-dialog [aria-label="Close"]').first
+                            if close_btn_alt.count() > 0 and close_btn_alt.is_visible():
+                                close_btn_alt.click(timeout=1500)
+                                closed = True
+                    except Exception as close_err:
+                        print(f"[CustomApi] Failed to close ChatGPT auth dialog: {close_err}")
+
+                    if closed:
+                        try:
+                            dialog.wait_for(state="hidden", timeout=3000)
+                            print("[CustomApi] ChatGPT auth dialog closed — continuing request")
+                        except Exception:
+                            if dialog.count() > 0 and dialog.is_visible():
+                                print("[CustomApi] Failed to close ChatGPT auth dialog")
+                            else:
+                                print("[CustomApi] ChatGPT auth dialog closed — continuing request")
+                        time.sleep(0.2)
+                    else:
+                        print("[CustomApi] Failed to close ChatGPT auth dialog")
+
+                # 2. Dismiss 'Stay logged out' button if present
                 stay_logged_out = p.locator('a[href="#"], button', has_text="Stay logged out")
-                if stay_logged_out.count() > 0:
-                    stay_logged_out.first.click(timeout=1500)
+                if stay_logged_out.count() > 0 and stay_logged_out.first.is_visible():
+                    stay_logged_out.first.click(timeout=1000)
+                    time.sleep(0.2)
             except Exception:
                 pass
 
+        def is_auth_dialog_blocking(p):
+            if not p or p.is_closed():
+                return False
+            try:
+                dialog = p.locator('#mobile-auth-dialog, [data-testid="auth-dialog"]').first
+                if dialog.count() > 0 and dialog.is_visible():
+                    return True
+            except Exception:
+                pass
+            return False
+
         def get_active_textbox(p):
             dismiss_modals(p)
+            if is_auth_dialog_blocking(p):
+                return None
             selectors = [
                 '#prompt-textarea',
                 'div[contenteditable="true"]',
@@ -98,9 +144,12 @@ class ChatGPTClient:
                 except Exception:
                     continue
             try:
-                return p.get_by_role("textbox").first
+                tb = p.get_by_role("textbox").first
+                if tb.count() > 0 and tb.is_visible():
+                    return tb
             except Exception:
-                return None
+                pass
+            return None
 
         # Main task loop on dedicated thread
         while True:
@@ -142,16 +191,31 @@ class ChatGPTClient:
                     # Locate active textbox
                     textbox = None
                     for _ in range(25):
+                        dismiss_modals(page)
                         textbox = get_active_textbox(page)
                         if textbox:
                             break
-                        time.sleep(0.3)
+                        time.sleep(0.2)
 
                     if not textbox:
                         raise RuntimeError("Chat input textbox not found or busy.")
 
+                    # Track count of existing assistant messages before sending new prompt
+                    try:
+                        initial_assistant_count = page.locator('[data-message-role="assistant"], [data-message-author-role="assistant"]').count()
+                    except Exception:
+                        initial_assistant_count = 0
+
                     # Enter prompt
-                    textbox.click()
+                    try:
+                        textbox.click(timeout=3000)
+                    except Exception as click_err:
+                        dismiss_modals(page)
+                        try:
+                            textbox.click(timeout=3000)
+                        except Exception:
+                            raise click_err
+
                     try:
                         textbox.fill(prompt)
                     except Exception:
@@ -181,7 +245,7 @@ class ChatGPTClient:
 
                         messages = page.locator('[data-message-role="assistant"], [data-message-author-role="assistant"]')
                         count = messages.count()
-                        if count <= 0:
+                        if count <= initial_assistant_count:
                             continue
 
                         res = messages.nth(count - 1)
@@ -254,6 +318,10 @@ class ChatGPTClient:
                     final_resp = full_response or previous
                     if final_resp:
                         final_resp = re.sub(r'^\s*Chat\s*GPT\s*said:?\s*', '', final_resp, flags=re.IGNORECASE)
+
+                    if not final_resp:
+                        raise RuntimeError("No response returned from ChatGPT service.")
+
                     result_holder["response"] = final_resp
 
             except Exception as e:

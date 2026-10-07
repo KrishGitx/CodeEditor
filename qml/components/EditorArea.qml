@@ -12,16 +12,26 @@ Item {
     ListModel {
         id: tabModel
     }
+    property alias tabModel: tabModel
 
     property int activeTabIndex: -1
     property alias tabCount: tabModel.count
-    readonly property var currentTab: (activeTabIndex >= 0 && tabModel.count > activeTabIndex) ? tabModel.get(activeTabIndex) : null
+    property int dirtyVersion: 0
+    readonly property var currentTab: {
+        var _ = dirtyVersion;
+        return (activeTabIndex >= 0 && tabModel.count > activeTabIndex) ? tabModel.get(activeTabIndex) : null;
+    }
     property string activeFilePath: currentTab ? (currentTab.path || "") : ""
     property string activeFileName: currentTab ? (currentTab.title || "") : ""
-    property bool isCurrentFileDirty: currentTab ? (currentTab.isDirty || false) : false
+    readonly property bool isCurrentFileDirty: {
+        var _ = dirtyVersion;
+        return (currentTab && currentTab.isDirty === true);
+    }
     property string currentLanguage: currentTab ? (currentTab.languageName || "Plain Text") : "Plain Text"
     property string currentLanguageId: currentTab ? (currentTab.languageId || "text") : "text"
     property var extraCursors: [] // Array of character indices for Multi-Cursor editing
+    property var multiCursorUndoStack: []
+    property var multiCursorRedoStack: []
     property bool copiedWholeLine: false
     property string clipboardWholeLineText: ""
     property var activeSnippetStops: []
@@ -37,6 +47,7 @@ Item {
         sequence: "Ctrl+G"
         onActivated: quickOpenPalette.openGotoLine(root.cursorLine)
     }
+    
 
     Shortcut {
         sequence: "F2"
@@ -57,6 +68,51 @@ Item {
         onActivated: root.toggleSplitEditor()
     }
 
+    function getActiveEditorContent() {
+        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
+            return root.activeEditorPane.codeTextArea.text;
+        }
+        if (root.currentTab) {
+            return root.currentTab.content || "";
+        }
+        return "";
+    }
+    function setActiveEditorContent(val) {
+        if (root.currentTab) {
+            root.currentTab.content = val;
+            tabModel.setProperty(root.activeTabIndex, "content", val);
+        }
+        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
+            root.activeEditorPane.codeTextArea.text = val;
+        }
+    }
+    function dispatchEditorKey(key, modifiers, text) {
+        if (root.activeEditorPane && root.activeEditorPane.handleEditorKey) {
+            var ev = {
+                key: key,
+                modifiers: modifiers !== undefined ? modifiers : Qt.NoModifier,
+                text: text || "",
+                accepted: false
+            };
+            root.activeEditorPane.handleEditorKey(ev);
+            return ev.accepted;
+        }
+        return false;
+    }
+
+    function setActiveEditorCursorPosition(pos) {
+        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
+            root.activeEditorPane.codeTextArea.cursorPosition = pos;
+        }
+    }
+
+    function setEditorZoom(newSize) {
+        if (typeof theme !== "undefined" && theme) {
+            theme.editorFontSize = newSize;
+        }
+    }
+
+    property bool isSyncingSecondary: false
     property bool isFormatting: false
     property int formatRequestSeq: 0
     property string activeFormatReqId: ""
@@ -100,7 +156,13 @@ Item {
             var oldScrollX = editorFlickable ? editorFlickable.contentX : 0;
             var oldScrollY = editorFlickable ? editorFlickable.contentY : 0;
 
-            codeTextArea.text = formattedText;
+            var applied = false;
+            if (typeof backend !== "undefined" && backend && backend.apply_formatted_text) {
+                applied = backend.apply_formatted_text(codeTextArea, formattedText);
+            }
+            if (!applied) {
+                codeTextArea.text = formattedText;
+            }
 
             // Mark document dirty
             if (root.activeTabIndex >= 0 && root.activeTabIndex < tabModel.count) {
@@ -424,7 +486,8 @@ Item {
                 }
             }
         }
-
+        
+     
         // 3. Build Continuous Logical Guide Segments
         var segments = [];
         var maxIndentObserved = 0;
@@ -537,6 +600,7 @@ Item {
     signal requestRunFile()
 
     signal askAi(string code, int selectionStart, int selectionEnd, string languageId)
+    signal sendAiPrompt(string prompt)
 
     property string pendingAiCode: ""
     property int pendingAiStart: -1
@@ -615,6 +679,30 @@ Item {
                 root.closeTab(index);
             }
 
+            onCloseOtherTabsRequested: function(index) {
+                root.closeOtherTabs(index);
+            }
+
+            onCloseTabsToTheRightRequested: function(index) {
+                root.closeTabsToTheRight(index);
+            }
+
+            onCloseAllTabsRequested: function() {
+                root.closeAllTabs();
+            }
+
+            onCloseSavedTabsRequested: function() {
+                root.closeSavedTabs();
+            }
+
+            onCopyTabPathRequested: function(index) {
+                root.copyTabPath(index);
+            }
+
+            onRevealTabInExplorerRequested: function(index) {
+                root.revealTabInExplorer(index);
+            }
+
             onNewTabRequested: function() {
                 root.createNewFile();
             }
@@ -687,6 +775,15 @@ Item {
                                     delegate: Item {
                                         id: tabPane
                                         property int index: (typeof model !== "undefined" && typeof model.index !== "undefined") ? model.index : (typeof index !== "undefined" ? index : 0)
+                                        property string savedContent: (typeof model !== "undefined" && model && model.path) ? (model.content || "") : ""
+                                        property bool isUntitled: (typeof model !== "undefined" && model) ? (!model.path || model.path === "") : true
+                                        property string tabKey: (typeof model !== "undefined" && model) ? (model.path || model.fileId || ("tab_" + index)) : ("tab_" + index)
+                                        property int windowStartLine: 0
+                                        property int windowEndLine: 0
+                                        property bool isVirtualized: paneTotalLineCount > 800
+                                        property int paneTotalLineCount: (typeof backend !== "undefined" && backend && backend.get_backing_total_lines) ? backend.get_backing_total_lines(tabPane.tabKey) : (codeTextArea ? Math.max(1, codeTextArea.lineCount) : 1)
+                                        property bool isShifting: false
+                                        property int pendingScrollbarTargetLine: -1
                                         property alias gutter: gutter
                                         property alias gutterFlickable: gutterFlickable
                                         property alias textAreaContainer: textAreaContainer
@@ -694,14 +791,382 @@ Item {
                                         property alias editorFlickable: editorFlickable
                                         property alias codeTextArea: codeTextArea
                                         property alias currentLineHighlight: currentLineHighlight
-                                        property int paneTotalLineCount: countLines(codeTextArea.text)
                                         property var paneScopeRanges: []
                                         property var paneGuideSegments: []
+                                        property int paneFontSize: 13
+                                        property real paneCharWidth: 7.8
+                                        property real paneLineHeight: 18.0
+                                        property real lastKnownLineHeight: 18.0
+
+                                        Component.onCompleted: {
+                                            if (typeof theme !== "undefined" && theme && theme.editorFontSize) {
+                                                paneFontSize = theme.editorFontSize;
+                                            }
+                                            paneCharWidth = root.charWidth > 0 ? root.charWidth : 7.8;
+                                            paneLineHeight = root.editorLineHeight > 0 ? root.editorLineHeight : 18.0;
+                                            lastKnownLineHeight = paneLineHeight;
+                                            if (typeof backend !== "undefined" && backend && backend.get_backing_total_lines) {
+                                                paneTotalLineCount = backend.get_backing_total_lines(tabKey);
+                                                if (paneTotalLineCount > 800) {
+                                                    checkAndShiftWindow(true, "init");
+                                                }
+                                            }
+                                        }
+
+                                        function checkAndShiftWindow(force, reason) {
+                                            if (!isVirtualized || isShifting || typeof backend === "undefined" || !backend || !backend.get_backing_slice) return;
+                                            
+                                            var viewTop = editorFlickable.contentY;
+                                            var lineH = paneLineHeight > 0 ? paneLineHeight : 18.0;
+                                            var viewCenterLine = (pendingScrollbarTargetLine >= 0) ? pendingScrollbarTargetLine : Math.max(0, Math.floor((viewTop + editorFlickable.height * 0.5) / lineH));
+                                            
+                                            var bufferThreshold = 180;
+                                            var needsShift = (force === true) || (viewCenterLine < windowStartLine + bufferThreshold) || (viewCenterLine > windowEndLine - bufferThreshold);
+                                            
+                                            if (needsShift) {
+                                                var halfWindow = 400;
+                                                var newStart = Math.max(0, viewCenterLine - halfWindow);
+                                                var newEnd = Math.min(paneTotalLineCount - 1, newStart + 800);
+                                                newStart = Math.max(0, newEnd - 800);
+                                                
+                                                if (newStart === windowStartLine && newEnd === windowEndLine && !force) return;
+                                                
+                                                var sliceObj = backend.get_backing_slice(tabKey, newStart, newEnd);
+                                                if (sliceObj && sliceObj.text !== undefined) {
+                                                    isShifting = true;
+                                                    var viewStart = Math.max(0, Math.floor(viewTop / lineH));
+                                                    var viewEnd = viewStart + Math.ceil(editorFlickable.height / lineH);
+                                                    console.log("[Virtualization Shift]", "reason:", reason || "wheel",
+                                                        "globalTotalLines:", paneTotalLineCount,
+                                                        "window:", (windowStartLine + 1) + ".." + (windowEndLine + 1), "->", (sliceObj.startLine + 1) + ".." + (sliceObj.endLine + 1),
+                                                        "viewport:", viewStart + ".." + viewEnd,
+                                                        "contentY:", Math.round(viewTop), "contentHeight:", Math.round(editorFlickable.contentHeight),
+                                                        "flickWidth:", editorFlickable.width,
+                                                        "matX:", materializedEditorContainer.x, "matW:", materializedEditorContainer.width,
+                                                        "codeX:", codeTextArea.x, "codeW:", codeTextArea.width,
+                                                        "gutterW:", gutter.width);
+                                                    
+                                                    var oldScrollY = editorFlickable.contentY;
+                                                    var oldScrollX = editorFlickable.contentX;
+                                                    var globalLine = root.cursorLine;
+                                                    var globalCol = root.cursorColumn;
+                                                    
+                                                    root.isRestoringTab = true;
+                                                    try {
+                                                        windowStartLine = sliceObj.startLine;
+                                                        windowEndLine = sliceObj.endLine;
+                                                        codeTextArea.text = sliceObj.text;
+                                                        
+                                                        if (globalLine >= windowStartLine + 1 && globalLine <= windowEndLine + 1) {
+                                                            var localLine = globalLine - windowStartLine;
+                                                            var localLines = sliceObj.text.split("\n");
+                                                            var targetLine = Math.min(localLine, localLines.length);
+                                                            var charPos = 0;
+                                                            for (var l = 0; l < targetLine - 1; l++) {
+                                                                charPos += localLines[l].length + 1;
+                                                            }
+                                                            if (targetLine - 1 < localLines.length) {
+                                                                charPos += Math.min(globalCol - 1, localLines[targetLine - 1].length);
+                                                            }
+                                                            codeTextArea.cursorPosition = Math.min(charPos, sliceObj.text.length);
+                                                        }
+
+                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
+                                                        if (tabPane.index === root.activeTabIndex) {
+                                                            indentGuidesCanvas.requestPaint();
+                                                        }
+                                                    } finally {
+                                                        root.isRestoringTab = false;
+                                                    }
+                                                    
+                                                    editorFlickable.contentY = oldScrollY;
+                                                    editorFlickable.contentX = oldScrollX;
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                            }
+                                                var newStart = Math.max(0, viewCenterLine - halfWindow);
+                                                var newEnd = Math.min(paneTotalLineCount - 1, newStart + 800);
+                                                newStart = Math.max(0, newEnd - 800);
+                                                
+                                                if (newStart === windowStartLine && newEnd === windowEndLine && !force) return;
+                                                
+                                                var sliceObj = backend.get_backing_slice(tabKey, newStart, newEnd);
+                                                if (sliceObj && sliceObj.text !== undefined) {
+                                                    isShifting = true;
+                                                    var viewStart = Math.max(0, Math.floor(viewTop / lineH));
+                                                    var viewEnd = viewStart + Math.ceil(editorFlickable.height / lineH);
+                                                    console.log("[Virtualization Shift]", "reason:", reason || "wheel",
+                                                        "globalTotalLines:", paneTotalLineCount,
+                                                        "window:", (windowStartLine + 1) + ".." + (windowEndLine + 1), "->", (sliceObj.startLine + 1) + ".." + (sliceObj.endLine + 1),
+                                                        "viewport:", viewStart + ".." + viewEnd,
+                                                        "contentY:", Math.round(viewTop), "contentHeight:", Math.round(editorFlickable.contentHeight),
+                                                        "flickWidth:", editorFlickable.width,
+                                                        "matX:", materializedEditorContainer.x, "matW:", materializedEditorContainer.width,
+                                                        "codeX:", codeTextArea.x, "codeW:", codeTextArea.width,
+                                                        "gutterW:", gutter.width);
+                                                    
+                                                    var oldScrollY = editorFlickable.contentY;
+                                                    var oldScrollX = editorFlickable.contentX;
+                                                    var globalLine = root.cursorLine;
+                                                    var globalCol = root.cursorColumn;
+                                                    
+                                                    root.isRestoringTab = true;
+                                                    try {
+                                                        windowStartLine = sliceObj.startLine;
+                                                        windowEndLine = sliceObj.endLine;
+                                                        codeTextArea.text = sliceObj.text;
+                                                        
+                                                        if (globalLine >= windowStartLine + 1 && globalLine <= windowEndLine + 1) {
+                                                            var localLine = globalLine - windowStartLine;
+                                                            var localLines = sliceObj.text.split("\n");
+                                                            var targetLine = Math.min(localLine, localLines.length);
+                                                            var charPos = 0;
+                                                            for (var l = 0; l < targetLine - 1; l++) {
+                                                                charPos += localLines[l].length + 1;
+                                                            }
+                                                            if (targetLine - 1 < localLines.length) {
+                                                                charPos += Math.min(globalCol - 1, localLines[targetLine - 1].length);
+                                                            }
+                                                            codeTextArea.cursorPosition = Math.min(charPos, sliceObj.text.length);
+                                                        }
+
+                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
+                                                        if (tabPane.index === root.activeTabIndex) {
+                                                            indentGuidesCanvas.requestPaint();
+                                                        }
+                                                    } finally {
+                                                        root.isRestoringTab = false;
+                                                    }
+                                                    
+                                                    editorFlickable.contentY = oldScrollY;
+                                                    editorFlickable.contentX = oldScrollX;
+                                                    isShifting = false;
+                                                }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                                    isShifting = false;
+                                                }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                            }
+                                        }
+
+                                        function syncFontMetricsAndGeometry() {
+                                            var oldLineH = lastKnownLineHeight > 0 ? lastKnownLineHeight : (paneLineHeight > 0 ? paneLineHeight : 18.0);
+                                            var newLineH = root.editorLineHeight > 0 ? root.editorLineHeight : 18.0;
+                                            var newCharW = root.charWidth > 0 ? root.charWidth : 7.8;
+                                            var newFontSize = (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13;
+
+                                            tabPane.paneFontSize = newFontSize;
+                                            tabPane.paneCharWidth = newCharW;
+                                            tabPane.paneLineHeight = newLineH;
+                                            lastKnownLineHeight = newLineH;
+
+                                            if (editorFlickable && oldLineH > 0 && newLineH > 0 && Math.abs(newLineH - oldLineH) > 0.01) {
+                                                var ratio = newLineH / oldLineH;
+                                                var newY = editorFlickable.contentY * ratio;
+                                                var maxY = Math.max(0, editorFlickable.contentHeight - editorFlickable.height);
+                                                editorFlickable.contentY = Math.max(0, Math.min(maxY, newY));
+                                            }
+
+                                            if (tabPane.isVirtualized) {
+                                                tabPane.checkAndShiftWindow(true, "zoom");
+                                            }
+                                            if (indentGuidesCanvas) {
+                                                indentGuidesCanvas.requestPaint();
+                                            }
+                                        }
+
+                                        Connections {
+                                            target: (typeof theme !== "undefined" && theme) ? theme : null
+                                            function onEditorFontSizeChanged() {
+                                                if (tabPane.index === root.activeTabIndex) {
+                                                    tabPane.syncFontMetricsAndGeometry();
+                                                }
+                                            }
+                                        }
+
+                                        Connections {
+                                            target: root
+                                            function onCharWidthChanged() {
+                                                if (tabPane.index === root.activeTabIndex) {
+                                                    tabPane.paneCharWidth = root.charWidth;
+                                                }
+                                            }
+                                            function onEditorLineHeightChanged() {
+                                                if (tabPane.index === root.activeTabIndex) {
+                                                    tabPane.syncFontMetricsAndGeometry();
+                                                }
+                                            }
+                                            function onActiveTabIndexChanged() {
+                                                if (tabPane.index === root.activeTabIndex) {
+                                                    tabPane.syncFontMetricsAndGeometry();
+                                                }
+                                            }
+                                        }
+
+                                        function handleEditorKey(event) {
+                                            if (codeTextArea && codeTextArea.handleKeyPressInternal) {
+                                                return codeTextArea.handleKeyPressInternal(event);
+                                            }
+                                        }
 
                                         function updatePaneScopes() {
                                             paneScopeRanges = root.computeScopesForText(codeTextArea.text);
                                             paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
-                                            indentGuidesCanvas.requestPaint();
+                                            if (tabPane.index === root.activeTabIndex) {
+                                                indentGuidesCanvas.requestPaint();
+                                            }
                                         }
 
                                         RowLayout {
@@ -711,14 +1176,17 @@ Item {
                                             // Line Numbers Gutter (Virtualized for high performance on large files)
                                             Rectangle {
                                                 id: gutter
+                                                Layout.fillWidth: false
                                                 Layout.preferredWidth: Math.max(48, (tabPane.paneTotalLineCount.toString().length * 8 + 30))
+                                                Layout.minimumWidth: Layout.preferredWidth
+                                                Layout.maximumWidth: Layout.preferredWidth
                                                 Layout.fillHeight: true
                                                 color: theme ? theme.bgPanel : "#181818"
                                                 visible: theme ? theme.enableLineNumbers : true
                                                 clip: true
 
-                                                readonly property int visibleStartLine: Math.max(0, Math.floor(gutterFlickable.contentY / root.editorLineHeight))
-                                                readonly property int visibleLineCount: Math.min(tabPane.paneTotalLineCount - visibleStartLine, Math.ceil(gutter.height / root.editorLineHeight) + 12)
+                                                readonly property int visibleStartLine: Math.max(0, Math.floor(gutterFlickable.contentY / tabPane.paneLineHeight))
+                                                readonly property int visibleLineCount: Math.min(tabPane.paneTotalLineCount - visibleStartLine, Math.ceil(gutter.height / tabPane.paneLineHeight) + 12)
 
                                                 Flickable {
                                                     id: gutterFlickable
@@ -730,7 +1198,7 @@ Item {
 
                                                     Item {
                                                         width: gutter.width
-                                                        height: Math.max(gutterFlickable.height, tabPane.paneTotalLineCount * root.editorLineHeight + codeTextArea.topPadding + codeTextArea.bottomPadding)
+                                                        height: Math.max(gutterFlickable.height, tabPane.paneTotalLineCount * tabPane.paneLineHeight + codeTextArea.topPadding + codeTextArea.bottomPadding)
 
                                                         Repeater {
                                                             model: gutter.visibleLineCount > 0 ? gutter.visibleLineCount : 0
@@ -738,8 +1206,8 @@ Item {
                                                             delegate: Item {
                                                                 readonly property int lineNum: gutter.visibleStartLine + index + 1
                                                                 width: gutter.width
-                                                                height: root.editorLineHeight
-                                                                y: (lineNum - 1) * root.editorLineHeight + codeTextArea.topPadding
+                                                                height: tabPane.paneLineHeight
+                                                                y: (lineNum - 1) * tabPane.paneLineHeight + codeTextArea.topPadding
 
                                                                 // Code fold chevron
                                                                 Text {
@@ -771,7 +1239,7 @@ Item {
                                                                     anchors.rightMargin: 10
                                                                     anchors.verticalCenter: parent.verticalCenter
                                                                     text: lineNum.toString()
-                                                                    font.pixelSize: codeTextArea.font.pixelSize
+                                                                    font.pixelSize: tabPane.paneFontSize
                                                                     font.family: codeTextArea.font.family
                                                                     color: (lineNum === root.cursorLine && tabPane.index === root.activeTabIndex) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
                                                                 }
@@ -799,7 +1267,11 @@ Item {
                                                         id: canvasScrollTimer
                                                         interval: 16
                                                         repeat: false
-                                                        onTriggered: indentGuidesCanvas.requestPaint()
+                                                        onTriggered: {
+                                                            if (tabPane.index === root.activeTabIndex) {
+                                                                indentGuidesCanvas.requestPaint();
+                                                            }
+                                                        }
                                                     }
 
                                                     Connections {
@@ -810,15 +1282,19 @@ Item {
 
                                                     Timer {
                                                         id: canvasDebounceTimer
-                                                        interval: 60
+                                                        interval: 350
                                                         repeat: false
                                                         onTriggered: {
                                                             if (codeTextArea) {
-                                                                tabPane.paneTotalLineCount = codeTextArea.lineCount > 0 ? codeTextArea.lineCount : countLines(codeTextArea.text);
+                                                                if (!tabPane.isVirtualized) {
+                                                                    tabPane.paneTotalLineCount = Math.max(1, codeTextArea.lineCount);
+                                                                }
                                                                 tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
                                                                 tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
                                                             }
-                                                            indentGuidesCanvas.requestPaint();
+                                                            if (tabPane.index === root.activeTabIndex) {
+                                                                canvasScrollTimer.restart();
+                                                            }
                                                         }
                                                     }
 
@@ -829,17 +1305,27 @@ Item {
 
                                                     Connections {
                                                         target: root
-                                                        function onActiveTabIndexChanged() { indentGuidesCanvas.requestPaint(); }
-                                                        function onCharWidthChanged() { indentGuidesCanvas.requestPaint(); }
-                                                        function onEditorLineHeightChanged() { indentGuidesCanvas.requestPaint(); }
-                                                        function onCachedIndentLevelWidthsChanged() { indentGuidesCanvas.requestPaint(); }
+                                                        function onActiveTabIndexChanged() {
+                                                            if (tabPane.index === root.activeTabIndex) canvasScrollTimer.restart();
+                                                        }
+                                                        function onCharWidthChanged() {
+                                                            if (tabPane.index === root.activeTabIndex) canvasScrollTimer.restart();
+                                                        }
+                                                        function onEditorLineHeightChanged() {
+                                                            if (tabPane.index === root.activeTabIndex) canvasScrollTimer.restart();
+                                                        }
+                                                        function onCachedIndentLevelWidthsChanged() {
+                                                            if (tabPane.index === root.activeTabIndex) canvasScrollTimer.restart();
+                                                        }
                                                     }
 
                                                     onPaint: {
+                                                        if (tabPane.index !== root.activeTabIndex) return;
                                                         var ctx = getContext("2d");
                                                         ctx.clearRect(0, 0, width, height);
-                                                        var doc = codeTextArea.text;
-                                                        if (!doc) return;
+
+                                                        var segments = tabPane.paneGuideSegments;
+                                                        if (!segments || segments.length === 0) return;
 
                                                         var leftPadding = codeTextArea.leftPadding - editorFlickable.contentX;
                                                         var topPadding = codeTextArea.topPadding;
@@ -851,19 +1337,16 @@ Item {
                                                         var visibleStartLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
                                                         var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
 
-                                                        var segments = tabPane.paneGuideSegments;
-                                                        if (!segments || segments.length === 0) {
-                                                            segments = root.computeGuideSegmentsForText(doc);
-                                                            tabPane.paneGuideSegments = segments;
-                                                        }
-
                                                         ctx.lineWidth = 1;
                                                         ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d";
                                                         ctx.globalAlpha = 0.35;
 
                                                         for (var i = 0; i < segments.length; i++) {
                                                             var seg = segments[i];
-                                                            if (seg.endLine < visibleStartLine || seg.startLine > visibleEndLine) continue;
+                                                            var globalStart = tabPane.isVirtualized ? (tabPane.windowStartLine + seg.startLine) : seg.startLine;
+                                                            var globalEnd = tabPane.isVirtualized ? (tabPane.windowStartLine + seg.endLine) : seg.endLine;
+
+                                                            if (globalEnd < visibleStartLine || globalStart > visibleEndLine) continue;
 
                                                             var lvl = seg.level;
                                                             var lvlWidth = (lvl < cachedWidths.length) ? cachedWidths[lvl] : (lvl * cachedWidths[1]);
@@ -872,8 +1355,8 @@ Item {
 
                                                             if (drawX < -20 || drawX > width + 20) continue;
 
-                                                            var yStart = topPadding + (seg.startLine * lineH) - viewTop;
-                                                            var yEnd = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
+                                                            var yStart = topPadding + (globalStart * lineH) - viewTop;
+                                                            var yEnd = seg.hasClosingBrace ? (topPadding + (globalEnd * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((globalEnd + 1) * lineH) - viewTop);
 
                                                             ctx.beginPath();
                                                             ctx.moveTo(drawX, yStart);
@@ -889,12 +1372,66 @@ Item {
 
                                                 Flickable {
                                                     id: editorFlickable
+                                                    objectName: "editorFlickable"
                                                     anchors.fill: parent
                                                     interactive: false
                                                     clip: true
                                                     boundsBehavior: Flickable.StopAtBounds
                                                     contentWidth: (theme && theme.enableWordWrap) ? width : Math.max(width, codeTextArea.contentWidth + codeTextArea.leftPadding + codeTextArea.rightPadding + 80)
-                                                    contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, codeTextArea.contentHeight + codeTextArea.topPadding + codeTextArea.bottomPadding + 220) : Math.max(height, tabPane.paneTotalLineCount * root.editorLineHeight + 220)
+                                                    contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, codeTextArea.contentHeight + codeTextArea.topPadding + codeTextArea.bottomPadding + 220) : Math.max(height, tabPane.paneTotalLineCount * tabPane.paneLineHeight + 220)
+
+                                                    Timer {
+                                                        id: windowShiftDebounceTimer
+                                                        interval: 25
+                                                        repeat: false
+                                                        onTriggered: {
+                                                            if (tabPane.isVirtualized) {
+                                                                tabPane.checkAndShiftWindow(false, "wheel");
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Timer {
+                                                        id: scrollbarDragEndTimer
+                                                        interval: 35
+                                                        repeat: false
+                                                        onTriggered: {
+                                                            if (tabPane.isVirtualized) {
+                                                                tabPane.checkAndShiftWindow(true, "scrollbar");
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Timer {
+                                                        id: visibleRangeDebounceTimer
+                                                        interval: 100
+                                                        repeat: false
+                                                        onTriggered: {
+                                                            if (tabPane.index === root.activeTabIndex && typeof backend !== "undefined" && backend && backend.update_visible_range) {
+                                                                var lineH = tabPane.paneLineHeight > 0 ? tabPane.paneLineHeight : 18;
+                                                                var sLine = Math.max(0, Math.floor(editorFlickable.contentY / lineH));
+                                                                var eLine = sLine + Math.ceil(editorFlickable.height / lineH) + 4;
+                                                                backend.update_visible_range(sLine, eLine);
+                                                            }
+                                                        }
+                                                    }
+
+                                                    onContentYChanged: {
+                                                        visibleRangeDebounceTimer.restart();
+                                                        if (tabPane.isVirtualized) {
+                                                            if (vScrollBar && vScrollBar.pressed) {
+                                                                scrollbarDragEndTimer.restart();
+                                                            } else {
+                                                                var lineH = paneLineHeight > 0 ? paneLineHeight : 18.0;
+                                                                var vCenter = Math.floor((editorFlickable.contentY + editorFlickable.height * 0.5) / lineH);
+                                                                if (vCenter < tabPane.windowStartLine + 100 || vCenter > tabPane.windowEndLine - 100) {
+                                                                    tabPane.checkAndShiftWindow(false, "wheel_fast");
+                                                                } else {
+                                                                    windowShiftDebounceTimer.restart();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
 
                                                     WheelHandler {
                                                         target: editorFlickable
@@ -904,7 +1441,7 @@ Item {
                                                             var delta = event.angleDelta.y;
                                                             if (delta === 0) return;
                                                             var lines = delta / 120.0;
-                                                            var step = lines * root.editorLineHeight * 3.0;
+                                                            var step = lines * tabPane.paneLineHeight * 3.0;
                                                             var maxY = Math.max(0, editorFlickable.contentHeight - editorFlickable.height);
                                                             editorFlickable.contentY = Math.max(0, Math.min(maxY, editorFlickable.contentY - step));
                                                         }
@@ -917,6 +1454,28 @@ Item {
                                                         onTriggered: {
                                                             if (typeof theme !== "undefined" && theme) {
                                                                 theme.saveSettings();
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Timer {
+                                                        id: zoomCoalesceTimer
+                                                        interval: 35
+                                                        repeat: false
+                                                        onTriggered: {
+                                                            if (typeof theme === "undefined" || !theme || theme.enableMouseWheelZoom === false) return;
+                                                            if (Math.abs(zoomWheelHandler.deltaAccumulator) >= 60) {
+                                                                var steps = Math.round(zoomWheelHandler.deltaAccumulator / 120.0);
+                                                                if (steps === 0) steps = (zoomWheelHandler.deltaAccumulator > 0) ? 1 : -1;
+                                                                zoomWheelHandler.deltaAccumulator = 0.0;
+                                                                var currentSize = theme.editorFontSize;
+                                                                var newSize = Math.max(8, Math.min(48, currentSize + steps));
+                                                                if (newSize !== currentSize) {
+                                                                    theme.editorFontSize = newSize;
+                                                                    saveZoomTimer.restart();
+                                                                }
+                                                            } else {
+                                                                zoomWheelHandler.deltaAccumulator = 0.0;
                                                             }
                                                         }
                                                     }
@@ -934,23 +1493,10 @@ Item {
                                                             var delta = event.angleDelta.y;
                                                             if (delta === 0) return;
 
-                                                            deltaAccumulator += delta;
-                                                            if (Math.abs(deltaAccumulator) >= 120) {
-                                                                var step = (deltaAccumulator > 0) ? 1 : -1;
-                                                                deltaAccumulator = 0.0;
-
-                                                                var currentSize = theme.editorFontSize;
-                                                                var newSize = Math.max(8, Math.min(48, currentSize + step));
-                                                                if (newSize === currentSize) return;
-
-                                                                // Change font size only - let Qt handle layout & viewport naturally
-                                                                theme.editorFontSize = newSize;
-
-                                                                if (indentGuidesCanvas) indentGuidesCanvas.requestPaint();
-                                                                saveZoomTimer.restart();
-                                                            }
-                                                        }
-                                                    }
+                                                             deltaAccumulator += delta;
+                                                             zoomCoalesceTimer.restart();
+                                                         }
+                                                     }
 
                                                     WheelHandler {
                                                         target: editorFlickable
@@ -970,6 +1516,13 @@ Item {
                                                         policy: ScrollBar.AsNeeded
                                                         width: 10
                                                         active: true
+
+                                                        onPressedChanged: {
+                                                            if (!pressed && tabPane.isVirtualized) {
+                                                                scrollbarDragEndTimer.stop();
+                                                                tabPane.checkAndShiftWindow(true, "scrollbar_release");
+                                                            }
+                                                        }
                                                     }
 
                                                     ScrollBar.horizontal: ScrollBar {
@@ -983,51 +1536,60 @@ Item {
                                                     Rectangle {
                                                         id: currentLineHighlight
                                                         x: 0
-                                                        y: (root.cursorLine - 1) * root.editorLineHeight + codeTextArea.topPadding
+                                                        y: (root.cursorLine - 1) * tabPane.paneLineHeight + codeTextArea.topPadding
                                                         width: Math.max(editorFlickable.contentWidth, editorFlickable.width)
-                                                        height: root.editorLineHeight
+                                                        height: tabPane.paneLineHeight
                                                         color: (theme && theme.synCurrentLine) ? theme.synCurrentLine : "#282828"
                                                         opacity: 0.35
                                                         z: 0
                                                         visible: codeTextArea.cursorRectangle.height > 0 && tabPane.index === root.activeTabIndex
                                                     }
 
-                                                    TextArea {
-                                                        id: codeTextArea
-                                                        objectName: "codeTextArea"
-                                                        z: 1
+                                                    Item {
+                                                        id: materializedEditorContainer
+                                                        x: 0
+                                                        y: tabPane.isVirtualized ? (tabPane.windowStartLine * tabPane.paneLineHeight) : 0
                                                         width: (theme && theme.enableWordWrap) ? editorFlickable.width : editorFlickable.contentWidth
-                                                        height: editorFlickable.contentHeight
-                                                        topPadding: 6
-                                                        bottomPadding: 16
-                                                        leftPadding: 10
-                                                        rightPadding: 24
-                                                        wrapMode: (theme && theme.enableWordWrap) ? TextArea.WrapAtWordBoundaryOrAnywhere : TextArea.NoWrap
-                                                        tabStopDistance: (theme ? theme.tabSize : 4) * root.charWidth
-                                                        color: theme ? theme.textPrimary : "#cccccc"
-                                                        selectionColor: theme ? theme.synSelection : "#264f78"
-                                                        selectedTextColor: theme ? theme.textBright : "#ffffff"
-                                                        font.pixelSize: (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13
-                                                        font.family: (typeof theme !== "undefined" && theme && (theme.editorFontFamily || theme.fontFamilyMono)) ? (theme.editorFontFamily || theme.fontFamilyMono) : "Consolas"
-                                                        selectByMouse: true
-                                                        focus: tabPane.index === root.activeTabIndex
-                                                        cursorVisible: true
-                                                        textFormat: TextArea.PlainText
-                                                        background: null
-                                                        text: ""
+                                                        height: tabPane.isVirtualized ? ((tabPane.windowEndLine - tabPane.windowStartLine + 1) * tabPane.paneLineHeight + codeTextArea.topPadding + codeTextArea.bottomPadding) : editorFlickable.contentHeight
+                                                        z: 1
 
-                                                        Component.onCompleted: {
-                                                            if (tabPane.index === root.activeTabIndex && typeof backend !== "undefined" && backend && backend.register_text_area) {
-                                                                backend.register_text_area(codeTextArea, model.path || "", model.languageId || "text");
+                                                        TextArea {
+                                                            id: codeTextArea
+                                                            objectName: "codeTextArea"
+                                                            anchors.fill: parent
+                                                            topPadding: 6
+                                                            bottomPadding: 16
+                                                            leftPadding: 10
+                                                            rightPadding: 24
+                                                            wrapMode: (theme && theme.enableWordWrap) ? TextArea.WrapAtWordBoundaryOrAnywhere : TextArea.NoWrap
+                                                            tabStopDistance: (theme ? theme.tabSize : 4) * tabPane.paneCharWidth
+                                                            color: theme ? theme.textPrimary : "#cccccc"
+                                                            selectionColor: theme ? theme.synSelection : "#264f78"
+                                                            selectedTextColor: theme ? theme.textBright : "#ffffff"
+                                                            font.pixelSize: tabPane.paneFontSize
+                                                            font.family: (typeof theme !== "undefined" && theme && (theme.editorFontFamily || theme.fontFamilyMono)) ? (theme.editorFontFamily || theme.fontFamilyMono) : "Consolas"
+                                                            selectByMouse: true
+                                                            focus: tabPane.index === root.activeTabIndex
+                                                            cursorVisible: true
+                                                            textFormat: TextArea.PlainText
+                                                            background: null
+                                                            text: (typeof model !== "undefined" && model && model.content) ? model.content : ""
+
+                                                            Component.onCompleted: {
+                                                                Qt.callLater(function() {
+                                                                    if (tabPane && tabPane.index === root.activeTabIndex && typeof backend !== "undefined" && backend && backend.register_text_area) {
+                                                                        backend.register_text_area(codeTextArea, (model && model.path) ? model.path : "", (model && model.languageId) ? model.languageId : "text");
+                                                                    }
+                                                                    if (tabPane) {
+                                                                        if (tabPane.isVirtualized) {
+                                                                            tabPane.checkAndShiftWindow(true);
+                                                                        }
+                                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
+                                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
+                                                                        indentGuidesCanvas.requestPaint();
+                                                                    }
+                                                                });
                                                             }
-                                                            Qt.callLater(function() {
-                                                                if (tabPane) {
-                                                                    tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
-                                                                    tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
-                                                                    indentGuidesCanvas.requestPaint();
-                                                                }
-                                                            });
-                                                        }
 
                                                         signal selection(string code)
 
@@ -1046,48 +1608,40 @@ Item {
                                                                  width: Math.max(8, occEndRect.x - occRect.x)
                                                                  height: occRect.height > 0 ? occRect.height : root.editorLineHeight
                                                                  color: "#38bdf8"
-                                                                 opacity: 0.14
-                                                                 border.color: "#38bdf840"
+                                                                 opacity: 0.28
+                                                                 border.color: "#38bdf888"
                                                                  border.width: 1
                                                                  radius: 2
                                                                  z: 5
                                                              }
                                                          }
 
-                                                         // Bracket Matching Highlight Overlays
-                                                         Rectangle {
-                                                             property var b1Rect: (root.bracketMatchPos1 >= 0 && tabPane.index === root.activeTabIndex) ? codeTextArea.positionToRectangle(root.bracketMatchPos1) : null
-                                                             visible: b1Rect !== null && root.bracketMatchPos1 >= 0 && tabPane.index === root.activeTabIndex
-                                                             x: b1Rect ? b1Rect.x : 0
-                                                             y: b1Rect ? b1Rect.y : 0
-                                                             width: root.charWidth
-                                                             height: b1Rect && b1Rect.height > 0 ? b1Rect.height : root.editorLineHeight
-                                                             color: "transparent"
-                                                             border.color: theme ? theme.accent : "#38bdf8"
-                                                             border.width: 1.5
-                                                             radius: 2
-                                                             z: 14
-                                                         }
-
-                                                         Rectangle {
-                                                             property var b2Rect: (root.bracketMatchPos2 >= 0 && tabPane.index === root.activeTabIndex) ? codeTextArea.positionToRectangle(root.bracketMatchPos2) : null
-                                                             visible: b2Rect !== null && root.bracketMatchPos2 >= 0 && tabPane.index === root.activeTabIndex
-                                                             x: b2Rect ? b2Rect.x : 0
-                                                             y: b2Rect ? b2Rect.y : 0
-                                                             width: root.charWidth
-                                                             height: b2Rect && b2Rect.height > 0 ? b2Rect.height : root.editorLineHeight
-                                                             color: "transparent"
-                                                             border.color: theme ? theme.accent : "#38bdf8"
-                                                             border.width: 1.5
-                                                             radius: 2
-                                                             z: 14
-                                                         }
-
-                                                         // Multi-Cursor Caret Overlays
+                                                         // Multi-Cursor Extra Selection Highlights
                                                         Repeater {
                                                             model: (tabPane.index === root.activeTabIndex) ? root.extraCursors : []
                                                             delegate: Rectangle {
-                                                                property var curRect: codeTextArea.positionToRectangle(modelData)
+                                                                property int sPos: typeof modelData === "object" ? Math.min(modelData.start, modelData.end) : modelData
+                                                                property int ePos: typeof modelData === "object" ? Math.max(modelData.start, modelData.end) : modelData
+                                                                visible: sPos !== ePos
+                                                                property var r1: codeTextArea.positionToRectangle(sPos)
+                                                                property var r2: codeTextArea.positionToRectangle(ePos)
+                                                                x: r1.x
+                                                                y: r1.y
+                                                                width: Math.max(4, r2.x - r1.x)
+                                                                height: r1.height > 0 ? r1.height : root.editorLineHeight
+                                                                color: theme ? theme.synSelection : "#264f78"
+                                                                opacity: 0.65
+                                                                radius: 2
+                                                                z: 4
+                                                            }
+                                                        }
+
+                                                        // Multi-Cursor Caret Overlays
+                                                        Repeater {
+                                                            model: (tabPane.index === root.activeTabIndex) ? root.extraCursors : []
+                                                            delegate: Rectangle {
+                                                                property int cPos: typeof modelData === "object" ? modelData.cursor : modelData
+                                                                property var curRect: codeTextArea.positionToRectangle(cPos)
                                                                 x: curRect.x
                                                                 y: curRect.y
                                                                 width: 2
@@ -1169,13 +1723,22 @@ Item {
 
                                                                                                                 
 
-                                                         // Alt+Click Multi-Cursor TapHandler (does not block mouse selection)
-                                                        TapHandler {
+                                                         // Alt+Click Multi-Cursor Interceptor (Left Button with Alt Modifier)
+                                                        MouseArea {
+                                                            anchors.fill: parent
                                                             acceptedButtons: Qt.LeftButton
-                                                            acceptedModifiers: Qt.AltModifier
-                                                            onTapped: function(event, point) {
-                                                                var charPos = codeTextArea.positionAt(point.position.x, point.position.y);
-                                                                root.toggleExtraCursor(charPos);
+                                                            hoverEnabled: false
+                                                            z: 20
+                                                            cursorShape: Qt.IBeamCursor
+
+                                                            onPressed: function(mouse) {
+                                                                if (mouse.modifiers & Qt.AltModifier) {
+                                                                    mouse.accepted = true;
+                                                                    var charPos = codeTextArea.positionAt(mouse.x, mouse.y);
+                                                                    root.toggleExtraCursor(charPos);
+                                                                } else {
+                                                                    mouse.accepted = false;
+                                                                }
                                                             }
                                                         }
 
@@ -1187,6 +1750,8 @@ Item {
                                                                 codeTextArea.forceActiveFocus();
                                                                 if (root.extraCursors.length > 0) {
                                                                     root.extraCursors = [];
+                                                                    root.multiCursorUndoStack = [];
+                                                                    root.multiCursorRedoStack = [];
                                                                 }
                                                                 if (suggestionModel.count > 0) {
                                                                     suggestionModel.clear();
@@ -1229,14 +1794,24 @@ Item {
                                                             if (tabPane.index === root.activeTabIndex) {
                                                                 root.updateCursorPosition();
                                                                 
-                                                                root.updateSelectionOccurrences();
+                                                                if (codeTextArea.selectedText && codeTextArea.selectedText.length >= 2) {
+                                                                    root.updateSelectionOccurrences();
+                                                                } else if (root.selectionOccurrences && root.selectionOccurrences.length > 0) {
+                                                                    root.selectionOccurrences = [];
+                                                                }
                                                                 if (breadcrumbsBar && typeof breadcrumbsBar.updateActiveSymbolForLine === "function") {
                                                                     breadcrumbsBar.updateActiveSymbolForLine(root.cursorLine);
                                                                 }
-                                                                root.saveWorkspaceSession();
+                                                                sessionSaveDebounceTimer.restart();
                                                                 if (suggestionModel.count > 0 && !autocompleteTimer.running) {
                                                                     suggestionModel.clear();
                                                                 }
+                                                            }
+                                                        }
+
+                                                        onLineCountChanged: {
+                                                            if (!tabPane.isVirtualized) {
+                                                                tabPane.paneTotalLineCount = Math.max(1, codeTextArea.lineCount);
                                                             }
                                                         }
 
@@ -1244,18 +1819,45 @@ Item {
                                                             if (root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
                                                             if (index >= 0 && index < tabModel.count) {
                                                                 var curTab = tabModel.get(index);
-                                                                if (curTab && !curTab.isDirty) {
-                                                                    tabModel.setProperty(index, "isDirty", true);
-                                                                    root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, true);
+                                                                if (curTab) {
+                                                                    if (tabPane.isVirtualized && typeof backend !== "undefined" && backend && backend.update_backing_slice) {
+                                                                        backend.update_backing_slice(tabPane.tabKey, tabPane.windowStartLine, tabPane.windowEndLine, codeTextArea.text);
+                                                                        tabPane.paneTotalLineCount = backend.get_backing_total_lines(tabPane.tabKey);
+                                                                    } else if (typeof backend !== "undefined" && backend && backend.update_backing_text) {
+                                                                        backend.update_backing_text(tabPane.tabKey, codeTextArea.text);
+                                                                        tabPane.paneTotalLineCount = Math.max(1, codeTextArea.lineCount);
+                                                                    }
+                                                                    var isDirtyNow = false;
+                                                                    if (tabPane.isUntitled || !curTab.path || curTab.path === "") {
+                                                                        isDirtyNow = true;
+                                                                    } else {
+                                                                        if (typeof backend !== "undefined" && backend && backend.is_backing_document_modified) {
+                                                                            isDirtyNow = backend.is_backing_document_modified(tabPane.tabKey);
+                                                                        } else if (typeof backend !== "undefined" && backend && backend.is_document_modified) {
+                                                                            isDirtyNow = backend.is_document_modified(codeTextArea);
+                                                                        } else {
+                                                                            isDirtyNow = (codeTextArea.text !== (tabPane.savedContent || ""));
+                                                                        }
+                                                                    }
+                                                                    if (curTab.isDirty !== isDirtyNow) {
+                                                                        tabModel.setProperty(index, "isDirty", isDirtyNow);
+                                                                        root.dirtyVersion++;
+                                                                        if (index === root.activeTabIndex) {
+                                                                            root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, isDirtyNow);
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                             canvasDebounceTimer.restart();
                                                             textChangeDebounceTimer.restart();
                                                             foldAnalysisTimer.restart();
                                                             diagnosticsTimer.restart();
+                                                            minimapDeferredUpdateTimer.restart();
                                                         }
 
-                                                        Keys.onPressed: function(event) {
+                                                        Keys.onPressed: function(event) { handleKeyPressInternal(event); }
+
+                                                        function handleKeyPressInternal(event) {
                                                             // Whole-line copy / paste behavior
                                                             if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_C)) {
                                                                 var sStart = codeTextArea.selectionStart;
@@ -1390,70 +1992,337 @@ Item {
                                                                 }
                                                             }
 
-                                                            // 0.4 Multi-Cursor Typing & Backspacing
+                                                            // 0.4 Multi-Cursor Copy & Paste & Undo/Redo Handling
+                                                            if (root.extraCursors.length > 0 && (event.modifiers & Qt.ControlModifier)) {
+                                                                if (event.key === Qt.Key_C) {
+                                                                    var textDoc = codeTextArea.text;
+                                                                    var selPieces = [];
+                                                                    for (var ci = 0; ci < root.extraCursors.length; ci++) {
+                                                                        var curObj = root.extraCursors[ci];
+                                                                        var cStart = typeof curObj === "object" ? Math.min(curObj.start, curObj.end) : curObj;
+                                                                        var cEnd = typeof curObj === "object" ? Math.max(curObj.start, curObj.end) : curObj;
+                                                                        if (cStart !== cEnd) {
+                                                                            selPieces.push(textDoc.substring(cStart, cEnd));
+                                                                        }
+                                                                    }
+                                                                    if (selPieces.length > 0 && typeof backend !== "undefined" && backend && backend.set_clipboard_text) {
+                                                                        backend.set_clipboard_text(selPieces.join("\n"));
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
+                                                                } else if (event.key === Qt.Key_V) {
+                                                                    var pasteText = "";
+                                                                    if (typeof backend !== "undefined" && backend && backend.get_clipboard_text) {
+                                                                        pasteText = backend.get_clipboard_text() || "";
+                                                                    }
+                                                                    if (pasteText.length > 0) {
+                                                                        var snapUndo = root.multiCursorUndoStack.slice();
+                                                                        snapUndo.push({ text: codeTextArea.text, cursors: JSON.parse(JSON.stringify(root.extraCursors)) });
+                                                                        if (snapUndo.length > 50) snapUndo.shift();
+                                                                        root.multiCursorUndoStack = snapUndo;
+                                                                        root.multiCursorRedoStack = [];
+
+                                                                        var pasteLines = pasteText.split("\n");
+                                                                        var cursors = getNormalizedCursors();
+                                                                        var isLineMatch = (pasteLines.length === cursors.length);
+                                                                        var deltas = [];
+                                                                        var localPos = [];
+
+                                                                        for (var i = 0; i < cursors.length; i++) {
+                                                                            var cur = cursors[i];
+                                                                            var minP = Math.min(cur.start, cur.end);
+                                                                            var maxP = Math.max(cur.start, cur.end);
+                                                                            var curPaste = isLineMatch ? pasteLines[i] : pasteText;
+                                                                            deltas.push(curPaste.length - (maxP - minP));
+                                                                            localPos.push(minP + curPaste.length);
+                                                                        }
+
+                                                                        for (var pi = cursors.length - 1; pi >= 0; pi--) {
+                                                                            var cur = cursors[pi];
+                                                                            var minP = Math.min(cur.start, cur.end);
+                                                                            var maxP = Math.max(cur.start, cur.end);
+                                                                            var curPaste = isLineMatch ? pasteLines[pi] : pasteText;
+                                                                            if (minP !== maxP) {
+                                                                                codeTextArea.remove(minP, maxP);
+                                                                            }
+                                                                            codeTextArea.insert(minP, curPaste);
+                                                                        }
+
+                                                                        var newCursors = [];
+                                                                        var cumShift = 0;
+                                                                        for (var k = 0; k < cursors.length; k++) {
+                                                                            var finalPos = localPos[k] + cumShift;
+                                                                            newCursors.push({ start: finalPos, end: finalPos, cursor: finalPos });
+                                                                            cumShift += deltas[k];
+                                                                        }
+
+                                                                        root.extraCursors = newCursors;
+                                                                        if (newCursors.length > 0) {
+                                                                            codeTextArea.cursorPosition = newCursors[newCursors.length - 1].cursor;
+                                                                        }
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
+                                                                } else if (event.key === Qt.Key_Z && !(event.modifiers & Qt.ShiftModifier)) {
+                                                                    if (root.multiCursorUndoStack.length > 0) {
+                                                                        var undoArr = root.multiCursorUndoStack.slice();
+                                                                        var prevSnap = undoArr.pop();
+                                                                        root.multiCursorUndoStack = undoArr;
+
+                                                                        var redoArr = root.multiCursorRedoStack.slice();
+                                                                        redoArr.push({ text: codeTextArea.text, cursors: JSON.parse(JSON.stringify(root.extraCursors)) });
+                                                                        root.multiCursorRedoStack = redoArr;
+
+                                                                        codeTextArea.text = prevSnap.text;
+                                                                        root.extraCursors = prevSnap.cursors;
+                                                                        if (prevSnap.cursors && prevSnap.cursors.length > 0) {
+                                                                            var lastC = prevSnap.cursors[prevSnap.cursors.length - 1];
+                                                                            codeTextArea.cursorPosition = (typeof lastC === "object") ? lastC.cursor : lastC;
+                                                                        }
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
+                                                                } else if (event.key === Qt.Key_Y || ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_Z)) {
+                                                                    if (root.multiCursorRedoStack.length > 0) {
+                                                                        var redoArr2 = root.multiCursorRedoStack.slice();
+                                                                        var nextSnap = redoArr2.pop();
+                                                                        root.multiCursorRedoStack = redoArr2;
+
+                                                                        var undoArr2 = root.multiCursorUndoStack.slice();
+                                                                        undoArr2.push({ text: codeTextArea.text, cursors: JSON.parse(JSON.stringify(root.extraCursors)) });
+                                                                        root.multiCursorUndoStack = undoArr2;
+
+                                                                        codeTextArea.text = nextSnap.text;
+                                                                        root.extraCursors = nextSnap.cursors;
+                                                                        if (nextSnap.cursors && nextSnap.cursors.length > 0) {
+                                                                            var lastC2 = nextSnap.cursors[nextSnap.cursors.length - 1];
+                                                                            codeTextArea.cursorPosition = (typeof lastC2 === "object") ? lastC2.cursor : lastC2;
+                                                                        }
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            // 0.42 Multi-Cursor Escape key cancels multi-cursor mode
+                                                            if (event.key === Qt.Key_Escape && root.extraCursors.length > 0) {
+                                                                root.extraCursors = [];
+                                                                root.multiCursorUndoStack = [];
+                                                                root.multiCursorRedoStack = [];
+                                                                event.accepted = true;
+                                                                return;
+                                                            }
+
+                                                            // 0.45 Multi-Cursor Typing, Backspacing, Deleting & Enter
                                                             if (root.extraCursors.length > 0) {
-                                                                if (event.key === Qt.Key_Backspace) {
-                                                                    var allPos = root.extraCursors.concat([codeTextArea.cursorPosition]);
-                                                                    allPos.sort(function(a, b) { return b - a; });
-                                                                    allPos = allPos.filter(function(item, pos, self) { return self.indexOf(item) === pos; });
-
-                                                                    var newText = codeTextArea.text;
-                                                                    for (var bi = 0; bi < allPos.length; bi++) {
-                                                                        var bp = allPos[bi];
-                                                                        if (bp > 0) {
-                                                                            newText = newText.substring(0, bp - 1) + newText.substring(bp);
-                                                                        }
-                                                                    }
-
-                                                                    var sortedAsc = allPos.slice().sort(function(a, b) { return a - b; });
-                                                                    var finalExtras = [];
-                                                                    var mainNewPos = codeTextArea.cursorPosition;
-                                                                    for (var s = 0; s < sortedAsc.length; s++) {
-                                                                        var origP = sortedAsc[s];
-                                                                        var shiftedP = Math.max(0, origP - 1 - s);
-                                                                        if (origP === codeTextArea.cursorPosition) {
-                                                                            mainNewPos = shiftedP;
+                                                                // Normalize all cursor positions/ranges
+                                                                function getNormalizedCursors() {
+                                                                    var list = [];
+                                                                    for (var i = 0; i < root.extraCursors.length; i++) {
+                                                                        var item = root.extraCursors[i];
+                                                                        if (typeof item === "object") {
+                                                                            list.push({ start: item.start, end: item.end, cursor: item.cursor });
                                                                         } else {
-                                                                            finalExtras.push(shiftedP);
+                                                                            list.push({ start: item, end: item, cursor: item });
                                                                         }
                                                                     }
-                                                                    codeTextArea.text = newText;
-                                                                    codeTextArea.cursorPosition = mainNewPos;
-                                                                    root.extraCursors = finalExtras;
+                                                                    var unique = [];
+                                                                    for (var u = 0; u < list.length; u++) {
+                                                                        var it = list[u];
+                                                                        var dup = false;
+                                                                        for (var k = 0; k < unique.length; k++) {
+                                                                            if (unique[k].start === it.start && unique[k].end === it.end) {
+                                                                                dup = true;
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                        if (!dup) unique.push(it);
+                                                                    }
+                                                                    return unique;
+                                                                }
+
+                                                                function recordMultiCursorEditSnapshot() {
+                                                                    var stack = root.multiCursorUndoStack.slice();
+                                                                    stack.push({ text: codeTextArea.text, cursors: JSON.parse(JSON.stringify(root.extraCursors)) });
+                                                                    if (stack.length > 50) stack.shift();
+                                                                    root.multiCursorUndoStack = stack;
+                                                                    root.multiCursorRedoStack = [];
+                                                                }
+
+                                                                if (event.key === Qt.Key_Backspace) {
+                                                                    recordMultiCursorEditSnapshot();
+                                                                    var cursors = getNormalizedCursors();
+                                                                    var deltas = [];
+                                                                    var localPos = [];
+
+                                                                    for (var i = 0; i < cursors.length; i++) {
+                                                                        var cur = cursors[i];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            deltas.push(-(maxP - minP));
+                                                                            localPos.push(minP);
+                                                                        } else if (minP > 0) {
+                                                                            deltas.push(-1);
+                                                                            localPos.push(minP - 1);
+                                                                        } else {
+                                                                            deltas.push(0);
+                                                                            localPos.push(0);
+                                                                        }
+                                                                    }
+
+                                                                    for (var bi = cursors.length - 1; bi >= 0; bi--) {
+                                                                        var cur = cursors[bi];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            codeTextArea.remove(minP, maxP);
+                                                                        } else if (minP > 0) {
+                                                                            codeTextArea.remove(minP - 1, minP);
+                                                                        }
+                                                                    }
+
+                                                                    var newCursors = [];
+                                                                    var cumShift = 0;
+                                                                    for (var k = 0; k < cursors.length; k++) {
+                                                                        var finalPos = localPos[k] + cumShift;
+                                                                        newCursors.push({ start: finalPos, end: finalPos, cursor: finalPos });
+                                                                        cumShift += deltas[k];
+                                                                    }
+
+                                                                    root.extraCursors = newCursors;
+                                                                    if (newCursors.length > 0) {
+                                                                        codeTextArea.cursorPosition = newCursors[newCursors.length - 1].cursor;
+                                                                    }
                                                                     event.accepted = true;
                                                                     return;
-                                                                } else if (event.text && event.text.length === 1 && !event.modifiers && event.key !== Qt.Key_Tab && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter) {
-                                                                    var charTyped = event.text;
-                                                                    var allCur = root.extraCursors.concat([codeTextArea.cursorPosition]);
-                                                                    allCur.sort(function(a, b) { return b - a; });
-                                                                    allCur = allCur.filter(function(item, pos, self) { return self.indexOf(item) === pos; });
+                                                                } else if (event.key === Qt.Key_Delete) {
+                                                                    recordMultiCursorEditSnapshot();
+                                                                    var cursors = getNormalizedCursors();
+                                                                    var deltas = [];
+                                                                    var localPos = [];
+                                                                    var docLen = codeTextArea.text.length;
 
-                                                                    var docT = codeTextArea.text;
-                                                                    for (var ci = 0; ci < allCur.length; ci++) {
-                                                                        var cp = allCur[ci];
-                                                                        docT = docT.substring(0, cp) + charTyped + docT.substring(cp);
-                                                                    }
-
-                                                                    var sortedCurAsc = allCur.slice().sort(function(a, b) { return a - b; });
-                                                                    var finalCurExtras = [];
-                                                                    var mainCurPos = codeTextArea.cursorPosition;
-                                                                    for (var sc = 0; sc < sortedCurAsc.length; sc++) {
-                                                                        var oP = sortedCurAsc[sc];
-                                                                        var sP = oP + sc + 1;
-                                                                        if (oP === codeTextArea.cursorPosition) {
-                                                                            mainCurPos = sP;
+                                                                    for (var i = 0; i < cursors.length; i++) {
+                                                                        var cur = cursors[i];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            deltas.push(-(maxP - minP));
+                                                                            localPos.push(minP);
+                                                                        } else if (minP < docLen) {
+                                                                            deltas.push(-1);
+                                                                            localPos.push(minP);
                                                                         } else {
-                                                                            finalCurExtras.push(sP);
+                                                                            deltas.push(0);
+                                                                            localPos.push(minP);
                                                                         }
                                                                     }
-                                                                    codeTextArea.text = docT;
-                                                                    codeTextArea.cursorPosition = mainCurPos;
-                                                                    root.extraCursors = finalCurExtras;
+
+                                                                    for (var di = cursors.length - 1; di >= 0; di--) {
+                                                                        var cur = cursors[di];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            codeTextArea.remove(minP, maxP);
+                                                                        } else if (minP < codeTextArea.text.length) {
+                                                                            codeTextArea.remove(minP, minP + 1);
+                                                                        }
+                                                                    }
+
+                                                                    var newCursors = [];
+                                                                    var cumShift = 0;
+                                                                    for (var k = 0; k < cursors.length; k++) {
+                                                                        var finalPos = localPos[k] + cumShift;
+                                                                        newCursors.push({ start: finalPos, end: finalPos, cursor: finalPos });
+                                                                        cumShift += deltas[k];
+                                                                    }
+
+                                                                    root.extraCursors = newCursors;
+                                                                    if (newCursors.length > 0) {
+                                                                        codeTextArea.cursorPosition = newCursors[newCursors.length - 1].cursor;
+                                                                    }
+                                                                    event.accepted = true;
+                                                                    return;
+                                                                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                                                    recordMultiCursorEditSnapshot();
+                                                                    var cursors = getNormalizedCursors();
+                                                                    var deltas = [];
+                                                                    var localPos = [];
+
+                                                                    for (var i = 0; i < cursors.length; i++) {
+                                                                        var cur = cursors[i];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        deltas.push(1 - (maxP - minP));
+                                                                        localPos.push(minP + 1);
+                                                                    }
+
+                                                                    for (var ei = cursors.length - 1; ei >= 0; ei--) {
+                                                                        var cur = cursors[ei];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            codeTextArea.remove(minP, maxP);
+                                                                        }
+                                                                        codeTextArea.insert(minP, "\n");
+                                                                    }
+
+                                                                    var newCursors = [];
+                                                                    var cumShift = 0;
+                                                                    for (var k = 0; k < cursors.length; k++) {
+                                                                        var finalPos = localPos[k] + cumShift;
+                                                                        newCursors.push({ start: finalPos, end: finalPos, cursor: finalPos });
+                                                                        cumShift += deltas[k];
+                                                                    }
+
+                                                                    root.extraCursors = newCursors;
+                                                                    if (newCursors.length > 0) {
+                                                                        codeTextArea.cursorPosition = newCursors[newCursors.length - 1].cursor;
+                                                                    }
+                                                                    event.accepted = true;
+                                                                    return;
+                                                                } else if (event.text && event.text.length === 1 && !(event.modifiers & Qt.ControlModifier) && !(event.modifiers & Qt.AltModifier) && event.key !== Qt.Key_Tab) {
+                                                                    recordMultiCursorEditSnapshot();
+                                                                    var charTyped = event.text;
+                                                                    var cursors = getNormalizedCursors();
+                                                                    var deltas = [];
+                                                                    var localPos = [];
+
+                                                                    for (var i = 0; i < cursors.length; i++) {
+                                                                        var cur = cursors[i];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        deltas.push(charTyped.length - (maxP - minP));
+                                                                        localPos.push(minP + charTyped.length);
+                                                                    }
+
+                                                                    for (var ci = cursors.length - 1; ci >= 0; ci--) {
+                                                                        var cur = cursors[ci];
+                                                                        var minP = Math.min(cur.start, cur.end);
+                                                                        var maxP = Math.max(cur.start, cur.end);
+                                                                        if (minP !== maxP) {
+                                                                            codeTextArea.remove(minP, maxP);
+                                                                        }
+                                                                        codeTextArea.insert(minP, charTyped);
+                                                                    }
+
+                                                                    var newCursors = [];
+                                                                    var cumShift = 0;
+                                                                    for (var k = 0; k < cursors.length; k++) {
+                                                                        var finalPos = localPos[k] + cumShift;
+                                                                        newCursors.push({ start: finalPos, end: finalPos, cursor: finalPos });
+                                                                        cumShift += deltas[k];
+                                                                    }
+
+                                                                    root.extraCursors = newCursors;
+                                                                    if (newCursors.length > 0) {
+                                                                        codeTextArea.cursorPosition = newCursors[newCursors.length - 1].cursor;
+                                                                    }
                                                                     event.accepted = true;
                                                                     return;
                                                                 }
                                                             }
-
                                                             // 0.5 Ctrl+Space: Manually Trigger Autocomplete
                                                             if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_Space) {
                                                                 root.triggerCompletionRequest();
@@ -1541,9 +2410,10 @@ Item {
                                                                 }
                                                             }
 
-                                                            // 4.1 Auto Bracket Matching & Closing
-                                                            if (theme && theme.enableBracketMatching && !hasSelection) {
+                                                            // 4.1 Auto Bracket & Quote Closing
+                                                            if (theme && theme.autoCloseBracketsQuotes && !hasSelection) {
                                                                 var pos = codeTextArea.cursorPosition;
+                                                                var docT = codeTextArea.text;
                                                                 var charMap = {
                                                                     "(": ")",
                                                                     "[": "]",
@@ -1552,12 +2422,24 @@ Item {
                                                                     "'": "'",
                                                                     "`": "`"
                                                                 };
+                                                                var closingChars = [")", "]", "}", "\"", "'", "`"];
 
-                                                                if (charMap[event.text]) {
-                                                                    codeTextArea.insert(pos, event.text + charMap[event.text]);
+                                                                // Over-type existing closing character
+                                                                if (closingChars.indexOf(event.text) !== -1 && pos < docT.length && docT.charAt(pos) === event.text) {
                                                                     codeTextArea.cursorPosition = pos + 1;
                                                                     event.accepted = true;
                                                                     return;
+                                                                }
+
+                                                                // Auto insert pair
+                                                                if (charMap[event.text]) {
+                                                                    var nextCh = pos < docT.length ? docT.charAt(pos) : "";
+                                                                    if (!nextCh || /\s|[)\]};:,]/.test(nextCh)) {
+                                                                        codeTextArea.insert(pos, event.text + charMap[event.text]);
+                                                                        codeTextArea.cursorPosition = pos + 1;
+                                                                        event.accepted = true;
+                                                                        return;
+                                                                    }
                                                                 }
                                                             }
 
@@ -1641,15 +2523,18 @@ Item {
                                             }
                                         }
                                     }
+                                    }
                                 }
                             }
 
                             // Minimap on right edge
                             CodeMinimap {
                                 id: codeMinimap
+                                objectName: "codeMinimap"
                                 Layout.fillHeight: true
                                 visible: theme ? theme.enableMinimap : true
-                                documentText: root.codeTextArea ? root.codeTextArea.text : ""
+                                documentText: ""
+                                totalLineCount: root.activeEditorPane ? root.activeEditorPane.paneTotalLineCount : 1
                                 visibleRatio: root.editorFlickable ? (root.editorFlickable.height / Math.max(1, root.editorFlickable.contentHeight)) : 1.0
                                 scrollRatio: root.editorFlickable ? (root.editorFlickable.contentY / Math.max(1, (root.editorFlickable.contentHeight - root.editorFlickable.height))) : 0.0
 
@@ -1660,11 +2545,26 @@ Item {
                                 }
                             }
 
+                            Timer {
+                                id: minimapDeferredUpdateTimer
+                                interval: 100
+                                repeat: false
+                                onTriggered: {
+                                    if (codeMinimap && root.currentTab) {
+                                        var tabKey = root.currentTab.fileId || root.currentTab.path || root.currentTab.title || "tab";
+                                        codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
+                                    }
+                                }
+                            }
+
                             Connections {
                                 target: root
                                 function onActiveTabIndexChanged() {
-                                    if (codeMinimap && root.codeTextArea) {
-                                        codeMinimap.documentText = root.codeTextArea.text;
+                                    if (codeMinimap && root.currentTab) {
+                                        var tabKey = root.currentTab.fileId || root.currentTab.path || root.currentTab.title || "tab";
+                                        codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
+                                    } else {
+                                        minimapDeferredUpdateTimer.restart();
                                     }
                                 }
                             }
@@ -1754,9 +2654,9 @@ Item {
                             visible: false
                             z: 110
 
-                            onActionSelected: function(actionId) {
+                            onActionSelected: function(actionId, customAction) {
                                 radialContextMenu.visible = false;
-                                root.executeEditorAction(actionId);
+                                root.executeEditorAction(actionId, customAction);
                             }
 
                             onCloseRequested: radialContextMenu.visible = false
@@ -1917,6 +2817,7 @@ Item {
                         // Floating Find & Replace Bar
                         FindReplaceBar {
                             id: findReplaceBar
+                            objectName: "findReplaceBar"
                             anchors.top: parent.top
                             anchors.right: parent.right
                             anchors.topMargin: 6
@@ -1957,7 +2858,7 @@ Item {
                     WhiteboardView {
                         id: whiteboardCanvasTab
                         anchors.fill: parent
-                        visible: root.currentTab && root.currentTab.isWhiteboard
+                        visible: Boolean(root.currentTab && root.currentTab.isWhiteboard)
                         onCloseRequested: {
                             if (root.activeTabIndex >= 0) {
                                 root.closeTab(root.activeTabIndex);
@@ -1969,7 +2870,7 @@ Item {
                     WebPreviewView {
                         id: webPreviewTab
                         anchors.fill: parent
-                        visible: root.currentTab && (root.currentTab.isWebPreview || root.currentTab.languageId === "webpreview")
+                        visible: Boolean(root.currentTab && (root.currentTab.isWebPreview || root.currentTab.languageId === "webpreview"))
                         htmlContent: root.currentTab ? (root.currentTab.content || "") : ""
                         sourcePath: root.currentTab ? (root.currentTab.sourcePath || root.currentTab.path || "") : ""
                         isMarkdown: root.currentTab ? (root.currentTab.isMarkdown || false) : false
@@ -2194,7 +3095,7 @@ Item {
                             // Secondary Code Editor Surface
                             Item {
                                 anchors.fill: parent
-                                visible: !root.secondaryTab || (!root.secondaryTab.isWhiteboard && !root.secondaryTab.isWebPreview && root.secondaryTab.languageId !== "webpreview")
+                                visible: Boolean(!root.secondaryTab || (!root.secondaryTab.isWhiteboard && !root.secondaryTab.isWebPreview && root.secondaryTab.languageId !== "webpreview"))
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -2260,6 +3161,7 @@ Item {
                                             anchors.fill: parent
                                             z: 0
                                             antialiasing: false
+                                            property var secGuideSegments: []
 
                                             Timer {
                                                 id: secCanvasScrollTimer
@@ -2276,9 +3178,14 @@ Item {
 
                                             Timer {
                                                 id: secCanvasDebounceTimer
-                                                interval: 60
+                                                interval: 200
                                                 repeat: false
-                                                onTriggered: secIndentGuidesCanvas.requestPaint()
+                                                onTriggered: {
+                                                    if (secCodeTextArea) {
+                                                        secIndentGuidesCanvas.secGuideSegments = root.computeGuideSegmentsForText(secCodeTextArea.text);
+                                                    }
+                                                    secIndentGuidesCanvas.requestPaint();
+                                                }
                                             }
 
                                             Connections {
@@ -2288,8 +3195,8 @@ Item {
 
                                             Connections {
                                                 target: root
-                                                function onActiveTabIndexChanged() { secIndentGuidesCanvas.requestPaint(); }
-                                                function onSecondaryTabIndexChanged() { secIndentGuidesCanvas.requestPaint(); }
+                                                function onActiveTabIndexChanged() { secCanvasDebounceTimer.restart(); }
+                                                function onSecondaryTabIndexChanged() { secCanvasDebounceTimer.restart(); }
                                                 function onCharWidthChanged() { secIndentGuidesCanvas.requestPaint(); }
                                                 function onEditorLineHeightChanged() { secIndentGuidesCanvas.requestPaint(); }
                                                 function onCachedIndentLevelWidthsChanged() { secIndentGuidesCanvas.requestPaint(); }
@@ -2298,8 +3205,9 @@ Item {
                                             onPaint: {
                                                 var ctx = getContext("2d");
                                                 ctx.clearRect(0, 0, width, height);
-                                                var doc = secCodeTextArea.text;
-                                                if (!doc) return;
+
+                                                var segments = secIndentGuidesCanvas.secGuideSegments;
+                                                if (!segments || segments.length === 0) return;
 
                                                 var leftPadding = secCodeTextArea.leftPadding - secEditorFlickable.contentX;
                                                 var topPadding = secCodeTextArea.topPadding;
@@ -2310,8 +3218,6 @@ Item {
                                                 var viewTop = secEditorFlickable.contentY;
                                                 var visibleStartLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
                                                 var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
-
-                                                var segments = root.computeGuideSegmentsForText(doc);
                                                 ctx.lineWidth = 1;
 
                                                 for (var i = 0; i < segments.length; i++) {
@@ -2411,10 +3317,14 @@ Item {
                                                 }
 
                                                 onTextChanged: {
-                                                    if (root.secondaryTab && root.secondaryTabIndex >= 0) {
+                                                    if (root.isSyncingSecondary || root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
+                                                    if (root.secondaryTab && root.secondaryTabIndex >= 0 && root.secondaryTabIndex < tabModel.count) {
                                                         tabModel.setProperty(root.secondaryTabIndex, "content", secCodeTextArea.text);
-                                                        tabModel.setProperty(root.secondaryTabIndex, "isDirty", true);
-                                                        if (root.secondaryTabIndex === root.activeTabIndex && codeTextArea.text !== secCodeTextArea.text) {
+                                                        var curTab = tabModel.get(root.secondaryTabIndex);
+                                                        if (curTab && !curTab.isDirty) {
+                                                            tabModel.setProperty(root.secondaryTabIndex, "isDirty", true);
+                                                        }
+                                                        if (root.secondaryTabIndex === root.activeTabIndex && codeTextArea && codeTextArea.text !== secCodeTextArea.text) {
                                                             codeTextArea.text = secCodeTextArea.text;
                                                         }
                                                     }
@@ -2428,13 +3338,13 @@ Item {
                             // Secondary Whiteboard Surface
                             WhiteboardView {
                                 anchors.fill: parent
-                                visible: root.secondaryTab && root.secondaryTab.isWhiteboard
+                                visible: Boolean(root.secondaryTab && root.secondaryTab.isWhiteboard)
                             }
 
                             // Secondary Web Preview Surface
                             WebPreviewView {
                                 anchors.fill: parent
-                                visible: root.secondaryTab && (root.secondaryTab.isWebPreview || root.secondaryTab.languageId === "webpreview")
+                                visible: Boolean(root.secondaryTab && (root.secondaryTab.isWebPreview || root.secondaryTab.languageId === "webpreview"))
                                 htmlContent: root.secondaryTab ? (root.secondaryTab.content || "") : ""
                                 sourcePath: root.secondaryTab ? (root.secondaryTab.sourcePath || root.secondaryTab.path || "") : ""
                                 isMarkdown: root.secondaryTab ? (root.secondaryTab.isMarkdown || false) : false
@@ -2455,13 +3365,48 @@ Item {
         }
     }
 
-    function executeEditorAction(actionId) {
+    function executeEditorAction(actionId, customAction) {
         if (actionId === "format") {
             root.formatDocument();
         } else if (actionId === "ask_ai") {
+            // 1. Selected Code -> Ask AI: Direct selection-based workflow (Never opens prompt popup)
+            if (typeof mainWindow !== "undefined" && mainWindow) {
+                if (!mainWindow.rightPanelVisible) mainWindow.rightPanelVisible = true;
+                mainWindow.aiVisible = true;
+            }
             var code = (codeTextArea && codeTextArea.selectedText) ? codeTextArea.selectedText : "";
             if (code.length > 0) {
                 root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
+            }
+        } else if (actionId === "ai" || actionId === "radial_ai") {
+            // 2. Radial Menu -> AI: ONLY this action opens the compact Ctrl+P prompt popup
+            if (typeof aiQuickPromptPopup !== "undefined" && aiQuickPromptPopup) {
+                aiQuickPromptPopup.open();
+            }
+        } else if (actionId === "comment") {
+            root.toggleComment();
+        } else if (actionId === "music") {
+            if (typeof mainWindow !== "undefined" && mainWindow) {
+                if (!mainWindow.rightPanelVisible) mainWindow.rightPanelVisible = true;
+                mainWindow.musicVisible = !mainWindow.musicVisible;
+            }
+        } else if (actionId === "zen") {
+            if (typeof mainWindow !== "undefined" && mainWindow) {
+                mainWindow.zenMode = !mainWindow.zenMode;
+            }
+        } else if (actionId === "terminal") {
+            if (typeof mainWindow !== "undefined" && mainWindow) {
+                mainWindow.terminalVisible = !mainWindow.terminalVisible;
+            }
+        } else if (actionId === "settings") {
+            if (typeof settingsOverlay !== "undefined" && settingsOverlay) {
+                settingsOverlay.visible = true;
+            }
+        } else if (actionId === "rename") {
+            root.triggerRenameSymbol();
+        } else if (actionId === "quickopen") {
+            if (typeof quickOpenPalette !== "undefined" && quickOpenPalette) {
+                quickOpenPalette.open();
             }
         } else if (actionId === "run") {
             if (codeTextArea && codeTextArea.selectedText && codeTextArea.selectedText.trim().length > 0) {
@@ -2477,16 +3422,26 @@ Item {
                 }
             }
             root.requestRunFile();
+        } else if (actionId === "save") {
+            root.saveActiveFile();
         } else if (actionId === "copy") {
-            codeTextArea.copy();
+            if (codeTextArea) codeTextArea.copy();
         } else if (actionId === "cut") {
-            codeTextArea.cut();
+            if (codeTextArea) codeTextArea.cut();
         } else if (actionId === "paste") {
-            codeTextArea.paste();
+            if (codeTextArea) codeTextArea.paste();
         } else if (actionId === "undo") {
-            codeTextArea.undo();
+            if (codeTextArea) codeTextArea.undo();
+        } else if (actionId === "redo") {
+            if (codeTextArea) codeTextArea.redo();
         } else if (actionId === "find") {
             root.showFind(false);
+        } else if (customAction && customAction.length > 0) {
+            if (typeof terminalPanel !== "undefined" && terminalPanel && terminalPanel.executeCommand) {
+                terminalPanel.activeTab = "TERMINAL";
+                if (typeof mainWindow !== "undefined" && mainWindow) mainWindow.terminalVisible = true;
+                terminalPanel.executeCommand(customAction);
+            }
         }
     }
 
@@ -2817,10 +3772,18 @@ Item {
     }
 
     function ensureCursorVisible() {
-        if (!codeTextArea || codeTextArea.cursorRectangle.height <= 0) return;
-        var curY = codeTextArea.cursorRectangle.y;
-        var curH = codeTextArea.cursorRectangle.height;
-        var curX = codeTextArea.cursorRectangle.x;
+        if (!codeTextArea) return;
+        var r = codeTextArea.positionToRectangle(codeTextArea.cursorPosition);
+        if (!r || r.height <= 0) {
+            r = codeTextArea.cursorRectangle;
+        }
+        if (!r || r.height <= 0) return;
+
+        var pane = root.activeEditorPane;
+        var containerY = (pane && pane.isVirtualized) ? (pane.windowStartLine * pane.paneLineHeight) : 0;
+        var curY = containerY + r.y;
+        var curH = r.height > 0 ? r.height : (pane ? pane.paneLineHeight : 18.0);
+        var curX = r.x;
         var viewTop = editorFlickable.contentY;
         var viewLeft = editorFlickable.contentX;
         var viewHeight = editorFlickable.height;
@@ -2857,12 +3820,19 @@ Item {
 
     function updateCursorPosition() {
         if (!codeTextArea) return;
-        var r = codeTextArea.cursorRectangle;
-        var line = Math.max(1, Math.floor((r.y - codeTextArea.topPadding) / root.editorLineHeight) + 1);
-        var col = Math.max(1, Math.floor((r.x - codeTextArea.leftPadding) / root.charWidth) + 1);
-        root.cursorLine = line;
+        var r = codeTextArea.positionToRectangle(codeTextArea.cursorPosition);
+        if (!r || r.height <= 0) {
+            r = codeTextArea.cursorRectangle;
+        }
+        var pane = root.activeEditorPane;
+        var lineH = (pane && pane.paneLineHeight > 0) ? pane.paneLineHeight : (root.editorLineHeight > 0 ? root.editorLineHeight : 18.0);
+        var charW = (pane && pane.paneCharWidth > 0) ? pane.paneCharWidth : (root.charWidth > 0 ? root.charWidth : 7.8);
+        var localLine = Math.max(1, Math.floor((r.y - codeTextArea.topPadding) / lineH) + 1);
+        var globalLine = (pane && pane.isVirtualized) ? (pane.windowStartLine + localLine) : localLine;
+        var col = Math.max(1, Math.floor((r.x - codeTextArea.leftPadding) / charW) + 1);
+        root.cursorLine = globalLine;
         root.cursorColumn = col;
-        root.cursorPositionChanged(line, col);
+        root.cursorPositionChanged(globalLine, col);
     }
 
     Timer {
@@ -2876,21 +3846,17 @@ Item {
         }
     }
 
-    function jumpToLineAndCol(line, col) {
-        if (!codeTextArea) return;
-        var text = codeTextArea.text;
-        var lines = text.split("\n");
-        var targetLine = Math.max(1, Math.min(line, lines.length));
-        var charPos = 0;
-        for (var i = 0; i < targetLine - 1; i++) {
-            charPos += lines[i].length + 1;
+    Timer {
+        id: sessionSaveDebounceTimer
+        interval: 1000
+        repeat: false
+        onTriggered: {
+            root.saveWorkspaceSession();
         }
-        var targetCol = Math.max(1, Math.min(col || 1, lines[targetLine - 1].length + 1));
-        charPos += (targetCol - 1);
-        codeTextArea.cursorPosition = Math.min(charPos, text.length);
-        codeTextArea.forceActiveFocus();
-        root.updateCursorPosition();
-        root.ensureCursorVisible();
+    }
+
+    function jumpToLineAndCol(line, col) {
+        root.jumpToLine(line, col);
     }
 
     Timer {
@@ -2898,13 +3864,18 @@ Item {
         interval: 300
         repeat: false
         onTriggered: {
-            root.totalLineCount = codeTextArea.lineCount > 0 ? codeTextArea.lineCount : countLines(codeTextArea.text);
+            if (root.activeEditorPane && codeTextArea) {
+                if (!root.activeEditorPane.isVirtualized) {
+                    root.activeEditorPane.paneTotalLineCount = codeTextArea.lineCount > 0 ? codeTextArea.lineCount : countLines(codeTextArea.text);
+                }
+            }
             var canonical = root.getCanonicalText();
             if (root.currentTab) {
                 root.currentTab.content = canonical;
             }
             if (codeMinimap) {
-                codeMinimap.documentText = codeTextArea.text;
+                var tabKeyVal = (root.currentTab && (root.currentTab.fileId || root.currentTab.path || root.currentTab.title)) || "tab";
+                codeMinimap.setTabAndText(tabKeyVal, canonical);
             }
             for (var t = 0; t < tabModel.count; t++) {
                 var tab = tabModel.get(t);
@@ -2937,9 +3908,14 @@ Item {
         var newNum = tabModel.count + 1;
         var title = "Untitled-" + newNum;
         var newIdx = tabModel.count;
+        var fileId = "tab_" + Date.now() + "_" + newNum;
+
+        if (typeof backend !== "undefined" && backend && backend.init_backing_document) {
+            backend.init_backing_document(fileId, "");
+        }
 
         tabModel.append({
-                fileId: "tab_" + Date.now() + "_" + newNum,
+                fileId: fileId,
                 title: title,
                 path: "",
                 content: "",
@@ -2952,14 +3928,19 @@ Item {
             });
 
         switchToTab(newIdx);
+        if (root.activeEditorPane) {
+            root.activeEditorPane.savedContent = "";
+            root.activeEditorPane.isUntitled = true;
+        }
+        tabModel.setProperty(newIdx, "isDirty", true);
+        root.dirtyVersion++;
+        root.activeFileChanged("", title, "Plain Text", true);
     }
 
     function loadFile(path, content) {
-        console.time("[Timing] loadFile total");
         for (var i = 0; i < tabModel.count; i++) {
             if (tabModel.get(i).path === path) {
                 switchToTab(i);
-                console.timeEnd("[Timing] loadFile total");
                 return;
             }
         }
@@ -2967,35 +3948,57 @@ Item {
         var fileName = path.split("/").pop().split("\\").pop();
         var langObj = LanguageRegistry.detectLanguage(fileName);
         var newIdx = tabModel.count;
+        var fileId = "file_" + Date.now();
+
+        if (typeof backend !== "undefined" && backend && backend.init_backing_document) {
+            backend.init_backing_document(path, content || "");
+        }
 
         root.isInitialTextLoading = true;
-        console.time("[Timing] tabModel.append");
-        tabModel.append({
-                fileId: "file_" + Date.now(),
-                title: fileName,
-                path: path,
-                content: "",
-                isDirty: false,
-                languageName: langObj.name,
-                languageId: langObj.id,
-                cursorPos: 0,
-                scrollX: 0,
-                scrollY: 0
+        try {
+            tabModel.append({
+                    fileId: fileId,
+                    title: fileName,
+                    path: path,
+                    content: content || "",
+                    isDirty: false,
+                    languageName: langObj.name,
+                    languageId: langObj.id,
+                    cursorPos: 0,
+                    scrollX: 0,
+                    scrollY: 0
+                });
+
+            switchToTab(newIdx);
+
+            if (root.activeEditorPane) {
+                root.activeEditorPane.savedContent = content || "";
+                root.activeEditorPane.isUntitled = false;
+            }
+            tabModel.setProperty(newIdx, "isDirty", false);
+            root.dirtyVersion++;
+            root.activeFileChanged(path, fileName, langObj.name, false);
+            console.log("[Timing] File visible");
+        } finally {
+            Qt.callLater(function() {
+                root.isInitialTextLoading = false;
+                if (root.activeEditorPane) {
+                    root.activeEditorPane.savedContent = content || "";
+                    root.activeEditorPane.isUntitled = false;
+                    if (root.activeEditorPane.updatePaneScopes) {
+                        root.activeEditorPane.updatePaneScopes();
+                    }
+                }
+                if (newIdx >= 0 && newIdx < tabModel.count) {
+                    tabModel.setProperty(newIdx, "isDirty", false);
+                    if (newIdx === root.activeTabIndex) {
+                        root.dirtyVersion++;
+                    }
+                }
+                minimapDeferredUpdateTimer.restart();
+                console.log("[Timing] Editor fully responsive");
             });
-        console.timeEnd("[Timing] tabModel.append");
-
-        console.time("[Timing] switchToTab");
-        switchToTab(newIdx);
-        console.timeEnd("[Timing] switchToTab");
-
-        if (root.activeEditorPane && root.activeEditorPane.codeTextArea) {
-            root.activeEditorPane.codeTextArea.text = content;
-            root.activeEditorPane.paneTotalLineCount = root.countLines(content);
-            root.activeEditorPane.updatePaneScopes();
         }
-        root.isInitialTextLoading = false;
-
-        console.timeEnd("[Timing] loadFile total");
     }
 
     function openWhiteboardTab() {
@@ -3072,6 +4075,11 @@ Item {
     }
 
     function getCanonicalText() {
+        var pane = root.activeEditorPane;
+        if (pane && pane.isVirtualized && typeof backend !== "undefined" && backend && backend.get_backing_text) {
+            var fullDoc = backend.get_backing_text(pane.tabKey);
+            if (fullDoc !== undefined && fullDoc !== null && fullDoc.length > 0) return fullDoc;
+        }
         if (!codeTextArea) return "";
         var keys = Object.keys(root.foldedMap);
         if (keys.length === 0) {
@@ -3358,7 +4366,9 @@ Item {
         }
 
         root.isFoldingOperation = false;
-        root.totalLineCount = lines.length;
+        if (root.activeEditorPane && !root.activeEditorPane.isVirtualized) {
+            root.activeEditorPane.paneTotalLineCount = lines.length;
+        }
         root.foldVersion++;
     }
 
@@ -3392,32 +4402,44 @@ Item {
                 if (typeof backend !== "undefined" && backend && backend.register_text_area) {
                     backend.register_text_area(root.codeTextArea, newTab.path || "", newTab.languageId || "text");
                 }
-                root.codeTextArea.forceActiveFocus();
+                if (!(typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.editingFilePath !== "")) {
+                    root.codeTextArea.forceActiveFocus();
+                }
                 root.updateCursorPosition();
                 root.ensureCursorVisible();
             }
             if (root.indentGuidesCanvas) {
                 root.indentGuidesCanvas.requestPaint();
             }
-            if (codeMinimap && root.codeTextArea) {
-                codeMinimap.documentText = root.codeTextArea.text;
+            if (codeMinimap) {
+                var tabKey = newTab.fileId || newTab.path || newTab.title || ("tab_" + index);
+                codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
             }
         }
 
+        root.dirtyVersion++;
         root.activeFileChanged(newTab.path || "", newTab.title || "", root.currentLanguage, newTab.isDirty || false);
         diagnosticsTimer.restart();
     }
 
     function syncSecondaryEditor() {
         if (root.secondaryTab && typeof secCodeTextArea !== "undefined" && secCodeTextArea) {
-            secCodeTextArea.text = root.secondaryTab.content || "";
-            if (typeof backend !== "undefined" && backend) {
-                if (backend.register_secondary_text_area) {
-                    backend.register_secondary_text_area(secCodeTextArea);
+            root.isSyncingSecondary = true;
+            try {
+                var targetContent = root.secondaryTab.content || "";
+                if (secCodeTextArea.text !== targetContent) {
+                    secCodeTextArea.text = targetContent;
                 }
-                if (backend.set_secondary_file) {
-                    backend.set_secondary_file(root.secondaryTab.path || root.secondaryTab.title || "main.py");
+                if (typeof backend !== "undefined" && backend) {
+                    if (backend.register_secondary_text_area) {
+                        backend.register_secondary_text_area(secCodeTextArea);
+                    }
+                    if (backend.set_secondary_file) {
+                        backend.set_secondary_file(root.secondaryTab.path || root.secondaryTab.title || "main.py");
+                    }
                 }
+            } finally {
+                root.isSyncingSecondary = false;
             }
         }
     }
@@ -3442,49 +4464,153 @@ Item {
         var wasActive = (index === root.activeTabIndex);
         var wasSecondary = (index === root.secondaryTabIndex);
 
-        tabModel.remove(index);
+        root.isRestoringTab = true;
+        try {
+            tabModel.remove(index);
 
-        if (tabModel.count === 0) {
-            root.isSplitEditor = false;
-            root.activeTabIndex = -1;
-            root.secondaryTabIndex = -1;
-            root.isRestoringTab = true;
-            try {
+            if (tabModel.count === 0) {
+                root.isSplitEditor = false;
+                root.activeTabIndex = -1;
+                root.secondaryTabIndex = -1;
                 if (codeTextArea) {
                     codeTextArea.text = "";
                 }
-                root.totalLineCount = 0;
+                if (root.activeEditorPane) {
+                    root.activeEditorPane.paneTotalLineCount = 0;
+                }
                 if (codeMinimap) {
                     codeMinimap.documentText = "";
                 }
                 root.currentLanguage = "Plain Text";
                 root.currentLanguageId = "text";
-                root.activeFileChanged("", "", "Plain Text", false);
                 if (typeof backend !== "undefined" && backend && backend.set_active_file) {
                     backend.set_active_file("", "text");
                 }
-                indentGuidesCanvas.requestPaint();
-            } finally {
-                root.isRestoringTab = false;
+                if (typeof indentGuidesCanvas !== "undefined" && indentGuidesCanvas) {
+                    indentGuidesCanvas.requestPaint();
+                }
+                return;
             }
-            return;
-        }
 
-        // Adjust activeTabIndex for primary pane
-        if (wasActive) {
-            var newActive = Math.min(index, tabModel.count - 1);
-            switchToTab(newActive);
-        } else if (root.activeTabIndex > index) {
-            root.activeTabIndex--;
-        }
+            // Adjust activeTabIndex for primary pane
+            if (wasActive) {
+                var newActive = Math.min(index, tabModel.count - 1);
+                switchToTab(newActive);
+            } else if (root.activeTabIndex > index) {
+                root.activeTabIndex--;
+            }
 
-        // Adjust secondaryTabIndex for secondary split pane
-        if (root.isSplitEditor) {
-            if (wasSecondary) {
-                root.secondaryTabIndex = Math.min(index, tabModel.count - 1);
-                syncSecondaryEditor();
-            } else if (root.secondaryTabIndex > index) {
-                root.secondaryTabIndex--;
+            // Adjust secondaryTabIndex for secondary split pane
+            if (root.isSplitEditor) {
+                if (wasSecondary) {
+                    root.secondaryTabIndex = Math.min(index, tabModel.count - 1);
+                    syncSecondaryEditor();
+                } else if (root.secondaryTabIndex > index) {
+                    root.secondaryTabIndex--;
+                }
+            }
+        } finally {
+            root.isRestoringTab = false;
+        }
+    }
+
+    function closeOtherTabs(targetIndex) {
+        if (targetIndex < 0 || targetIndex >= tabModel.count) return;
+        for (var i = tabModel.count - 1; i > targetIndex; i--) {
+            closeTab(i);
+        }
+        for (var j = targetIndex - 1; j >= 0; j--) {
+            closeTab(j);
+        }
+    }
+
+    function closeTabsToTheRight(targetIndex) {
+        if (targetIndex < 0 || targetIndex >= tabModel.count) return;
+        for (var i = tabModel.count - 1; i > targetIndex; i--) {
+            closeTab(i);
+        }
+    }
+
+    function closeAllTabs() {
+        for (var i = tabModel.count - 1; i >= 0; i--) {
+            closeTab(i);
+        }
+    }
+
+    function closeSavedTabs() {
+        for (var i = tabModel.count - 1; i >= 0; i--) {
+            var t = tabModel.get(i);
+            if (t && !t.isDirty) {
+                closeTab(i);
+            }
+        }
+    }
+
+    function copyTabPath(index) {
+        if (index < 0 || index >= tabModel.count) return;
+        var t = tabModel.get(index);
+        if (t && t.path && typeof backend !== "undefined" && backend && backend.copy_path_to_clipboard) {
+            backend.copy_path_to_clipboard(t.path);
+        }
+    }
+
+    function revealTabInExplorer(index) {
+        if (index < 0 || index >= tabModel.count) return;
+        var t = tabModel.get(index);
+        if (t && t.path && typeof backend !== "undefined" && backend && backend.reveal_in_explorer) {
+            backend.reveal_in_explorer(t.path);
+        }
+    }
+
+    function isTabDirty(index) {
+        return (index >= 0 && index < tabModel.count && tabModel.get(index)) ? (tabModel.get(index).isDirty === true) : false;
+    }
+
+    function setTabDirty(index, dirty) {
+        if (index >= 0 && index < tabModel.count) {
+            tabModel.setProperty(index, "isDirty", dirty);
+            root.dirtyVersion++;
+        }
+    }
+
+    function getTabPath(index) {
+        return (index >= 0 && index < tabModel.count && tabModel.get(index)) ? (tabModel.get(index).path || "") : "";
+    }
+
+    function closeTabByPath(targetPath) {
+        if (!targetPath) return;
+        var normTarget = targetPath.replace(/\\/g, "/");
+        for (var i = 0; i < tabModel.count; i++) {
+            var t = tabModel.get(i);
+            if (t && t.path && t.path.replace(/\\/g, "/") === normTarget) {
+                closeTab(i);
+                return;
+            }
+        }
+    }
+
+    function renameTabByPath(oldPath, newPath) {
+        if (!oldPath || !newPath) return;
+        var normOld = oldPath.replace(/\\/g, "/");
+        var normNew = newPath.replace(/\\/g, "/");
+        for (var i = 0; i < tabModel.count; i++) {
+            var t = tabModel.get(i);
+            if (t && t.path && t.path.replace(/\\/g, "/") === normOld) {
+                var newFileName = normNew.split("/").pop();
+                var langObj = LanguageRegistry.detectLanguage(newFileName);
+                tabModel.setProperty(i, "path", normNew);
+                tabModel.setProperty(i, "title", newFileName);
+                tabModel.setProperty(i, "languageName", langObj.name);
+                tabModel.setProperty(i, "languageId", langObj.id);
+                if (i === root.activeTabIndex) {
+                    root.currentLanguage = langObj.name;
+                    root.currentLanguageId = langObj.id;
+                    if (typeof backend !== "undefined" && backend && backend.set_active_file) {
+                        backend.set_active_file(normNew, langObj.id);
+                    }
+                    root.activeFileChanged(normNew, newFileName, langObj.name, t.isDirty || false);
+                }
+                return;
             }
         }
     }
@@ -3497,8 +4623,22 @@ Item {
         }
 
         if (typeof backend !== "undefined" && backend) {
-            backend.save_file(root.currentTab.path, root.getCanonicalText());
+            var pane = root.activeEditorPane;
+            var tabKey = (pane && pane.tabKey) ? pane.tabKey : (root.currentTab.path || root.currentTab.fileId || "");
+            var canonical = (pane && pane.isVirtualized && backend.get_backing_text) ? backend.get_backing_text(tabKey) : root.getCanonicalText();
+            backend.save_file(root.currentTab.path, canonical);
+            if (backend.mark_backing_document_saved) {
+                backend.mark_backing_document_saved(tabKey);
+            }
+            if (backend.mark_document_saved && codeTextArea) {
+                backend.mark_document_saved(codeTextArea);
+            }
+            if (root.activeEditorPane) {
+                root.activeEditorPane.savedContent = canonical;
+                root.activeEditorPane.isUntitled = false;
+            }
             tabModel.setProperty(root.activeTabIndex, "isDirty", false);
+            root.dirtyVersion++;
             root.activeFileChanged(root.activeFilePath, root.activeFileName, root.currentLanguage, false);
             return true;
         }
@@ -3515,21 +4655,44 @@ Item {
 
         var fileName = cleanPath.split("/").pop().split("\\").pop();
         var langObj = LanguageRegistry.detectLanguage(fileName);
+        var pane = root.activeEditorPane;
+        var tabKey = (pane && pane.tabKey) ? pane.tabKey : (root.currentTab ? (root.currentTab.path || root.currentTab.fileId || "") : "");
+        var canonical = (pane && pane.isVirtualized && backend.get_backing_text) ? backend.get_backing_text(tabKey) : root.getCanonicalText();
 
         if (root.currentTab) {
             root.currentTab.path = cleanPath;
             root.currentTab.title = fileName;
             root.currentTab.languageName = langObj.name;
             root.currentTab.languageId = langObj.id;
+            if (typeof backend !== "undefined" && backend) {
+                if (backend.init_backing_document) {
+                    backend.init_backing_document(cleanPath, canonical);
+                }
+                if (backend.mark_backing_document_saved) {
+                    backend.mark_backing_document_saved(cleanPath);
+                }
+                if (backend.mark_document_saved && codeTextArea) {
+                    backend.mark_document_saved(codeTextArea);
+                }
+            }
+            if (root.activeEditorPane) {
+                root.activeEditorPane.savedContent = canonical;
+                root.activeEditorPane.isUntitled = false;
+            }
             tabModel.setProperty(root.activeTabIndex, "isDirty", false);
+            root.dirtyVersion++;
             root.currentLanguage = langObj.name;
             root.currentLanguageId = langObj.id;
         }
+        if (root.activeEditorPane) {
+            root.activeEditorPane.savedContent = canonical;
+            root.activeEditorPane.isUntitled = false;
+        }
 
         if (typeof backend !== "undefined" && backend) {
-            backend.save_file(cleanPath, root.getCanonicalText());
-            if (backend.register_text_area) {
-                backend.register_text_area(codeTextArea);
+            backend.save_file(cleanPath, canonical);
+            if (backend.register_text_area && root.codeTextArea) {
+                backend.register_text_area(root.codeTextArea, cleanPath, langObj.id);
             }
             root.activeFileChanged(cleanPath, fileName, root.currentLanguage, false);
         }
@@ -3639,27 +4802,74 @@ Item {
         updateFindMatches(findReplaceBar.findText, findReplaceBar.matchCase);
     }
 
+    property var globalFindMatches: []
+
     function updateFindMatches(pattern, matchCase) {
+        var pane = root.activeEditorPane;
         if (!pattern || !codeTextArea) {
             findReplaceBar.totalMatches = 0;
             findReplaceBar.currentMatchIndex = 0;
+            root.globalFindMatches = [];
             return [];
         }
+
+        if (pane && pane.isVirtualized && typeof backend !== "undefined" && backend && backend.search_backing_document) {
+            var matches = backend.search_backing_document(pane.tabKey, pattern, matchCase, false);
+            root.globalFindMatches = matches || [];
+            findReplaceBar.totalMatches = root.globalFindMatches.length;
+            return root.globalFindMatches;
+        }
+
         var text = codeTextArea.text;
         var searchPattern = matchCase ? pattern : pattern.toLowerCase();
         var searchText = matchCase ? text : text.toLowerCase();
-        var matches = [];
+        var localMatches = [];
         var pos = 0;
         while ((pos = searchText.indexOf(searchPattern, pos)) !== -1) {
-            matches.push(pos);
+            localMatches.push(pos);
             pos += searchPattern.length;
         }
-        findReplaceBar.totalMatches = matches.length;
-        return matches;
+        findReplaceBar.totalMatches = localMatches.length;
+        return localMatches;
     }
 
     function findNext(pattern, matchCase) {
         if (!pattern || !codeTextArea) return;
+        var pane = root.activeEditorPane;
+
+        if (pane && pane.isVirtualized && typeof backend !== "undefined" && backend && backend.search_backing_document) {
+            var gMatches = updateFindMatches(pattern, matchCase);
+            console.log("[FindNext Debug] query:", pattern, "matchCase:", matchCase, "count:", gMatches ? gMatches.length : 0);
+            if (!gMatches || gMatches.length === 0) return;
+
+            var curLine = root.cursorLine;
+            var curCol = root.cursorColumn;
+            var nextMatch = null;
+            var matchIdx = 0;
+
+            for (var i = 0; i < gMatches.length; i++) {
+                var m = gMatches[i];
+                if (m.startLine > curLine || (m.startLine === curLine && m.startCol > curCol)) {
+                    nextMatch = m;
+                    matchIdx = i;
+                    break;
+                }
+            }
+            if (!nextMatch) {
+                nextMatch = gMatches[0];
+                matchIdx = 0;
+            }
+
+            console.log("[FindNext Match]", "matchIdx:", matchIdx, "startLine:", nextMatch.startLine, "startCol:", nextMatch.startCol);
+            findReplaceBar.currentMatchIndex = matchIdx;
+            root.jumpToLine(nextMatch.startLine, nextMatch.startCol);
+            var localPos = codeTextArea.cursorPosition;
+            codeTextArea.select(localPos, localPos + pattern.length);
+            root.updateCursorPosition();
+            root.ensureCursorVisible();
+            return;
+        }
+
         var text = codeTextArea.text;
         var startPos = codeTextArea.selectionEnd || codeTextArea.cursorPosition;
         var matches = updateFindMatches(pattern, matchCase);
@@ -3687,6 +4897,39 @@ Item {
 
     function findPrev(pattern, matchCase) {
         if (!pattern || !codeTextArea) return;
+        var pane = root.activeEditorPane;
+
+        if (pane && pane.isVirtualized && typeof backend !== "undefined" && backend && backend.search_backing_document) {
+            var gMatches = updateFindMatches(pattern, matchCase);
+            if (!gMatches || gMatches.length === 0) return;
+
+            var curLine = root.cursorLine;
+            var curCol = root.cursorColumn;
+            var prevMatch = null;
+            var matchIdx = 0;
+
+            for (var i = gMatches.length - 1; i >= 0; i--) {
+                var m = gMatches[i];
+                if (m.startLine < curLine || (m.startLine === curLine && m.startCol < curCol)) {
+                    prevMatch = m;
+                    matchIdx = i;
+                    break;
+                }
+            }
+            if (!prevMatch) {
+                prevMatch = gMatches[gMatches.length - 1];
+                matchIdx = gMatches.length - 1;
+            }
+
+            findReplaceBar.currentMatchIndex = matchIdx;
+            root.jumpToLine(prevMatch.startLine, prevMatch.startCol);
+            var localPos = codeTextArea.cursorPosition;
+            codeTextArea.select(localPos, localPos + pattern.length);
+            root.updateCursorPosition();
+            root.ensureCursorVisible();
+            return;
+        }
+
         var text = codeTextArea.text;
         var startPos = codeTextArea.selectionStart !== undefined ? codeTextArea.selectionStart : codeTextArea.cursorPosition;
         var matches = updateFindMatches(pattern, matchCase);
@@ -3725,6 +4968,19 @@ Item {
 
     function replaceAll(pattern, replacement, matchCase) {
         if (!pattern || !codeTextArea) return;
+        var pane = root.activeEditorPane;
+        if (pane && pane.isVirtualized && typeof backend !== "undefined" && backend && backend.get_backing_text && backend.update_backing_text) {
+            var fullText = backend.get_backing_text(pane.tabKey);
+            var regex = new RegExp(escapeRegExp(pattern), matchCase ? "g" : "gi");
+            var newFullText = fullText.replace(regex, replacement || "");
+            backend.update_backing_text(pane.tabKey, newFullText);
+            pane.paneTotalLineCount = backend.get_backing_total_lines(pane.tabKey);
+            pane.checkAndShiftWindow(true);
+            tabModel.setProperty(root.activeTabIndex, "isDirty", true);
+            root.dirtyVersion++;
+            updateFindMatches(pattern, matchCase);
+            return;
+        }
         var text = codeTextArea.text;
         var regex = new RegExp(escapeRegExp(pattern), matchCase ? "g" : "gi");
         codeTextArea.text = text.replace(regex, replacement || "");
@@ -3804,8 +5060,8 @@ Item {
         }
         autocompletePopup.selectedSuggestionIndex = 0;
 
-        // Query Backend LSP asynchronously with canonical text synchronization
-        if (typeof backend !== "undefined" && backend && backend.request_completion) {
+        // Query Backend LSP asynchronously if method is implemented
+        if (typeof backend !== "undefined" && backend && typeof backend.request_completion === "function") {
             backend.request_completion(root.activeFilePath || "untitled.txt", root.cursorLine - 1, root.cursorColumn - 1, root.getCanonicalText());
         }
     }
@@ -3853,8 +5109,13 @@ Item {
             prefixStart--;
         }
 
-        var isSnippet = kind === "snippet" || word.indexOf("${") !== -1;
-        var expanded = isSnippet ? SnippetManager.expandSnippetTemplate(word) : { text: word, cursorOffset: word.length };
+        var lineStart = text.lastIndexOf("\n", prefixStart - 1) + 1;
+        var currentLine = text.substring(lineStart, prefixStart);
+        var indentMatch = currentLine.match(/^(\s*)/);
+        var baseIndent = indentMatch ? indentMatch[1] : "";
+
+        var isSnippet = kind === "snippet" || word.indexOf("${") !== -1 || word.indexOf("$0") !== -1 || word.indexOf("$1") !== -1;
+        var expanded = isSnippet ? SnippetManager.expandSnippetTemplate(word, baseIndent) : { text: word, cursorOffset: word.length, tabstops: [] };
         var insertStr = expanded.text;
         var targetOffset = expanded.cursorOffset;
 
@@ -3872,8 +5133,8 @@ Item {
             var isHtmlContext = (root.currentLanguageId === "html" || root.currentLanguageId === "xml" || root.currentLanguageId === "qml" || (root.activeFileName && (root.activeFileName.endsWith(".html") || root.activeFileName.endsWith(".htm") || root.activeFileName.endsWith(".jsx") || root.activeFileName.endsWith(".tsx"))));
             if (isHtmlContext) {
                 removeStart = prefixStart - 1;
-                insertStr = "<" + insertStr + ">\n    \n</" + insertStr + ">";
-                targetOffset = insertStr.indexOf("\n    ") + 5;
+                insertStr = "<" + insertStr + ">\n" + baseIndent + "    \n" + baseIndent + "</" + insertStr + ">";
+                targetOffset = insertStr.indexOf("\n" + baseIndent + "    ") + (baseIndent.length + 5);
             }
         }
 
@@ -3883,47 +5144,107 @@ Item {
 
         codeTextArea.remove(removeStart, removeEnd);
         codeTextArea.insert(removeStart, insertStr);
-        codeTextArea.cursorPosition = removeStart + targetOffset;
+
+        if (isSnippet && expanded.tabstops && expanded.tabstops.length > 0) {
+            root.activeSnippetStops = expanded.tabstops.map(function(s) {
+                return {
+                    tabstop: s.tabstop,
+                    start: removeStart + s.start,
+                    end: removeStart + s.end,
+                    placeholder: s.placeholder
+                };
+            });
+            root.activeSnippetStopIndex = 0;
+            var firstStop = root.activeSnippetStops[0];
+            codeTextArea.cursorPosition = firstStop.start;
+            if (firstStop.end > firstStop.start) {
+                codeTextArea.select(firstStop.start, firstStop.end);
+            }
+        } else {
+            root.activeSnippetStops = [];
+            root.activeSnippetStopIndex = -1;
+            codeTextArea.cursorPosition = removeStart + targetOffset;
+        }
+
         suggestionModel.clear();
         codeTextArea.forceActiveFocus();
     }
 
     function toggleExtraCursor(charPos) {
-        if (charPos < 0 || charPos > codeTextArea.text.length) return;
+        if (!codeTextArea || charPos < 0 || charPos > codeTextArea.text.length) return;
         var arr = root.extraCursors.slice();
-        var idx = arr.indexOf(charPos);
-        if (idx !== -1) {
-            arr.splice(idx, 1);
+        var existingIdx = -1;
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i];
+            var cPos = (typeof c === "object") ? c.cursor : c;
+            if (Math.abs(cPos - charPos) <= 1) {
+                existingIdx = i;
+                break;
+            }
+        }
+        if (existingIdx !== -1) {
+            arr.splice(existingIdx, 1);
+            if (arr.length === 1) {
+                var single = arr[0];
+                codeTextArea.cursorPosition = (typeof single === "object") ? single.cursor : single;
+                arr = [];
+            }
         } else {
-            arr.push(charPos);
+            if (arr.length === 0) {
+                var mainPos = codeTextArea.cursorPosition;
+                arr.push({ start: mainPos, end: mainPos, cursor: mainPos });
+            }
+            arr.push({ start: charPos, end: charPos, cursor: charPos });
+            arr.sort(function(a, b) {
+                var aP = (typeof a === "object") ? a.start : a;
+                var bP = (typeof b === "object") ? b.start : b;
+                return aP - bP;
+            });
         }
         root.extraCursors = arr;
     }
 
     function addNextOccurrenceCursor() {
+        if (!codeTextArea) return;
         var text = codeTextArea.text;
-        var selText = codeTextArea.selectedText;
+        var sStart = codeTextArea.selectionStart;
+        var sEnd = codeTextArea.selectionEnd;
         var curPos = codeTextArea.cursorPosition;
+        var arr = root.extraCursors.slice();
+
+        var selText = "";
+        if (arr.length > 0 && arr[0].start !== undefined && arr[0].end !== undefined && arr[0].start !== arr[0].end) {
+            selText = text.substring(arr[0].start, arr[0].end);
+        } else if (sStart !== undefined && sEnd !== undefined && sStart !== sEnd) {
+            selText = text.substring(Math.min(sStart, sEnd), Math.max(sStart, sEnd));
+        }
 
         if (!selText || selText.length === 0) {
             var wordStart = curPos;
-            while (wordStart > 0 && /[a-zA-Z0-9_]/.test(text[wordStart - 1])) wordStart--;
+            while (wordStart > 0 && /[a-zA-Z0-9_]/.test(text.charAt(wordStart - 1))) wordStart--;
             var wordEnd = curPos;
-            while (wordEnd < text.length && /[a-zA-Z0-9_]/.test(text[wordEnd])) wordEnd++;
+            while (wordEnd < text.length && /[a-zA-Z0-9_]/.test(text.charAt(wordEnd))) wordEnd++;
             if (wordEnd > wordStart) {
                 codeTextArea.select(wordStart, wordEnd);
                 selText = text.substring(wordStart, wordEnd);
+                root.extraCursors = [{ start: wordStart, end: wordEnd, cursor: wordEnd }];
+                return;
             } else {
                 return;
             }
         }
 
-        var searchStart = codeTextArea.selectionEnd;
-        var arr = root.extraCursors.slice();
-        if (arr.length > 0) {
-            for (var i = 0; i < arr.length; i++) {
-                searchStart = Math.max(searchStart, arr[i] + selText.length);
-            }
+        if (arr.length === 0) {
+            var minS = (sStart !== undefined && sEnd !== undefined) ? Math.min(sStart, sEnd) : curPos;
+            var maxS = (sStart !== undefined && sEnd !== undefined) ? Math.max(sStart, sEnd) : curPos;
+            arr.push({ start: minS, end: maxS, cursor: maxS });
+        }
+
+        var searchStart = 0;
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i];
+            var cMax = Math.max(c.start, c.end);
+            if (cMax > searchStart) searchStart = cMax;
         }
 
         var nextIdx = text.indexOf(selText, searchStart);
@@ -3931,9 +5252,22 @@ Item {
             nextIdx = text.indexOf(selText, 0);
         }
 
-        if (nextIdx !== -1 && nextIdx !== codeTextArea.selectionStart && arr.indexOf(nextIdx) === -1) {
-            arr.push(nextIdx);
-            root.extraCursors = arr;
+        if (nextIdx !== -1) {
+            var alreadyPresent = false;
+            for (var j = 0; j < arr.length; j++) {
+                if (arr[j].start === nextIdx && arr[j].end === nextIdx + selText.length) {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+            if (!alreadyPresent) {
+                arr.push({ start: nextIdx, end: nextIdx + selText.length, cursor: nextIdx + selText.length });
+                arr.sort(function(a, b) { return a.start - b.start; });
+                root.extraCursors = arr;
+                var lastItem = arr[arr.length - 1];
+                codeTextArea.select(lastItem.start, lastItem.end);
+                codeTextArea.cursorPosition = lastItem.cursor;
+            }
         }
     }
 
@@ -3999,6 +5333,7 @@ Item {
 
     QuickOpenPalette {
         id: quickOpenPalette
+        objectName: "quickOpenPalette"
         onFileSelected: function(filePath) {
             if (typeof backend !== "undefined" && backend && backend.open_file) {
                 backend.open_file(filePath);
@@ -4009,21 +5344,83 @@ Item {
         }
     }
 
+    AIQuickPromptPopup {
+        id: aiQuickPromptPopup
+        onPromptSubmitted: function(prompt) {
+            root.sendAiPrompt(prompt);
+        }
+    }
+
     function jumpToLine(targetLine, targetCol) {
-        if (!codeTextArea) return;
-        var lines = codeTextArea.text.split("\n");
-        var line = Math.max(1, Math.min(targetLine, lines.length));
+        var pane = root.activeEditorPane;
+        if (!pane || !pane.codeTextArea) return;
+        var ta = pane.codeTextArea;
         var col = targetCol !== undefined ? Math.max(1, targetCol) : 1;
+
+        if (pane.isVirtualized && typeof backend !== "undefined" && backend && backend.get_backing_slice) {
+            var totalLines = pane.paneTotalLineCount;
+            var tLine = Math.max(1, Math.min(targetLine, totalLines));
+            var zeroBasedLine = tLine - 1;
+
+            if (zeroBasedLine < pane.windowStartLine + 60 || zeroBasedLine > pane.windowEndLine - 60) {
+                var halfWindow = 400;
+                var newStart = Math.max(0, zeroBasedLine - halfWindow);
+                var newEnd = Math.min(totalLines - 1, newStart + 800);
+                newStart = Math.max(0, newEnd - 800);
+
+                var sliceObj = backend.get_backing_slice(pane.tabKey, newStart, newEnd);
+                if (sliceObj && sliceObj.text !== undefined) {
+                    pane.isShifting = true;
+                    console.log("[Virtualization Shift]", "reason: goto", "from:", pane.windowStartLine, "-", pane.windowEndLine, "to:", sliceObj.startLine, "-", sliceObj.endLine, "targetLine:", tLine);
+                    root.isRestoringTab = true;
+                    try {
+                        pane.windowStartLine = sliceObj.startLine;
+                        pane.windowEndLine = sliceObj.endLine;
+                        ta.text = sliceObj.text;
+                        pane.paneScopeRanges = root.computeScopesForText(ta.text);
+                        pane.paneGuideSegments = root.computeGuideSegmentsForText(ta.text);
+                        if (pane.indentGuidesCanvas) {
+                            pane.indentGuidesCanvas.requestPaint();
+                        }
+                    } finally {
+                        root.isRestoringTab = false;
+                        pane.isShifting = false;
+                    }
+                }
+            }
+
+            var localLine = Math.max(1, tLine - pane.windowStartLine);
+            var lines = ta.text.split("\n");
+            var targetLocalLine = Math.min(localLine, lines.length);
+            var charPos = 0;
+            for (var l = 0; l < targetLocalLine - 1; l++) {
+                charPos += lines[l].length + 1;
+            }
+            if (targetLocalLine - 1 < lines.length) {
+                charPos += Math.min(col - 1, lines[targetLocalLine - 1].length);
+            }
+            ta.cursorPosition = Math.min(charPos, ta.text.length);
+            ta.forceActiveFocus();
+            if (pane.editorFlickable) {
+                var targetY = (tLine - 1) * pane.paneLineHeight;
+                pane.editorFlickable.contentY = Math.max(0, targetY - (pane.editorFlickable.height / 2));
+            }
+            root.updateCursorPosition();
+            return;
+        }
+
+        var lines = ta.text.split("\n");
+        var line = Math.max(1, Math.min(targetLine, lines.length));
         var charPos = 0;
         for (var l = 0; l < line - 1; l++) {
             charPos += lines[l].length + 1;
         }
         charPos += Math.min(col - 1, lines[line - 1].length);
-        codeTextArea.cursorPosition = charPos;
-        codeTextArea.forceActiveFocus();
-        if (editorFlickable) {
+        ta.cursorPosition = Math.min(charPos, ta.text.length);
+        ta.forceActiveFocus();
+        if (pane.editorFlickable) {
             var targetY = (line - 1) * root.editorLineHeight;
-            editorFlickable.contentY = Math.max(0, targetY - (editorFlickable.height / 2));
+            pane.editorFlickable.contentY = Math.max(0, targetY - (pane.editorFlickable.height / 2));
         }
         root.updateCursorPosition();
     }
@@ -4044,16 +5441,13 @@ Item {
         renameSymbolDialog.openAt(pt.x, pt.y, sym, root.cursorLine, root.cursorColumn);
     }
 
-    
-
-        function updateSelectionOccurrences() {
+    function updateSelectionOccurrences() {
         if (!codeTextArea) {
             root.selectionOccurrences = [];
             return;
         }
         var sel = codeTextArea.selectedText;
-        if (!sel || sel.trim().length < 2 || sel.indexOf("
-") !== -1) {
+        if (!sel || sel.trim().length < 2 || sel.indexOf("\n") !== -1) {
             root.selectionOccurrences = [];
             return;
         }

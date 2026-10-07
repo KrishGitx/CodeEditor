@@ -34,6 +34,76 @@ function isLangMatch(lang1, lang2) {
 }
 
 /**
+ * Strictly parses an AI response according to the 3-State Protocol:
+ * Case 1: [REPLACEMENT_CODE] -> { status: "replacement", code: "..." }
+ * Case 2: [NO_CHANGE]        -> { status: "no_change", code: null }
+ * Case 3: [INSUFFICIENT_CONTEXT] -> { status: "insufficient_context", code: null }
+ * Invalid: Missing all 3 markers -> { status: "invalid", code: null }
+ *
+ * @param {string} response - The raw response from the AI
+ * @param {string} preferredLang - The active editor language identifier (optional)
+ * @returns {object} - { status: string, code: string | null }
+ */
+function parseReplacementResponse(response, preferredLang) {
+    if (!response || typeof response !== "string") {
+        return { status: "invalid", code: null };
+    }
+
+    var text = response;
+
+    var replMarker = "[REPLACEMENT_CODE]";
+    var noChangeMarker = "[NO_CHANGE]";
+    var insuffMarker = "[INSUFFICIENT_CONTEXT]";
+
+    var replIdx = text.indexOf(replMarker);
+    var noChangeIdx = text.indexOf(noChangeMarker);
+    var insuffIdx = text.indexOf(insuffMarker);
+
+    // Step 1: Look for one of [REPLACEMENT_CODE], [NO_CHANGE], [INSUFFICIENT_CONTEXT]
+    // If [REPLACEMENT_CODE] exists:
+    if (replIdx !== -1) {
+        var textAfterMarker = text.substring(replIdx + replMarker.length);
+        // Find the FIRST fenced code block AFTER that marker:
+        var fenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|$)/;
+        var match = textAfterMarker.match(fenceRegex);
+        if (match && match[2] !== undefined && match[2].trim().length > 0) {
+            var extracted = sanitizeExtractedCode(match[2]);
+            return {
+                status: "replacement",
+                code: extracted
+            };
+        }
+        return { status: "invalid", code: null };
+    }
+
+    if (noChangeIdx !== -1) {
+        return { status: "no_change", code: null };
+    }
+
+    if (insuffIdx !== -1) {
+        return { status: "insufficient_context", code: null };
+    }
+
+    // If none of the required markers exist, treat the response as invalid for automatic replacement
+    return { status: "invalid", code: null };
+}
+
+/**
+ * Extracts code explicitly marked with [REPLACEMENT_CODE] for selection-based replacement.
+ *
+ * @param {string} response - The markdown response from the AI
+ * @param {string} preferredLang - The active editor language identifier (optional)
+ * @returns {string} - The clean extracted replacement code, or "" if invalid/missing
+ */
+function extractReplacementCode(response, preferredLang) {
+    var result = parseReplacementResponse(response, preferredLang);
+    if (result.status === "replacement" && result.code && result.code.trim().length > 0) {
+        return result.code;
+    }
+    return "";
+}
+
+/**
  * Extracts pure code from an AI response containing Markdown or conversational text.
  * - Fenced code blocks (```...``` or ~~~...~~~) take absolute priority over any surrounding text.
  * - Discards all text before and after the fence.
@@ -114,7 +184,7 @@ function extractCodeFromMarkdown(response, preferredLang) {
     // 4. Fenced blocks are authoritative: if any were found, return the best match
     if (matches.length > 0) {
         if (matches.length === 1) {
-            return matches[0].code;
+            return sanitizeExtractedCode(matches[0].code);
         }
 
         // Multiple fenced blocks: match against preferred language
@@ -124,14 +194,14 @@ function extractCodeFromMarkdown(response, preferredLang) {
             // Direct match
             for (var i = 0; i < matches.length; i++) {
                 if (matches[i].lang && normalizeLang(matches[i].lang) === normPref) {
-                    return matches[i].code;
+                    return sanitizeExtractedCode(matches[i].code);
                 }
             }
 
             // Compatibility/alias match
             for (var j = 0; j < matches.length; j++) {
                 if (matches[j].lang && isLangMatch(matches[j].lang, preferredLang)) {
-                    return matches[j].code;
+                    return sanitizeExtractedCode(matches[j].code);
                 }
             }
         }
@@ -228,17 +298,28 @@ function parseMarkdownSegments(response) {
 
     var text = response;
     var segments = [];
-    var fenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|$)/g;
+    var closedFenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,})/g;
     var lastIdx = 0;
     var match;
 
-    while ((match = fenceRegex.exec(text)) !== null) {
+    function cleanTextChunk(t) {
+        if (!t) return "";
+        // Clean protocol control markers from user-facing text display
+        var cleaned = t.replace(/\[REPLACEMENT_CODE\]/g, "")
+                       .replace(/\[NO_CHANGE\]/g, "")
+                       .replace(/\[INSUFFICIENT_CONTEXT\]/g, "");
+        // Clean leading/trailing blank lines resulting from marker removal
+        return cleaned.replace(/^\r?\n\r?\n/, "\n").trim();
+    }
+
+    while ((match = closedFenceRegex.exec(text)) !== null) {
         if (match.index > lastIdx) {
             var textChunk = text.substring(lastIdx, match.index);
-            if (textChunk.length > 0) {
+            var cleaned = cleanTextChunk(textChunk);
+            if (cleaned.length > 0) {
                 segments.push({
                     type: "text",
-                    text: textChunk,
+                    text: cleaned,
                     code: "",
                     lang: ""
                 });
@@ -255,33 +336,80 @@ function parseMarkdownSegments(response) {
             lang: lang || "code"
         });
 
-        lastIdx = fenceRegex.lastIndex;
-        if (match.index === fenceRegex.lastIndex) {
-            fenceRegex.lastIndex++;
-        }
+        lastIdx = closedFenceRegex.lastIndex;
     }
 
     if (lastIdx < text.length) {
         var remaining = text.substring(lastIdx);
-        if (remaining.length > 0) {
+        // Check if remaining contains an unclosed fence (e.g. while streaming)
+        var unclosedFenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*)$/;
+        var uMatch = remaining.match(unclosedFenceRegex);
+        if (uMatch) {
+            var beforeUnclosed = remaining.substring(0, uMatch.index);
+            var cleanedBefore = cleanTextChunk(beforeUnclosed);
+            if (cleanedBefore.length > 0) {
+                segments.push({
+                    type: "text",
+                    text: cleanedBefore,
+                    code: "",
+                    lang: ""
+                });
+            }
+            var uLang = (uMatch[1] || "").trim();
+            var uCode = uMatch[2] !== undefined ? uMatch[2] : "";
             segments.push({
-                type: "text",
-                text: remaining,
-                code: "",
-                lang: ""
+                type: "code",
+                text: "",
+                code: uCode,
+                lang: uLang || "code"
             });
+        } else {
+            var cleanedRem = cleanTextChunk(remaining);
+            if (cleanedRem.length > 0) {
+                segments.push({
+                    type: "text",
+                    text: cleanedRem,
+                    code: "",
+                    lang: ""
+                });
+            }
         }
     }
 
     if (segments.length === 0) {
-        segments.push({
-            type: "text",
-            text: text,
-            code: "",
-            lang: ""
-        });
+        var onlyCleaned = cleanTextChunk(text);
+        if (onlyCleaned.length > 0) {
+            segments.push({
+                type: "text",
+                text: onlyCleaned,
+                code: "",
+                lang: ""
+            });
+        } else {
+            if (text.indexOf("[NO_CHANGE]") !== -1) {
+                segments.push({
+                    type: "text",
+                    text: "No changes needed. The selected code has no issues.",
+                    code: "",
+                    lang: ""
+                });
+            } else if (text.indexOf("[INSUFFICIENT_CONTEXT]") !== -1) {
+                segments.push({
+                    type: "text",
+                    text: "Insufficient context to determine a safe modification. The fix requires information outside the selected code range.",
+                    code: "",
+                    lang: ""
+                });
+            } else if (text.trim().length > 0) {
+                segments.push({
+                    type: "text",
+                    text: text.trim(),
+                    code: "",
+                    lang: ""
+                });
+            }
+        }
     }
 
     return segments;
 }
-

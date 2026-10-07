@@ -38,10 +38,54 @@ Rectangle {
     ]
 
     property var radialConfigItems: []
+    property var customActions: []
+    property int selectedRadialSlot: 0
+
+    readonly property var standardAvailableActions: [
+        { id: "format", label: "Formatter", icon: "sparkles", shortcut: "Shift+Alt+F", custom: false, action: "" },
+        { id: "run", label: "Run", icon: "play", shortcut: "F5", custom: false, action: "" },
+        { id: "copy", label: "Copy", icon: "copy", shortcut: "Ctrl+C", custom: false, action: "" },
+        { id: "cut", label: "Cut", icon: "close", shortcut: "Ctrl+X", custom: false, action: "" },
+        { id: "paste", label: "Paste", icon: "file", shortcut: "Ctrl+V", custom: false, action: "" },
+        { id: "undo", label: "Undo", icon: "undo", shortcut: "Ctrl+Z", custom: false, action: "" },
+        { id: "find", label: "Find", icon: "search", shortcut: "Ctrl+F", custom: false, action: "" },
+        { id: "save", label: "Save", icon: "save", shortcut: "Ctrl+S", custom: false, action: "" },
+        { id: "redo", label: "Redo", icon: "redo", shortcut: "Ctrl+Y", custom: false, action: "" },
+        { id: "ai", label: "AI Copilot", icon: "sparkles", shortcut: "AI Panel", custom: false, action: "" },
+        { id: "music", label: "Music", icon: "music", shortcut: "Music Panel", custom: false, action: "" },
+        { id: "zen", label: "Zen Mode", icon: "zen", shortcut: "Ctrl+Shift+Z", custom: false, action: "" },
+        { id: "terminal", label: "Terminal", icon: "terminal", shortcut: "Ctrl+`", custom: false, action: "" },
+        { id: "settings", label: "Settings", icon: "settings", shortcut: "Ctrl+,", custom: false, action: "" },
+        { id: "rename", label: "Rename Symbol", icon: "file", shortcut: "F2", custom: false, action: "" },
+        { id: "quickopen", label: "Quick Open", icon: "search", shortcut: "Ctrl+P", custom: false, action: "" }
+    ]
+
+    readonly property var allAvailableActions: {
+        var list = [];
+        for (var i = 0; i < standardAvailableActions.length; i++) {
+            list.push(standardAvailableActions[i]);
+        }
+        if (customActions) {
+            for (var c = 0; c < customActions.length; c++) {
+                list.push(customActions[c]);
+            }
+        }
+        return list;
+    }
 
     function loadRadialConfig() {
-        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_radial_menu_config) {
-            radialConfigItems = settingsBackend.get_radial_menu_config() || [];
+        if (typeof settingsBackend !== "undefined" && settingsBackend) {
+            if (settingsBackend.get_radial_menu_config) {
+                var cfg = settingsBackend.get_radial_menu_config() || [];
+                if (cfg.length === 7) {
+                    radialConfigItems = cfg;
+                } else {
+                    radialConfigItems = settingsBackend.reset_radial_menu_config() || [];
+                }
+            }
+            if (settingsBackend.get_custom_actions) {
+                customActions = settingsBackend.get_custom_actions() || [];
+            }
         }
     }
 
@@ -51,9 +95,75 @@ Rectangle {
         }
     }
 
+    function saveCustomActions() {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.save_custom_actions) {
+            settingsBackend.save_custom_actions(JSON.stringify(customActions));
+        }
+    }
+
     function resetRadialConfig() {
         if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.reset_radial_menu_config) {
             radialConfigItems = settingsBackend.reset_radial_menu_config() || [];
+        }
+    }
+
+    function assignActionToSelectedSlot(actionObj) {
+        if (!actionObj || selectedRadialSlot < 0 || selectedRadialSlot >= radialConfigItems.length) return;
+        var arr = radialConfigItems.slice();
+        arr[selectedRadialSlot] = {
+            slot: selectedRadialSlot + 1,
+            id: actionObj.id,
+            label: actionObj.label,
+            icon: actionObj.icon || "file",
+            shortcut: actionObj.shortcut || "",
+            custom: actionObj.custom === true,
+            action: actionObj.action || "",
+            action_type: actionObj.action_type || ""
+        };
+        radialConfigItems = arr;
+        saveRadialConfig();
+    }
+
+    function addCustomAction(name, cmd, actionType) {
+        if (!name || !cmd) return;
+        var list = customActions.slice();
+        var newAction = {
+            id: "custom_" + Date.now(),
+            label: name,
+            icon: "code",
+            shortcut: (actionType === "cmd" ? "CMD" : "Bash"),
+            action_type: actionType || "bash",
+            custom: true,
+            action: cmd
+        };
+        list.push(newAction);
+        customActions = list;
+        saveCustomActions();
+    }
+
+    function removeCustomAction(actionId) {
+        var list = customActions.slice();
+        var idx = -1;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === actionId) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx !== -1) {
+            list.splice(idx, 1);
+            customActions = list;
+            saveCustomActions();
+        }
+    }
+
+    Component.onCompleted: {
+        loadRadialConfig();
+    }
+
+    onVisibleChanged: {
+        if (visible) {
+            loadRadialConfig();
         }
     }
 
@@ -294,6 +404,8 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 color: theme ? theme.bgEditor : "#1e1e1e"
+                border.color: theme ? theme.borderSubtle : "#282828"
+                border.width: 1
 
                 StackLayout {
                     anchors.fill: parent
@@ -770,39 +882,29 @@ Rectangle {
                             }
 
                             // Setting: Mouse Wheel Zoom
-                            Rectangle {
+                            SettingToggleItem {
                                 width: parent.width
-                                height: 50
-                                color: "transparent"
-
-                                Column {
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 3
-
-                                    Text {
-                                        text: "Mouse Wheel Zoom"
-                                        color: theme ? theme.textPrimary : "#cccccc"
-                                        font.pixelSize: 13
-                                        font.bold: true
-                                    }
-
-                                    Text {
-                                        text: "Zoom font size when scrolling with mouse wheel and holding Ctrl"
-                                        color: theme ? theme.textMuted : "#858585"
-                                        font.pixelSize: 11
+                                title: "Mouse Wheel Zoom"
+                                subtitle: "Zoom font size when scrolling with mouse wheel and holding Ctrl"
+                                checked: (typeof theme !== "undefined" && theme && typeof theme.enableMouseWheelZoom !== "undefined") ? theme.enableMouseWheelZoom : true
+                                onToggled: function(c) {
+                                    if (typeof theme !== "undefined" && theme) {
+                                        theme.enableMouseWheelZoom = c;
+                                        if (theme.saveSettings) theme.saveSettings();
                                     }
                                 }
+                            }
 
-                                Switch {
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    checked: (typeof theme !== "undefined" && theme) ? theme.enableMouseWheelZoom : true
-                                    onToggled: {
-                                        if (typeof theme !== "undefined" && theme) {
-                                            theme.enableMouseWheelZoom = checked;
-                                            theme.saveSettings();
-                                        }
+                            // Setting: Auto Close Brackets/Quotes
+                            SettingToggleItem {
+                                width: parent.width
+                                title: "Auto Close Brackets & Quotes"
+                                subtitle: "Automatically insert matching closing brackets and quotes when typing (, [, {, \", '"
+                                checked: (typeof theme !== "undefined" && theme && typeof theme.autoCloseBracketsQuotes !== "undefined") ? theme.autoCloseBracketsQuotes : true
+                                onToggled: function(c) {
+                                    if (typeof theme !== "undefined" && theme) {
+                                        theme.autoCloseBracketsQuotes = c;
+                                        if (theme.saveSettings) theme.saveSettings();
                                     }
                                 }
                             }
@@ -1051,9 +1153,10 @@ Rectangle {
 
                             ShortcutSettingRow {
                                 width: parent.width
-                                title: "Add Cursor (Mouse)"
-                                subtitle: "Add another cursor at clicked position"
-                                currentShortcut: theme ? theme.shortcutAddCursor : "Alt+Click"
+                                title: "Add Cursor (Mouse Gesture)"
+                                subtitle: "Add another cursor at clicked position (Alt + Left Click)"
+                                isGesture: true
+                                currentShortcut: theme ? theme.shortcutAddCursor : "Alt + Left Click"
                                 onShortcutChanged: function(val) { if (theme) theme.shortcutAddCursor = val; }
                             }
 
@@ -1198,448 +1301,470 @@ Rectangle {
                             Item { width: 1; height: 16 }
                         }
                     }
-
                     // =========================================================
-                    // 5. RADIAL CONTEXT MENU TAB (Live Visual Preview & Customizer)
+                    // 5. RADIAL CONTEXT MENU TAB (Slot Assignment & Live Preview)
                     // =========================================================
-                    Item {
+                    ScrollView {
                         id: radialSettingsTab
                         clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                        RowLayout {
-                            anchors.fill: parent
+                        ColumnLayout {
+                            width: Math.max(480, radialSettingsTab.availableWidth - 16)
                             spacing: 16
 
-                            // Left Column: Configuration List & Controls
-                            ColumnLayout {
-                                Layout.fillHeight: true
-                                Layout.preferredWidth: 370
-                                spacing: 8
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Text {
-                                        text: "Radial Context Menu"
-                                        color: theme ? theme.textBright : "#ffffff"
-                                        font.pixelSize: 15
-                                        font.bold: true
-                                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                                        Layout.fillWidth: true
-                                    }
-
-                                    // Add Button
-                                    Rectangle {
-                                        width: 86
-                                        height: 24
-                                        radius: 4
-                                        color: addMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
-
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: "+ Add Action"
-                                            color: "#ffffff"
-                                            font.pixelSize: 11
-                                            font.bold: true
-                                        }
-
-                                        MouseArea {
-                                            id: addMa
-                                            anchors.fill: parent
-                                            hoverEnabled: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                var arr = root.radialConfigItems.slice();
-                                                arr.push({
-                                                    id: "custom_" + Date.now(),
-                                                    label: "Custom " + (arr.length + 1),
-                                                    icon: "code",
-                                                    shortcut: "CMD",
-                                                    action_type: "bash",
-                                                    enabled: true,
-                                                    custom: true,
-                                                    action: "echo 'Custom action executed'"
-                                                });
-                                                root.radialConfigItems = arr;
-                                                root.saveRadialConfig();
-                                            }
-                                        }
-                                    }
-
-                                    // Reset Button
-                                    Rectangle {
-                                        width: 60
-                                        height: 24
-                                        radius: 4
-                                        color: resetMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#333333") : (theme ? theme.bgSurface : "#252526")
-                                        border.color: theme ? theme.borderNormal : "#3c3c3c"
-                                        border.width: 1
-
-                                        Text {
-                                            anchors.centerIn: parent
-                                            text: "Reset"
-                                            color: theme ? theme.textSecondary : "#cccccc"
-                                            font.pixelSize: 11
-                                        }
-
-                                        MouseArea {
-                                            id: resetMa
-                                            anchors.fill: parent
-                                            hoverEnabled: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.resetRadialConfig()
-                                        }
-                                    }
-                                }
-
+                            // Header Title & Reset
+                            RowLayout {
+                                Layout.fillWidth: true
                                 Text {
-                                    text: "Configure radial buttons, reorder, toggle, and add custom Bash / CMD commands."
-                                    color: theme ? theme.textMuted : "#888888"
-                                    font.pixelSize: 11
-                                    wrapMode: Text.WordWrap
+                                    text: "Radial Context Menu"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
                                     Layout.fillWidth: true
                                 }
 
-                                ScrollView {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    clip: true
-                                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                                // Reset to Defaults Button
+                                Rectangle {
+                                    width: 68
+                                    height: 26
+                                    radius: 4
+                                    color: resetMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#333333") : (theme ? theme.bgSurface : "#252526")
+                                    border.color: theme ? theme.borderNormal : "#3c3c3c"
+                                    border.width: 1
 
-                                    ListView {
-                                        id: radialConfigListView
-                                        width: parent.width
-                                        model: root.radialConfigItems
-                                        spacing: 6
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "Reset"
+                                        color: theme ? theme.textSecondary : "#cccccc"
+                                        font.pixelSize: 11
+                                    }
 
-                                        delegate: Rectangle {
-                                            width: radialConfigListView.width - 8
-                                            height: modelData.custom ? 70 : 48
-                                            radius: 6
-                                            color: theme ? theme.bgSurface : "#252526"
-                                            border.color: modelData.custom ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.borderNormal : "#333333")
-                                            border.width: 1
-
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 6
-                                                spacing: 4
-
-                                                RowLayout {
-                                                    Layout.fillWidth: true
-                                                    spacing: 6
-
-                                                    // Reorder Buttons (Up / Down)
-                                                    Column {
-                                                        spacing: 2
-                                                        Rectangle {
-                                                            width: 16
-                                                            height: 14
-                                                            radius: 2
-                                                            color: upMa.containsMouse ? (theme ? theme.accent : "#0078d4") : "transparent"
-                                                            Text { anchors.centerIn: parent; text: "▲"; font.pixelSize: 8; color: "#cccccc" }
-                                                            MouseArea {
-                                                                id: upMa
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: {
-                                                                    if (index > 0) {
-                                                                        var arr = root.radialConfigItems.slice();
-                                                                        var tmp = arr[index];
-                                                                        arr[index] = arr[index - 1];
-                                                                        arr[index - 1] = tmp;
-                                                                        root.radialConfigItems = arr;
-                                                                        root.saveRadialConfig();
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        Rectangle {
-                                                            width: 16
-                                                            height: 14
-                                                            radius: 2
-                                                            color: downMa.containsMouse ? (theme ? theme.accent : "#0078d4") : "transparent"
-                                                            Text { anchors.centerIn: parent; text: "▼"; font.pixelSize: 8; color: "#cccccc" }
-                                                            MouseArea {
-                                                                id: downMa
-                                                                anchors.fill: parent
-                                                                hoverEnabled: true
-                                                                cursorShape: Qt.PointingHandCursor
-                                                                onClicked: {
-                                                                    if (index < root.radialConfigItems.length - 1) {
-                                                                        var arr = root.radialConfigItems.slice();
-                                                                        var tmp = arr[index];
-                                                                        arr[index] = arr[index + 1];
-                                                                        arr[index + 1] = tmp;
-                                                                        root.radialConfigItems = arr;
-                                                                        root.saveRadialConfig();
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Enabled Checkbox
-                                                    CheckBox {
-                                                        checked: modelData.enabled !== false
-                                                        onToggled: {
-                                                            var arr = root.radialConfigItems.slice();
-                                                            arr[index].enabled = checked;
-                                                            root.radialConfigItems = arr;
-                                                            root.saveRadialConfig();
-                                                        }
-                                                    }
-
-                                                    // Icon
-                                                    VectorIcon {
-                                                        name: modelData.icon || "file"
-                                                        size: 14
-                                                        color: modelData.custom ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.textPrimary : "#cccccc")
-                                                    }
-
-                                                    // Label and Badge
-                                                    ColumnLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 2
-
-                                                        RowLayout {
-                                                            Layout.fillWidth: true
-                                                            spacing: 6
-
-                                                            TextInput {
-                                                                Layout.fillWidth: true
-                                                                text: modelData.label || ""
-                                                                color: theme ? theme.textPrimary : "#ffffff"
-                                                                font.pixelSize: 12
-                                                                font.bold: true
-                                                                onEditingFinished: {
-                                                                    var arr = root.radialConfigItems.slice();
-                                                                    arr[index].label = text;
-                                                                    root.radialConfigItems = arr;
-                                                                    root.saveRadialConfig();
-                                                                }
-                                                            }
-
-                                                            // Distinguishing badge (Built-in vs Custom)
-                                                            Rectangle {
-                                                                height: 16
-                                                                width: badgeText.implicitWidth + 8
-                                                                radius: 3
-                                                                color: modelData.custom ? "#0c4a6e" : "#1e293b"
-                                                                border.color: modelData.custom ? "#38bdf8" : "#475569"
-                                                                border.width: 1
-
-                                                                Text {
-                                                                    id: badgeText
-                                                                    anchors.centerIn: parent
-                                                                    text: modelData.custom ? ((modelData.action_type === "bash" ? "Bash" : (modelData.action_type === "cmd" ? "CMD" : "Custom"))) : "Built-in"
-                                                                    color: modelData.custom ? "#7dd3fc" : "#94a3b8"
-                                                                    font.pixelSize: 9
-                                                                    font.bold: true
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Delete button (for custom buttons)
-                                                    Rectangle {
-                                                        width: 20
-                                                        height: 20
-                                                        radius: 3
-                                                        visible: modelData.custom === true
-                                                        color: delMa.containsMouse ? (theme ? theme.error : "#f14c4c") : "transparent"
-                                                        VectorIcon { anchors.centerIn: parent; name: "close"; size: 9; color: delMa.containsMouse ? "#ffffff" : "#888888" }
-                                                        MouseArea {
-                                                            id: delMa
-                                                            anchors.fill: parent
-                                                            hoverEnabled: true
-                                                            cursorShape: Qt.PointingHandCursor
-                                                            onClicked: {
-                                                                var arr = root.radialConfigItems.slice();
-                                                                arr.splice(index, 1);
-                                                                root.radialConfigItems = arr;
-                                                                root.saveRadialConfig();
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                // Custom button action configuration row
-                                                RowLayout {
-                                                    Layout.fillWidth: true
-                                                    visible: modelData.custom === true
-                                                    spacing: 6
-
-                                                    // Action type selector (Bash / CMD)
-                                                    Rectangle {
-                                                        width: 80
-                                                        height: 20
-                                                        radius: 3
-                                                        color: theme ? theme.bgInput : "#181818"
-                                                        border.color: theme ? theme.borderSubtle : "#333333"
-
-                                                        Text {
-                                                            anchors.centerIn: parent
-                                                            text: (modelData.action_type || "bash").toUpperCase() + " ▼"
-                                                            color: theme ? theme.textSecondary : "#aaaaaa"
-                                                            font.pixelSize: 10
-                                                        }
-
-                                                        MouseArea {
-                                                            anchors.fill: parent
-                                                            cursorShape: Qt.PointingHandCursor
-                                                            onClicked: {
-                                                                var arr = root.radialConfigItems.slice();
-                                                                arr[index].action_type = (arr[index].action_type === "bash") ? "cmd" : "bash";
-                                                                root.radialConfigItems = arr;
-                                                                root.saveRadialConfig();
-                                                            }
-                                                        }
-                                                    }
-
-                                                    TextInput {
-                                                        Layout.fillWidth: true
-                                                        text: modelData.action || ""
-                                                        color: theme ? theme.textSecondary : "#cccccc"
-                                                        font.pixelSize: 10
-                                                        font.family: "Consolas, monospace"
-                                                        onEditingFinished: {
-                                                            var arr = root.radialConfigItems.slice();
-                                                            arr[index].action = text;
-                                                            root.radialConfigItems = arr;
-                                                            root.saveRadialConfig();
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    MouseArea {
+                                        id: resetMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.resetRadialConfig()
                                     }
                                 }
                             }
 
-                            // Right Column: LIVE VISUAL RADIAL PREVIEW
+                            // 1. TOP: RADIAL MENU PREVIEW
                             Rectangle {
-                                Layout.fillHeight: true
                                 Layout.fillWidth: true
+                                height: 190
                                 radius: 8
-                                color: theme ? theme.bgApp : "#141822"
-                                border.color: theme ? theme.borderNormal : "#2a3145"
+                                color: theme ? theme.bgPanel : "#1e1e1e"
+                                border.color: theme ? theme.borderSubtle : "#333333"
                                 border.width: 1
 
                                 Text {
                                     anchors.top: parent.top
                                     anchors.left: parent.left
-                                    anchors.margins: 12
-                                    text: "LIVE RADIAL MENU PREVIEW"
-                                    color: theme ? theme.textMuted : "#64748b"
+                                    anchors.margins: 10
+                                    text: "RADIAL MENU PREVIEW"
+                                    color: theme ? theme.textMuted : "#656565"
                                     font.pixelSize: 10
                                     font.bold: true
                                     font.letterSpacing: 1
                                 }
 
+                                // Radial Preview Center Container
                                 Item {
-                                    id: radialPreviewContainer
+                                    id: radialPreviewBox
                                     anchors.centerIn: parent
-                                    width: 240
-                                    height: 240
+                                    width: 170
+                                    height: 170
 
-                                    // Filter enabled items for preview
-                                    readonly property var activeItems: {
-                                        var list = [];
-                                        if (root.radialConfigItems) {
-                                            for (var i = 0; i < root.radialConfigItems.length; i++) {
-                                                if (root.radialConfigItems[i].enabled !== false) {
-                                                    list.push(root.radialConfigItems[i]);
-                                                }
-                                            }
-                                        }
-                                        return list;
-                                    }
-                                    readonly property real previewRadius: 75
-
-                                    // Center Disc
+                                    // Center Hub
                                     Rectangle {
                                         anchors.centerIn: parent
-                                        width: 64
-                                        height: 64
-                                        radius: 32
-                                        color: theme ? theme.bgPopup : "#151824"
-                                        border.color: theme ? theme.borderNormal : "#2a3145"
-                                        border.width: 2
+                                        width: 48
+                                        height: 48
+                                        radius: 24
+                                        color: theme ? theme.bgPopup : "#252526"
+                                        border.color: theme ? theme.borderSubtle : "#333333"
+                                        border.width: 1
 
                                         Column {
                                             anchors.centerIn: parent
-                                            spacing: 2
+                                            spacing: 1
                                             VectorIcon {
                                                 anchors.horizontalCenter: parent.horizontalCenter
                                                 name: "zen"
-                                                size: 14
-                                                color: theme ? theme.accent : "#3b82f6"
+                                                size: 13
+                                                color: theme ? theme.accent : "#0078d4"
                                             }
                                             Text {
                                                 anchors.horizontalCenter: parent.horizontalCenter
                                                 text: "DGX"
-                                                color: theme ? theme.textPrimary : "#f1f5f9"
-                                                font.pixelSize: 9
+                                                color: theme ? theme.textPrimary : "#cccccc"
+                                                font.pixelSize: 8
                                                 font.bold: true
                                             }
                                         }
                                     }
 
-                                    // Radial Bubbles
+                                    // Fixed Radial Node Previews
                                     Repeater {
-                                        model: radialPreviewContainer.activeItems
+                                        model: root.radialConfigItems
 
                                         delegate: Item {
-                                            readonly property real angle: (index / Math.max(1, radialPreviewContainer.activeItems.length)) * (2 * Math.PI) - (Math.PI / 2)
-                                            readonly property real nodeX: (radialPreviewContainer.width / 2) + Math.cos(angle) * radialPreviewContainer.previewRadius - 20
-                                            readonly property real nodeY: (radialPreviewContainer.height / 2) + Math.sin(angle) * radialPreviewContainer.previewRadius - 20
+                                            readonly property real angle: (index / Math.max(1, root.radialConfigItems.length)) * (2 * Math.PI) - (Math.PI / 2)
+                                            readonly property real nodeX: (radialPreviewBox.width / 2) + Math.cos(angle) * 58 - 18
+                                            readonly property real nodeY: (radialPreviewBox.height / 2) + Math.sin(angle) * 58 - 18
 
                                             x: nodeX
                                             y: nodeY
-                                            width: 40
-                                            height: 40
+                                            width: 36
+                                            height: 36
 
                                             Rectangle {
                                                 anchors.fill: parent
-                                                radius: 20
-                                                color: prevMa.containsMouse ? (theme ? theme.accent : "#3b82f6") : (theme ? theme.bgSurface : "#181c28")
-                                                border.color: modelData.custom ? "#38bdf8" : (prevMa.containsMouse ? "#ffffff" : (theme ? theme.borderNormal : "#2a3145"))
-                                                border.width: 1
-
-                                                scale: prevMa.containsMouse ? 1.15 : 1.0
+                                                radius: 18
+                                                color: index === root.selectedRadialSlot ? (theme ? theme.accent : "#0078d4") : (prevNodeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgSurface : "#252526"))
+                                                border.color: index === root.selectedRadialSlot ? (theme ? theme.textBright : "#ffffff") : (modelData.custom ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#333333"))
+                                                border.width: index === root.selectedRadialSlot ? 2 : 1
+                                                scale: (index === root.selectedRadialSlot || prevNodeMa.containsMouse) ? 1.10 : 1.0
                                                 Behavior on scale { NumberAnimation { duration: 100 } }
 
                                                 Column {
                                                     anchors.centerIn: parent
+                                                    width: parent.width - 4
                                                     spacing: 1
                                                     VectorIcon {
                                                         anchors.horizontalCenter: parent.horizontalCenter
                                                         name: modelData.icon || "file"
-                                                        size: 11
-                                                        color: prevMa.containsMouse ? "#ffffff" : (theme ? theme.textPrimary : "#e2e8f0")
+                                                        size: 10
+                                                        color: (index === root.selectedRadialSlot || prevNodeMa.containsMouse) ? "#ffffff" : (theme ? theme.textPrimary : "#cccccc")
                                                     }
                                                     Text {
                                                         anchors.horizontalCenter: parent.horizontalCenter
-                                                        text: modelData.label || ""
-                                                        color: prevMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#94a3b8")
-                                                        font.pixelSize: 8
-                                                        font.bold: prevMa.containsMouse
+                                                        text: modelData.label || ("Slot " + (index + 1))
+                                                        color: (index === root.selectedRadialSlot || prevNodeMa.containsMouse) ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
+                                                        font.pixelSize: 7
+                                                        font.bold: index === root.selectedRadialSlot
+                                                        elide: Text.ElideRight
+                                                        width: parent.width
+                                                        horizontalAlignment: Text.AlignHCenter
                                                     }
                                                 }
 
-                                                ToolTip.visible: prevMa.containsMouse
-                                                ToolTip.text: (modelData.label || "") + (modelData.action ? " [" + modelData.action + "]" : "")
+                                                ToolTip.visible: prevNodeMa.containsMouse
+                                                ToolTip.text: "Slot " + (index + 1) + ": " + (modelData.label || "") + (modelData.action ? " [" + modelData.action + "]" : "")
 
                                                 MouseArea {
-                                                    id: prevMa
+                                                    id: prevNodeMa
                                                     anchors.fill: parent
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
-                                                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                                                            mainWindow.showNotification("Radial action: " + modelData.label, "info", "Radial Menu");
+                                                    onClicked: root.selectedRadialSlot = index
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 2. MIDDLE: RADIAL SLOTS (8 Fixed Slots)
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text {
+                                        text: "Radial Slots"
+                                        color: theme ? theme.textBright : "#ffffff"
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: "Active: Slot " + (root.selectedRadialSlot + 1)
+                                        color: theme ? theme.accent : "#38bdf8"
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    columnSpacing: 10
+                                    rowSpacing: 6
+
+                                    Repeater {
+                                        model: root.radialConfigItems
+
+                                        delegate: Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 38
+                                            radius: 6
+                                            color: index === root.selectedRadialSlot ? (theme ? theme.bgSurfaceActive : "#1f293d") : (slotMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#282d3b") : (theme ? theme.bgSurface : "#1e222d"))
+                                            border.color: index === root.selectedRadialSlot ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333a4d")
+                                            border.width: index === root.selectedRadialSlot ? 1.5 : 1
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 10
+                                                anchors.rightMargin: 10
+                                                spacing: 8
+
+                                                Text {
+                                                    text: "Radial Slot " + (index + 1)
+                                                    color: index === root.selectedRadialSlot ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.textMuted : "#888888")
+                                                    font.pixelSize: 11
+                                                    font.bold: index === root.selectedRadialSlot
+                                                }
+
+                                                Item { Layout.fillWidth: true }
+
+                                                Rectangle {
+                                                    height: 24
+                                                    width: Math.max(90, slotLabelText.contentWidth + 24)
+                                                    radius: 4
+                                                    color: index === root.selectedRadialSlot ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#141822")
+                                                    border.color: theme ? theme.borderNormal : "#2c3345"
+                                                    border.width: 1
+
+                                                    RowLayout {
+                                                        anchors.centerIn: parent
+                                                        spacing: 4
+                                                        VectorIcon {
+                                                            name: modelData.icon || "file"
+                                                            size: 10
+                                                            color: index === root.selectedRadialSlot ? "#ffffff" : (theme ? theme.accent : "#38bdf8")
                                                         }
+                                                        Text {
+                                                            id: slotLabelText
+                                                            text: modelData.label || "Empty"
+                                                            color: index === root.selectedRadialSlot ? "#ffffff" : (theme ? theme.textPrimary : "#e2e8f0")
+                                                            font.pixelSize: 11
+                                                            font.bold: true
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: slotMa
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.selectedRadialSlot = index
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. BELOW: AVAILABLE ACTIONS
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    text: "Available Actions (Click an action to assign to Slot " + (root.selectedRadialSlot + 1) + ")"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    columnSpacing: 10
+                                    rowSpacing: 6
+
+                                    Repeater {
+                                        model: root.allAvailableActions
+
+                                        delegate: Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 42
+                                            radius: 6
+                                            color: actionMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#282d3b") : (theme ? theme.bgSurface : "#1e222d")
+                                            border.color: modelData.custom ? "#38bdf8" : (actionMa.containsMouse ? (theme ? theme.borderFocus : "#4b5563") : (theme ? theme.borderNormal : "#333a4d"))
+                                            border.width: 1
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 10
+                                                anchors.rightMargin: 10
+                                                spacing: 8
+
+                                                VectorIcon {
+                                                    name: modelData.icon || "file"
+                                                    size: 14
+                                                    color: modelData.custom ? "#38bdf8" : (theme ? theme.accent : "#0078d4")
+                                                }
+
+                                                Column {
+                                                    Layout.fillWidth: true
+                                                    spacing: 1
+                                                    Text {
+                                                        text: modelData.label
+                                                        color: theme ? theme.textPrimary : "#ffffff"
+                                                        font.pixelSize: 11
+                                                        font.bold: true
+                                                    }
+                                                    Text {
+                                                        text: modelData.custom ? ((modelData.action_type === "cmd" ? "CMD: " : "Bash: ") + modelData.action) : (modelData.shortcut || "")
+                                                        color: theme ? theme.textMuted : "#888888"
+                                                        font.pixelSize: 9
+                                                        elide: Text.ElideRight
+                                                        width: 160
+                                                    }
+                                                }
+
+                                                // Delete button for custom actions
+                                                Rectangle {
+                                                    visible: modelData.custom === true
+                                                    width: 20
+                                                    height: 20
+                                                    radius: 3
+                                                    color: delCustomMa.containsMouse ? (theme ? theme.error : "#ef4444") : "transparent"
+                                                    VectorIcon {
+                                                        anchors.centerIn: parent
+                                                        name: "close"
+                                                        size: 9
+                                                        color: delCustomMa.containsMouse ? "#ffffff" : (theme ? theme.textMuted : "#888888")
+                                                    }
+                                                    MouseArea {
+                                                        id: delCustomMa
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: {
+                                                            root.removeCustomAction(modelData.id);
+                                                        }
+                                                    }
+                                                }
+
+                                                Rectangle {
+                                                    width: 56
+                                                    height: 22
+                                                    radius: 4
+                                                    color: actionMa.containsMouse ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgInput : "#141822")
+                                                    border.color: theme ? theme.borderNormal : "#333a4d"
+                                                    border.width: 1
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: "Assign"
+                                                        color: actionMa.containsMouse ? "#ffffff" : (theme ? theme.textSecondary : "#cccccc")
+                                                        font.pixelSize: 10
+                                                        font.bold: true
+                                                    }
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: actionMa
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    root.assignActionToSelectedSlot(modelData);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. ADD CUSTOM ACTION
+                            Rectangle {
+                                Layout.fillWidth: true
+                                radius: 6
+                                color: theme ? theme.bgSurface : "#1e222d"
+                                border.color: theme ? theme.borderNormal : "#333a4d"
+                                border.width: 1
+                                implicitHeight: customActionCol.implicitHeight + 20
+
+                                ColumnLayout {
+                                    id: customActionCol
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 8
+
+                                    Text {
+                                        text: "+ Add Custom Action (Bash script or CMD command)"
+                                        color: theme ? theme.accent : "#38bdf8"
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        TextField {
+                                            id: customNameInput
+                                            Layout.preferredWidth: 140
+                                            height: 28
+                                            placeholderText: "Action Name (e.g. Build)"
+                                            font.pixelSize: 11
+                                            color: theme ? theme.textPrimary : "#ffffff"
+                                            placeholderTextColor: theme ? theme.textMuted : "#666666"
+                                            background: Rectangle {
+                                                color: theme ? theme.bgInput : "#141822"
+                                                border.color: theme ? theme.borderNormal : "#333a4d"
+                                                radius: 4
+                                            }
+                                        }
+
+                                        TextField {
+                                            id: customCmdInput
+                                            Layout.fillWidth: true
+                                            height: 28
+                                            placeholderText: "Command (e.g. ./build.sh or npm test)"
+                                            font.pixelSize: 11
+                                            color: theme ? theme.textPrimary : "#ffffff"
+                                            placeholderTextColor: theme ? theme.textMuted : "#666666"
+                                            background: Rectangle {
+                                                color: theme ? theme.bgInput : "#141822"
+                                                border.color: theme ? theme.borderNormal : "#333a4d"
+                                                radius: 4
+                                            }
+                                        }
+
+                                        ComboBox {
+                                            id: customTypeCombo
+                                            Layout.preferredWidth: 80
+                                            height: 28
+                                            model: ["Bash", "CMD"]
+                                        }
+
+                                        Rectangle {
+                                            width: 90
+                                            height: 28
+                                            radius: 4
+                                            color: addCustomBtnMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "Add Action"
+                                                color: "#ffffff"
+                                                font.pixelSize: 11
+                                                font.bold: true
+                                            }
+
+                                            MouseArea {
+                                                id: addCustomBtnMa
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    var name = (customNameInput.text || "").trim();
+                                                    var cmd = (customCmdInput.text || "").trim();
+                                                    if (name.length > 0 && cmd.length > 0) {
+                                                        root.addCustomAction(name, cmd, customTypeCombo.currentText.toLowerCase());
+                                                        customNameInput.text = "";
+                                                        customCmdInput.text = "";
                                                     }
                                                 }
                                             }
@@ -1647,6 +1772,8 @@ Rectangle {
                                     }
                                 }
                             }
+
+                            Item { Layout.fillHeight: true; Layout.preferredHeight: 16 }
                         }
                     }
 
@@ -2150,12 +2277,13 @@ Rectangle {
         }
     }
 
-    // Component: ShortcutSettingRow with Interactive Keybinding Recorder & Manual Input
+    // Component: ShortcutSettingRow with Interactive Keybinding Recorder & Gesture Input
     component ShortcutSettingRow: Rectangle {
         id: scRow
         property string title: ""
         property string subtitle: ""
         property string currentShortcut: ""
+        property bool isGesture: false
         property bool isRecording: false
         signal shortcutChanged(string val)
 
@@ -2227,13 +2355,38 @@ Rectangle {
                 MouseArea {
                     id: badgeMa
                     anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        scRow.isRecording = !scRow.isRecording;
-                        if (scRow.isRecording) {
+
+                    onPressed: function(mouse) {
+                        if (!scRow.isRecording) {
+                            scRow.isRecording = true;
                             recorderBadge.forceActiveFocus();
+                            mouse.accepted = true;
+                            return;
                         }
+
+                        // Capture mouse button + modifier combination
+                        var parts = [];
+                        if (mouse.modifiers & Qt.AltModifier) parts.push("Alt");
+                        if (mouse.modifiers & Qt.ControlModifier) parts.push("Ctrl");
+                        if (mouse.modifiers & Qt.ShiftModifier) parts.push("Shift");
+                        if (mouse.modifiers & Qt.MetaModifier) parts.push("Meta");
+
+                        var btnName = "Left Click";
+                        if (mouse.button === Qt.RightButton) btnName = "Right Click";
+                        else if (mouse.button === Qt.MiddleButton) btnName = "Middle Click";
+
+                        parts.push(btnName);
+                        var fullCombo = parts.join(" + ");
+                        scRow.currentShortcut = fullCombo;
+                        scRow.shortcutChanged(fullCombo);
+                        if (theme && theme.saveSettings) {
+                            theme.saveSettings();
+                        }
+                        scRow.isRecording = false;
+                        mouse.accepted = true;
                     }
                 }
 

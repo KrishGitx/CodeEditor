@@ -86,6 +86,7 @@ Rectangle {
 
                 TextInput {
                     id: findInput
+                    objectName: "findInput"
                     anchors.fill: parent
                     anchors.leftMargin: 6
                     anchors.rightMargin: 6

@@ -25,6 +25,9 @@ Item {
     height: implicitHeight
 
     function getCleanCode() {
+        if (root.isSelectionRequest) {
+            return CodeExtractor.extractReplacementCode(root.contentText, root.languageId);
+        }
         return CodeExtractor.extractCodeFromMarkdown(root.contentText, root.languageId);
     }
 
@@ -54,9 +57,9 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            // Replace Selection button - ONLY when AI request was made from an editor code selection
+            // Replace Selection button - ONLY when AI request was made from an editor code selection with valid replacement code
             Rectangle {
-                visible: root.role === "assistant" && root.isSelectionRequest
+                visible: root.role === "assistant" && root.isSelectionRequest && root.hasUsableCode
                 enabled: root.hasUsableCode
                 opacity: enabled ? 1.0 : 0.4
                 width: replaceText.contentWidth + 12

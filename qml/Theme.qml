@@ -22,6 +22,8 @@ QtObject {
     property string uiDensity: "compact" // "compact", "normal", "relaxed"
     property string contextMenuStyle: "radial" // "radial", "standard"
     property bool enableAI: true
+    property bool autoCloseBracketsQuotes: true
+    property alias enableBracketMatching: root.autoCloseBracketsQuotes
     property string htmlRunTarget: "built_in" // "built_in", "browser"
 
     // Keyboard Shortcuts Configuration (Customizable)
@@ -66,6 +68,7 @@ QtObject {
                     if (s.enable_minimap !== undefined) root.enableMinimap = (s.enable_minimap === true || s.enable_minimap === "true");
                     if (s.enable_line_numbers !== undefined) root.enableLineNumbers = (s.enable_line_numbers === true || s.enable_line_numbers === "true");
                     if (s.enable_breadcrumbs !== undefined) root.enableBreadcrumbs = (s.enable_breadcrumbs === true || s.enable_breadcrumbs === "true");
+                    if (s.auto_close_brackets_quotes !== undefined) root.autoCloseBracketsQuotes = (s.auto_close_brackets_quotes === true || s.auto_close_brackets_quotes === "true");
                     if (s.enable_ai !== undefined) root.enableAI = (s.enable_ai === true || s.enable_ai === "true");
                     if (s.html_run_target) root.htmlRunTarget = s.html_run_target;
                     if (s.tab_size) root.tabSize = parseInt(s.tab_size);
@@ -94,6 +97,7 @@ QtObject {
             settingsBackend.set_value("enable_minimap", "" + root.enableMinimap);
             settingsBackend.set_value("enable_line_numbers", "" + root.enableLineNumbers);
             settingsBackend.set_value("enable_breadcrumbs", "" + root.enableBreadcrumbs);
+            settingsBackend.set_value("auto_close_brackets_quotes", "" + root.autoCloseBracketsQuotes);
             settingsBackend.set_value("enable_ai", "" + root.enableAI);
             settingsBackend.set_value("html_run_target", root.htmlRunTarget);
             settingsBackend.set_value("tab_size", "" + root.tabSize);

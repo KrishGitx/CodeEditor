@@ -305,6 +305,7 @@ Window {
                 // Left: Explorer Panel
                 ExplorerPanel {
                     id: explorerPanel
+                    objectName: "explorerPanel"
                     Layout.preferredWidth: mainWindow.effectiveExplorerWidth
                     Layout.fillHeight: true
                     visible: mainWindow.effectiveExplorerWidth > 0
@@ -315,7 +316,6 @@ Window {
                         }
                     }
                     onOpenFolderRequested: openFolderDialog.open()
-                    onNewFileRequested: editorArea.createNewFile()
                     onNewFolderRequested: openFolderDialog.open()
                     onRefreshRequested: {
                         if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
@@ -559,7 +559,7 @@ Window {
 
     function runActiveFile() {
         if (!editorArea.activeFilePath) {
-            terminalPanel.executeCommand("Write-Host 'Please save the file first before running.' -ForegroundColor Yellow");
+            mainWindow.showNotification("Please save the file first before running.", "warning", "Run");
             return;
         }
         mainWindow.terminalVisible = true;

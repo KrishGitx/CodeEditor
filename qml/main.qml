@@ -24,7 +24,9 @@ Window {
 
     Theme {
         id: theme
+        objectName: "appTheme"
     }
+    property alias appTheme: theme
 
     onVisibilityChanged: {
         if (visibility === Window.Maximized) {
@@ -77,6 +79,9 @@ Window {
         function onFileOpened(path, content) {
             editorArea.loadFile(path, content);
             appHeader.activeFilePath = path;
+            if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectAndRevealFile && path) {
+                explorerPanel.selectAndRevealFile(path);
+            }
         }
 
         function onFileSaved(path, success) {
@@ -337,6 +342,7 @@ Window {
                 // Left: Explorer Panel
                 ExplorerPanel {
                     id: explorerPanel
+                    objectName: "explorerPanel"
                     Layout.preferredWidth: mainWindow.effectiveExplorerWidth
                     Layout.fillHeight: true
                     visible: mainWindow.effectiveExplorerWidth > 0
@@ -347,7 +353,6 @@ Window {
                         }
                     }
                     onOpenFolderRequested: openFolderDialog.open()
-                    onNewFileRequested: editorArea.createNewFile()
                     onNewFolderRequested: openFolderDialog.open()
                     onRefreshRequested: {
                         if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
@@ -395,11 +400,22 @@ Window {
                             }
                         }
 
+                        onSendAiPrompt: function(prompt) {
+                            if (!mainWindow.rightPanelVisible) {
+                                mainWindow.rightPanelVisible = true;
+                            }
+                            mainWindow.aiVisible = true;
+                            aiWorkspace.sendDirectPrompt(prompt);
+                        }
+
                         onActiveFileChanged: function(path, name, lang, dirty) {
                             appHeader.activeFileName = name;
                             appHeader.activeFilePath = path;
                             appHeader.isDirty = dirty;
                             statusBar.currentLanguage = lang;
+                            if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectAndRevealFile && path) {
+                                explorerPanel.selectAndRevealFile(path);
+                            }
                         }
 
                         onCursorPositionChanged: function(line, col) {
@@ -660,7 +676,7 @@ Window {
 
     function runActiveFile() {
         if (!editorArea.activeFilePath) {
-            terminalPanel.executeCommand("Write-Host 'Please save the file first before running.' -ForegroundColor Yellow");
+            mainWindow.showNotification("Please save the file first before running.", "warning", "Run");
             return;
         }
         mainWindow.terminalVisible = true;

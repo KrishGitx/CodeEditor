@@ -12,7 +12,7 @@ Rectangle {
     color: theme ? theme.bgTerminal : "#181818"
 
         property bool isSplitTerminal: false
-    property string secTerminalBuffer: "Windows PowerShell (Split Session 2)\nCopyright (C) Microsoft Corporation. All rights reserved.\n\n"
+    property string secTerminalBuffer: ""
     property bool isSecCommandRunning: false
     property string activeTab: "TERMINAL" // "TERMINAL", "OUTPUT", "PROBLEMS"
     property var commandHistory: []
@@ -20,8 +20,40 @@ Rectangle {
     property bool isCommandRunning: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.is_running_cmd) ? terminalBackend.is_running_cmd() : false
     property string currentCwd: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_cwd) ? terminalBackend.get_cwd() : ((typeof backend !== "undefined" && backend && backend.folder_path) ? backend.folder_path : "C:\\")
     property string currentPrompt: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_prompt) ? terminalBackend.get_prompt() : ("PS " + currentCwd + "> ")
-    property string terminalBuffer: "Windows PowerShell\nCopyright (C) Microsoft Corporation. All rights reserved.\n\n"
+    property string terminalBuffer: ""
     property string outputBuffer: "[DGX Output & Execution Channel Ready]\n"
+
+    readonly property var promptMatch: {
+        var buf = root.terminalBuffer;
+        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)$/) : null;
+    }
+    readonly property string realPrompt: promptMatch ? promptMatch[1] : (root.currentPrompt || "PS > ")
+    readonly property string displayedHistory: {
+        if (!root.terminalBuffer) return "";
+        if (promptMatch) {
+            var idx = root.terminalBuffer.lastIndexOf(promptMatch[1]);
+            if (idx >= 0) {
+                return root.terminalBuffer.substring(0, idx);
+            }
+        }
+        return root.terminalBuffer;
+    }
+
+    readonly property var secPromptMatch: {
+        var buf = root.secTerminalBuffer;
+        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)$/) : null;
+    }
+    readonly property string secRealPrompt: secPromptMatch ? secPromptMatch[1] : (root.currentPrompt || "PS > ")
+    readonly property string secDisplayedHistory: {
+        if (!root.secTerminalBuffer) return "";
+        if (secPromptMatch) {
+            var idx = root.secTerminalBuffer.lastIndexOf(secPromptMatch[1]);
+            if (idx >= 0) {
+                return root.secTerminalBuffer.substring(0, idx);
+            }
+        }
+        return root.secTerminalBuffer;
+    }
 
     ListModel {
         id: problemsModel
@@ -505,7 +537,7 @@ Rectangle {
                                         font.pixelSize: 12
                                         font.family: theme ? theme.fontFamilyMono : "monospace"
                                         wrapMode: TextEdit.Wrap
-                                        text: root.terminalBuffer
+                                        text: root.displayedHistory
                                         textFormat: TextEdit.PlainText
 
                                         TapHandler {
@@ -516,15 +548,13 @@ Rectangle {
                                     RowLayout {
                                         width: parent.width
                                         spacing: 4
+                                        visible: !root.isCommandRunning
 
                                         Text {
-                                            id: activeTerminalPrompt
-                                            text: root.currentPrompt
-                                            color: theme ? theme.textSecondary : "#858585"
+                                            text: root.realPrompt
+                                            color: theme ? theme.accent : "#0078d4"
                                             font.pixelSize: 12
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
-                                            visible: !root.isCommandRunning
-                                            Layout.preferredWidth: visible ? implicitWidth : 0
                                         }
 
                                         TextInput {
@@ -686,7 +716,7 @@ Rectangle {
                                         font.pixelSize: 12
                                         font.family: theme ? theme.fontFamilyMono : "monospace"
                                         wrapMode: TextEdit.Wrap
-                                        text: root.secTerminalBuffer
+                                        text: root.secDisplayedHistory
                                         textFormat: TextEdit.PlainText
                                     }
 
@@ -695,8 +725,8 @@ Rectangle {
                                         spacing: 4
 
                                         Text {
-                                            text: root.currentPrompt
-                                            color: theme ? theme.textSecondary : "#858585"
+                                            text: root.secRealPrompt
+                                            color: theme ? theme.accent : "#0078d4"
                                             font.pixelSize: 12
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
                                         }

@@ -5,9 +5,9 @@ from pathlib import Path
 # Add current directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat
+from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QTextCursor
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread, QEvent
+from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread, QEvent, QFileSystemWatcher, QTimer
 from PySide6.QtQuick import QQuickTextDocument
 from PySide6.QtQuickControls2 import QQuickStyle
 from urllib.parse import urlparse
@@ -99,6 +99,102 @@ class LSPReaderWorker(QThread):
                 break
 
 
+import bisect
+
+# ==============================================================================
+# 1.5 LIGHTWEIGHT FULL-FILE BACKING DOCUMENT MODEL
+# ==============================================================================
+class BackingDocument:
+    """
+    Maintains 100% full file content in lightweight Python memory.
+    Provides O(log N) line/char indexing, global search, sliding window
+    materialization, and full persistence without creating thousands of
+    Qt QTextBlocks in the active QTextDocumentLayout.
+    """
+    def __init__(self, text=""):
+        self.set_text(text)
+        self.saved_text = text
+        self.is_modified = False
+
+    def set_text(self, text):
+        self.text = text or ""
+        self.lines = self.text.split("\n")
+        self.total_lines = len(self.lines)
+        self.line_offsets = [0]
+        curr = 0
+        for l in self.lines:
+            curr += len(l) + 1  # include \n
+            self.line_offsets.append(curr)
+        self.total_chars = len(self.text)
+        self.is_modified = (self.text != getattr(self, "saved_text", self.text))
+
+    def get_slice(self, start_line, end_line):
+        """Returns slice of text from start_line to end_line (inclusive, 0-indexed)."""
+        if self.total_lines == 0:
+            return "", 0, 0
+        s_line = max(0, min(start_line, self.total_lines - 1))
+        e_line = max(s_line, min(end_line, self.total_lines - 1))
+        return "\n".join(self.lines[s_line:e_line + 1]), s_line, e_line
+
+    def update_slice(self, start_line, end_line, slice_text):
+        """Replaces lines [start_line : end_line + 1] with new slice_text."""
+        new_slice_lines = (slice_text or "").split("\n")
+        s_line = max(0, min(start_line, self.total_lines))
+        e_line = max(s_line, min(end_line + 1, self.total_lines))
+        self.lines[s_line:e_line] = new_slice_lines
+        self.text = "\n".join(self.lines)
+        self.total_lines = len(self.lines)
+        self.line_offsets = [0]
+        curr = 0
+        for l in self.lines:
+            curr += len(l) + 1
+            self.line_offsets.append(curr)
+        self.total_chars = len(self.text)
+        self.is_modified = (self.text != getattr(self, "saved_text", ""))
+
+    def mark_saved(self):
+        self.saved_text = self.text
+        self.is_modified = False
+
+    def line_to_char_offset(self, line_num):
+        if line_num < 0:
+            return 0
+        if line_num >= len(self.line_offsets):
+            return self.total_chars
+        return self.line_offsets[line_num]
+
+    def char_offset_to_line(self, char_pos):
+        idx = bisect.bisect_right(self.line_offsets, char_pos) - 1
+        idx = max(0, min(idx, self.total_lines - 1))
+        col = char_pos - self.line_offsets[idx]
+        return idx, col
+
+    def global_search(self, query, case_sensitive=False, is_regex=False):
+        matches = []
+        if not query:
+            return matches
+        flags = 0 if case_sensitive else re.IGNORECASE
+        pattern = query if is_regex else re.escape(query)
+        try:
+            for m in re.finditer(pattern, self.text, flags):
+                start = m.start()
+                end = m.end()
+                s_line, s_col = self.char_offset_to_line(start)
+                e_line, e_col = self.char_offset_to_line(end)
+                matches.append({
+                    "start": start,
+                    "end": end,
+                    "startLine": s_line + 1,
+                    "startCol": s_col + 1,
+                    "endLine": e_line + 1,
+                    "endCol": e_col + 1,
+                    "text": m.group(0)
+                })
+        except Exception:
+            pass
+        return matches
+
+
 # ==============================================================================
 # 2. LSP & CODE EDITOR BACKEND ENGINE
 # ==============================================================================
@@ -136,7 +232,98 @@ class EditorBackend(QObject):
         self.extension_manager = ExtensionManager()
         self.extension_manager.formatterInstallProgress.connect(self.formatterInstallProgress.emit)
         self.formatter_manager = FormatterManager(self.extension_manager)
+        self.backing_docs = {}  # Normalized key -> BackingDocument
+
+        # Filesystem Watcher for external filesystem change detection
+        self.fs_watcher = QFileSystemWatcher(self)
+        self.fs_debounce_timer = QTimer(self)
+        self.fs_debounce_timer.setSingleShot(True)
+        self.fs_debounce_timer.setInterval(300)
+        self.fs_debounce_timer.timeout.connect(self._on_fs_debounced)
+        self.fs_watcher.directoryChanged.connect(self._on_fs_event)
+        self.fs_watcher.fileChanged.connect(self._on_fs_event)
+        self._explorer_clipboard = {}
+
         self.start_lsp_server()
+
+    def _norm_key(self, key):
+        if not key:
+            return ""
+        clean = key
+        if clean.startswith("file:///"):
+            clean = url2pathname(urlparse(clean).path)
+        return os.path.abspath(os.path.normpath(clean)) if os.path.isabs(clean) else clean.replace("\\", "/")
+
+    def _get_backing_doc(self, key):
+        if not key:
+            return None
+        k1 = self._norm_key(key)
+        if k1 in self.backing_docs:
+            return self.backing_docs[k1]
+        for k, v in self.backing_docs.items():
+            if k.endswith(key) or key.endswith(k):
+                return v
+        return None
+
+    @Slot(str, str)
+    def init_backing_document(self, key, text):
+        clean_key = self._norm_key(key)
+        if clean_key not in self.backing_docs:
+            self.backing_docs[clean_key] = BackingDocument(text)
+        else:
+            self.backing_docs[clean_key].set_text(text)
+
+    @Slot(str, result=str)
+    def get_backing_text(self, key):
+        doc = self._get_backing_doc(key)
+        return doc.text if doc else ""
+
+    @Slot(str, result=int)
+    def get_backing_total_lines(self, key):
+        doc = self._get_backing_doc(key)
+        return doc.total_lines if doc else 1
+
+    @Slot(str, int, int, result="QVariantMap")
+    def get_backing_slice(self, key, start_line, end_line):
+        doc = self._get_backing_doc(key)
+        if not doc:
+            return {"text": "", "startLine": 0, "endLine": 0}
+        slice_text, s, e = doc.get_slice(start_line, end_line)
+        return {"text": slice_text, "startLine": s, "endLine": e}
+
+    @Slot(str, int, int, str)
+    def update_backing_slice(self, key, start_line, end_line, slice_text):
+        doc = self._get_backing_doc(key)
+        if doc:
+            doc.update_slice(start_line, end_line, slice_text)
+        else:
+            clean_key = self._norm_key(key)
+            self.backing_docs[clean_key] = BackingDocument(slice_text)
+
+    @Slot(str, str)
+    def update_backing_text(self, key, full_text):
+        doc = self._get_backing_doc(key)
+        if doc:
+            doc.set_text(full_text)
+        else:
+            clean_key = self._norm_key(key)
+            self.backing_docs[clean_key] = BackingDocument(full_text)
+
+    @Slot(str, str, bool, bool, result=list)
+    def search_backing_document(self, key, query, case_sensitive=False, is_regex=False):
+        doc = self._get_backing_doc(key)
+        return doc.global_search(query, case_sensitive, is_regex) if doc else []
+
+    @Slot(str, result=bool)
+    def is_backing_document_modified(self, key):
+        doc = self._get_backing_doc(key)
+        return doc.is_modified if doc else False
+
+    @Slot(str)
+    def mark_backing_document_saved(self, key):
+        doc = self._get_backing_doc(key)
+        if doc:
+            doc.mark_saved()
 
     @Slot(str)
     @Slot(str, str)
@@ -146,11 +333,6 @@ class EditorBackend(QObject):
             parsed = urlparse(clean_path)
             clean_path = url2pathname(parsed.path)
         self.current_file = os.path.normpath(clean_path) if clean_path else ""
-        if self.highlighter:
-            prev_lang = self.highlighter.language
-            if lang and self.highlighter.language != lang:
-                self.highlighter.set_language_for_file(self.current_file, explicit_lang=lang, force_rehighlight=True)
-                self.currentLanguageChanged.emit(self.highlighter.language)
 
     @Slot(QObject)
     @Slot(QObject, str)
@@ -177,14 +359,70 @@ class EditorBackend(QObject):
             if doc_id not in self.tab_highlighters:
                 hl = MultiLanguageHighlighter(None)
                 initial_path = self.current_file or "main.py"
-                hl.set_language_for_file(initial_path, explicit_lang=lang, force_rehighlight=False)
-                hl.setDocument(doc)
+                hl.attach_document_incremental(doc, initial_path, explicit_lang=lang)
                 self.tab_highlighters[doc_id] = hl
 
             self.highlighter = self.tab_highlighters[doc_id]
             if lang and self.highlighter.language != lang:
                 self.highlighter.set_language_for_file(self.current_file, explicit_lang=lang, force_rehighlight=True)
             self.currentLanguageChanged.emit(self.highlighter.language)
+            if file_path and doc:
+                doc.setModified(False)
+
+    @Slot(int, int)
+    def update_visible_range(self, start_line, end_line):
+        if self.highlighter and hasattr(self.highlighter, "update_visible_range"):
+            self.highlighter.update_visible_range(start_line, end_line)
+
+    @Slot(result=bool)
+    @Slot(QObject, result=bool)
+    def is_document_modified(self, qml_text_area=None):
+        ta = qml_text_area or self.qml_text_area
+        if not ta:
+            return False
+        try:
+            qml_doc = ta.property("textDocument")
+            if qml_doc:
+                doc = qml_doc.textDocument()
+                if doc:
+                    return doc.isModified()
+        except Exception:
+            pass
+        return False
+
+    @Slot()
+    @Slot(QObject)
+    def mark_document_saved(self, qml_text_area=None):
+        ta = qml_text_area or self.qml_text_area
+        if not ta:
+            return
+        try:
+            qml_doc = ta.property("textDocument")
+            if qml_doc:
+                doc = qml_doc.textDocument()
+                if doc:
+                    doc.setModified(False)
+        except Exception:
+            pass
+
+    @Slot(QObject, str, result=bool)
+    def apply_formatted_text(self, qml_text_area, formatted_text):
+        if not qml_text_area:
+            return False
+        try:
+            qml_doc = qml_text_area.property("textDocument")
+            if qml_doc:
+                doc = qml_doc.textDocument()
+                if doc:
+                    cursor = QTextCursor(doc)
+                    cursor.beginEditBlock()
+                    cursor.select(QTextCursor.SelectionType.Document)
+                    cursor.insertText(formatted_text)
+                    cursor.endEditBlock()
+                    return True
+        except Exception as e:
+            print(f"[EditorBackend] apply_formatted_text error: {e}", flush=True)
+        return False
 
     @Slot(QObject)
     def unregister_text_area(self, qml_text_area):
@@ -463,12 +701,19 @@ class EditorBackend(QObject):
                 with open(clean_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
 
+            # Store in backing document model
+            clean_key = self._norm_key(clean_path)
+            doc = BackingDocument(content)
+            doc.mark_saved()
+            self.backing_docs[clean_key] = doc
+
             self.fileOpened.emit(clean_path, content)
         except Exception as e:
             print(f"Error opening file {clean_path}:", e)
 
+    @Slot(str)
     @Slot(str, str)
-    def save_file(self, filePath, content):
+    def save_file(self, filePath, content=None):
         if not filePath:
             self.fileSaved.emit("", False)
             return
@@ -479,6 +724,20 @@ class EditorBackend(QObject):
             filePath = url2pathname(parsed.path)
 
         clean_path = os.path.abspath(os.path.normpath(filePath))
+        clean_key = self._norm_key(clean_path)
+        doc = self._get_backing_doc(clean_key)
+
+        if content is None or content == "":
+            if doc:
+                content = doc.text
+            else:
+                content = ""
+        else:
+            if doc:
+                doc.set_text(content)
+            else:
+                doc = BackingDocument(content)
+                self.backing_docs[clean_key] = doc
 
         try:
             # Make sure the parent directory exists for newly-created files.
@@ -491,6 +750,9 @@ class EditorBackend(QObject):
             with open(clean_path, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
 
+            if doc:
+                doc.mark_saved()
+
             self.current_file = clean_path
             self.fileSaved.emit(clean_path, True)
             print(f"File saved successfully: {clean_path}")
@@ -498,6 +760,260 @@ class EditorBackend(QObject):
         except (OSError, UnicodeError) as e:
             print(f"Error saving file {clean_path}: {e}")
             self.fileSaved.emit(clean_path, False)
+
+    @Slot(str, result=bool)
+    def file_exists(self, file_path):
+        if not file_path:
+            return False
+        clean_path = file_path
+        if clean_path.startswith("file:///"):
+            parsed = urlparse(clean_path)
+            clean_path = url2pathname(parsed.path)
+        clean_path = os.path.abspath(os.path.normpath(clean_path))
+        return os.path.exists(clean_path)
+
+    @Slot(str, result=bool)
+    def create_file_on_disk(self, file_path):
+        if not file_path:
+            return False
+        clean_path = file_path
+        if clean_path.startswith("file:///"):
+            parsed = urlparse(clean_path)
+            clean_path = url2pathname(parsed.path)
+        clean_path = os.path.abspath(os.path.normpath(clean_path))
+        try:
+            parent = os.path.dirname(clean_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            if not os.path.exists(clean_path):
+                with open(clean_path, "w", encoding="utf-8", newline="") as f:
+                    f.write("")
+            return True
+        except Exception as e:
+            print(f"Error creating file on disk {clean_path}: {e}")
+            return False
+
+    @Slot(str, result=bool)
+    def create_folder_on_disk(self, folder_path):
+        if not folder_path:
+            return False
+        clean_path = folder_path
+        if clean_path.startswith("file:///"):
+            parsed = urlparse(clean_path)
+            clean_path = url2pathname(parsed.path)
+        clean_path = os.path.abspath(os.path.normpath(clean_path))
+        try:
+            os.makedirs(clean_path, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Error creating folder {clean_path}: {e}")
+            return False
+
+    @Slot(str, str, result=bool)
+    def rename_file(self, old_path, new_path):
+        if not old_path or not new_path:
+            return False
+        clean_old = old_path
+        if clean_old.startswith("file:///"):
+            clean_old = url2pathname(urlparse(clean_old).path)
+        clean_old = os.path.abspath(os.path.normpath(clean_old))
+
+        clean_new = new_path
+        if clean_new.startswith("file:///"):
+            clean_new = url2pathname(urlparse(clean_new).path)
+        clean_new = os.path.abspath(os.path.normpath(clean_new))
+
+        try:
+            if not os.path.exists(clean_old):
+                return False
+            if os.path.exists(clean_new) and clean_old.lower() != clean_new.lower():
+                return False
+            os.rename(clean_old, clean_new)
+            return True
+        except Exception as e:
+            print(f"Error renaming {clean_old} to {clean_new}: {e}")
+            return False
+
+    @Slot(str, result=bool)
+    def delete_file(self, file_path):
+        if not file_path:
+            return False
+        clean_path = file_path
+        if clean_path.startswith("file:///"):
+            clean_path = url2pathname(urlparse(clean_path).path)
+        clean_path = os.path.abspath(os.path.normpath(clean_path))
+        try:
+            if os.path.exists(clean_path):
+                if os.path.isdir(clean_path):
+                    shutil.rmtree(clean_path)
+                else:
+                    os.remove(clean_path)
+            return True
+        except Exception as e:
+            print(f"Error deleting {clean_path}: {e}")
+            return False
+
+    @Slot(str, result=str)
+    def duplicate_file(self, path):
+        if not path:
+            return ""
+        clean = path
+        if clean.startswith("file:///"):
+            clean = url2pathname(urlparse(clean).path)
+        clean = os.path.abspath(os.path.normpath(clean))
+        if not os.path.exists(clean):
+            return ""
+
+        parent = os.path.dirname(clean)
+        base_name = os.path.basename(clean)
+        name, ext = os.path.splitext(base_name)
+
+        idx = 1
+        new_name = f"{name} copy{ext}"
+        new_path = os.path.join(parent, new_name)
+        while os.path.exists(new_path):
+            idx += 1
+            new_name = f"{name} copy {idx}{ext}"
+            new_path = os.path.join(parent, new_name)
+
+        try:
+            if os.path.isdir(clean):
+                shutil.copytree(clean, new_path)
+            else:
+                shutil.copy2(clean, new_path)
+            return new_path.replace("\\", "/")
+        except Exception as e:
+            print(f"Error duplicating {clean}: {e}")
+            return ""
+
+    @Slot(str)
+    def reveal_in_explorer(self, path):
+        if not path:
+            return
+        clean = path
+        if clean.startswith("file:///"):
+            clean = url2pathname(urlparse(clean).path)
+        clean = os.path.abspath(os.path.normpath(clean))
+        if not os.path.exists(clean):
+            return
+
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["explorer", f"/select,{clean}"])
+            elif sys.platform == "darwin":
+                subprocess.run(["open", "-R", clean])
+            else:
+                target_dir = clean if os.path.isdir(clean) else os.path.dirname(clean)
+                subprocess.run(["xdg-open", target_dir])
+        except Exception as e:
+            print(f"Error revealing in explorer {clean}: {e}")
+
+    @Slot(str)
+    def copy_path_to_clipboard(self, path):
+        if not path:
+            return
+        clean = path
+        if clean.startswith("file:///"):
+            clean = url2pathname(urlparse(clean).path)
+        clean = os.path.abspath(os.path.normpath(clean))
+        cb = QGuiApplication.clipboard()
+        if cb:
+            cb.setText(clean)
+
+    @Slot(str, str)
+    def set_explorer_clipboard(self, path, mode):
+        clean = path
+        if clean.startswith("file:///"):
+            clean = url2pathname(urlparse(clean).path)
+        self._explorer_clipboard = {
+            "path": os.path.abspath(os.path.normpath(clean)),
+            "mode": mode  # "copy" or "cut"
+        }
+
+    @Slot(result=dict)
+    def get_explorer_clipboard(self):
+        return getattr(self, "_explorer_clipboard", {}) or {}
+
+    @Slot(str, result=bool)
+    def paste_explorer_clipboard(self, target_dir):
+        clip = getattr(self, "_explorer_clipboard", None)
+        if not clip or not clip.get("path") or not os.path.exists(clip["path"]):
+            return False
+        src = clip["path"]
+        mode = clip.get("mode", "copy")
+
+        dst_parent = target_dir
+        if dst_parent.startswith("file:///"):
+            dst_parent = url2pathname(urlparse(dst_parent).path)
+        dst_parent = os.path.abspath(os.path.normpath(dst_parent))
+        if not os.path.isdir(dst_parent):
+            dst_parent = os.path.dirname(dst_parent)
+
+        base_name = os.path.basename(src)
+        dst = os.path.join(dst_parent, base_name)
+
+        if os.path.exists(dst):
+            name, ext = os.path.splitext(base_name)
+            idx = 1
+            dst = os.path.join(dst_parent, f"{name} copy{ext}")
+            while os.path.exists(dst):
+                idx += 1
+                dst = os.path.join(dst_parent, f"{name} copy {idx}{ext}")
+
+        try:
+            if mode == "cut":
+                shutil.move(src, dst)
+                self._explorer_clipboard = {}
+            else:
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+            return True
+        except Exception as e:
+            print(f"Error pasting from {src} to {dst}: {e}")
+            return False
+
+    @Slot(str, str, result=str)
+    def move_file_or_folder(self, src_path, dest_dir):
+        if not src_path or not dest_dir:
+            return ""
+        clean_src = src_path
+        if clean_src.startswith("file:///"):
+            clean_src = url2pathname(urlparse(clean_src).path)
+        clean_src = os.path.abspath(os.path.normpath(clean_src))
+
+        clean_dst_dir = dest_dir
+        if clean_dst_dir.startswith("file:///"):
+            clean_dst_dir = url2pathname(urlparse(clean_dst_dir).path)
+        clean_dst_dir = os.path.abspath(os.path.normpath(clean_dst_dir))
+
+        if not os.path.exists(clean_src) or not os.path.exists(clean_dst_dir):
+            return ""
+        if not os.path.isdir(clean_dst_dir):
+            clean_dst_dir = os.path.dirname(clean_dst_dir)
+
+        # Prevent moving a directory into itself or its own descendant
+        if os.path.isdir(clean_src):
+            try:
+                rel = os.path.relpath(clean_dst_dir, clean_src)
+                if rel == "." or not rel.startswith(".."):
+                    print(f"Cannot move folder into itself or descendant: {clean_src} -> {clean_dst_dir}")
+                    return ""
+            except ValueError:
+                pass
+
+        base_name = os.path.basename(clean_src)
+        dst_target = os.path.join(clean_dst_dir, base_name)
+        if os.path.abspath(clean_src) == os.path.abspath(dst_target):
+            return dst_target.replace("\\", "/")
+
+        try:
+            shutil.move(clean_src, dst_target)
+            return dst_target.replace("\\", "/")
+        except Exception as e:
+            print(f"Error moving {clean_src} to {dst_target}: {e}")
+            return ""
 
     @Slot(str, str, str, str)
     @Slot(str, str, str, str, int)
@@ -580,6 +1096,18 @@ class EditorBackend(QObject):
     def copy_to_clipboard(self, text):
         """Copies text to system clipboard."""
         self.extension_manager.copy_to_clipboard(text)
+
+    @Slot(str)
+    def set_clipboard_text(self, text):
+        """Sets system clipboard text."""
+        self.extension_manager.copy_to_clipboard(text)
+
+    @Slot(result=str)
+    def get_clipboard_text(self):
+        """Gets system clipboard text."""
+        from PySide6.QtGui import QGuiApplication
+        cb = QGuiApplication.clipboard()
+        return cb.text() if cb else ""
 
     @Slot(str)
     def install_formatter(self, extension_id):
@@ -1025,8 +1553,53 @@ class EditorBackend(QObject):
             root, arr = self.search_folder_items(self.folder_path)
             result = self.explorerList(arr, root)
             self.explorerContent.emit(result, self.folder_path)
+            self._update_fs_watcher()
         except Exception as e:
             print("Error loading workspace tree:", e)
+
+    def _update_fs_watcher(self):
+        if not hasattr(self, "fs_watcher") or not self.fs_watcher:
+            return
+        if not self.folder_path or not os.path.exists(self.folder_path):
+            return
+        try:
+            curr_dirs = self.fs_watcher.directories()
+            if curr_dirs:
+                self.fs_watcher.removePaths(curr_dirs)
+            curr_files = self.fs_watcher.files()
+            if curr_files:
+                self.fs_watcher.removePaths(curr_files)
+
+            ignored_dirs = {
+                ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", "env",
+                ".dgx_studio", ".idea", ".vscode", "dist", "build", ".pytest_cache", ".agents",
+                "bin", "obj", ".qtcreator"
+            }
+            paths_to_watch = [self.folder_path]
+            for root_dir, dirs, _ in os.walk(self.folder_path):
+                dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
+                for d in dirs:
+                    paths_to_watch.append(os.path.join(root_dir, d))
+
+            if paths_to_watch:
+                # Watch top 500 subdirectories to prevent OS descriptor limit
+                self.fs_watcher.addPaths(paths_to_watch[:500])
+        except Exception as e:
+            print("[EditorBackend] fs_watcher update notice:", e)
+
+    def _on_fs_event(self, path=""):
+        if hasattr(self, "fs_debounce_timer") and self.fs_debounce_timer:
+            self.fs_debounce_timer.start(300)
+
+    def _on_fs_debounced(self):
+        if self.folder_path and os.path.exists(self.folder_path):
+            try:
+                root, arr = self.search_folder_items(self.folder_path)
+                result = self.explorerList(arr, root)
+                self.explorerContent.emit(result, self.folder_path)
+                self._update_fs_watcher()
+            except Exception as e:
+                print("[EditorBackend] _on_fs_debounced error:", e)
 
     def search_folder_items(self, path):
         p = Path(path)
@@ -1066,7 +1639,7 @@ class EditorBackend(QObject):
             else:
                 node["name"] = item
                 node["parentId"] = pid
-                node["type"] = "Folder" if "." not in item else "File"
+                node["type"] = "File"
                 final_list.append(node)
         return final_list
 

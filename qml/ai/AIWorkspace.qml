@@ -121,9 +121,11 @@ Rectangle {
                         chatHistoryModel.setProperty(i, "originalSelectedText", ctx.originalSelectedText || "");
                         chatHistoryModel.setProperty(i, "languageId", ctx.languageId || "");
                         if (ctx.isSelectionRequest) {
-                            var cleanCode = CodeExtractor.extractCodeFromMarkdown(content, ctx.languageId);
-                            if (cleanCode && cleanCode.trim().length > 0) {
-                                root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanCode, ctx.originalSelectedText);
+                            var parseRes = CodeExtractor.parseReplacementResponse(content, ctx.languageId);
+                            if (parseRes.status === "replacement" && parseRes.code && parseRes.code.trim().length > 0) {
+                                root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes.code, ctx.originalSelectedText);
+                            } else {
+                                root.aiReplacementFailed();
                             }
                         }
                     }
@@ -141,9 +143,11 @@ Rectangle {
                 languageId: (role === "assistant" && ctx) ? (ctx.languageId || "") : ""
             });
             if (role === "assistant" && ctx && ctx.isSelectionRequest) {
-                var cleanCode2 = CodeExtractor.extractCodeFromMarkdown(content, ctx.languageId);
-                if (cleanCode2 && cleanCode2.trim().length > 0) {
-                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanCode2, ctx.originalSelectedText);
+                var parseRes2 = CodeExtractor.parseReplacementResponse(content, ctx.languageId);
+                if (parseRes2.status === "replacement" && parseRes2.code && parseRes2.code.trim().length > 0) {
+                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes2.code, ctx.originalSelectedText);
+                } else {
+                    root.aiReplacementFailed();
                 }
             }
             chatListView.positionViewAtEnd();
@@ -402,17 +406,15 @@ Rectangle {
         var basePrompt = (customPrompt && customPrompt.trim().length > 0) ? customPrompt.trim() : ("Please review and improve the selected " + (langTag ? langTag + " " : "") + "code:");
         var userMsg = basePrompt + "\n\n```" + (langTag || "") + "\n" + code + "\n```";
 
-        var internalInstruction = "You are reviewing and improving a selected portion of an existing source file.\n" +
-            "Please provide a clear and helpful explanation of:\n" +
-            "- What was wrong or could be improved with the selected code\n" +
-            "- What changes you made\n" +
-            "- Why you made those changes\n" +
-            "\n" +
-            "IMPORTANT RULES FOR THE CODE BLOCK:\n" +
-            "- Put the corrected code inside a Markdown code block (```" + (langTag || "") + " ... ```).\n" +
-            "- The code block must contain ONLY the replacement code for the exact selected fragment.\n" +
-            "- Do NOT return the entire document or recreate outer enclosing file structure (such as <!DOCTYPE html>, <html>, <body>, or outer class/module definitions) unless they were actually part of the selected text.\n" +
-            "- The code inside the code block must be directly usable as a drop-in replacement for the selected portion.";
+        var internalInstruction = "You are Pod Studio AI analyzing a user's selected code snippet.\n" +
+            "You MUST classify your review into one of the following 3 STRICT PROTOCOL STATES and include the exact state marker in your response:\n\n" +
+            "1. [REPLACEMENT_CODE]\n" +
+            "Include `[REPLACEMENT_CODE]` followed by a single fenced code block containing ONLY the corrected replacement for the selected range whenever a safe, unambiguous local fix exists inside the selected text (e.g. missing semicolon, operator fix, logic fix, typo, closure binding, or fragment fix like `++count;`). The replacement must match the exact selection scope.\n\n" +
+            "2. [NO_CHANGE]\n" +
+            "Include `[NO_CHANGE]` and explain why no changes are needed whenever the selected code has no bug and is already correct.\n\n" +
+            "3. [INSUFFICIENT_CONTEXT]\n" +
+            "Include `[INSUFFICIENT_CONTEXT]` and explain what external context is needed whenever the real bug or fix depends on code outside the selected range (e.g. surrounding loop boundary, missing variable declaration/type).\n\n" +
+            "Always explain your reasoning in clear text. Always include exactly one of the markers: [REPLACEMENT_CODE], [NO_CHANGE], or [INSUFFICIENT_CONTEXT].";
 
         root.pendingSelectionContext = {
             isSelectionRequest: true,
@@ -427,19 +429,25 @@ Rectangle {
             root.aiReplacementStarted(startPos, endPos, code);
         }
 
-        inputTextArea.text = userMsg;
-        submitPrompt();
+        submitPrompt(userMsg);
     }
 
     function askAboutCode(code) {
         askAboutSelection(code, -1, -1, "");
     }
 
-    function submitPrompt() {
-        var query = inputTextArea.text.trim();
+    function sendDirectPrompt(promptText) {
+        if (!promptText || promptText.trim().length === 0) return;
+        submitPrompt(promptText.trim());
+    }
+
+    function submitPrompt(directQuery) {
+        var query = (directQuery !== undefined && typeof directQuery === "string") ? directQuery.trim() : inputTextArea.text.trim();
         if (!query) return;
 
-        inputTextArea.text = "";
+        if (directQuery === undefined) {
+            inputTextArea.text = "";
+        }
 
         var context = root.pendingSelectionContext;
         root.pendingSelectionContext = null;
@@ -477,7 +485,7 @@ Rectangle {
         onTriggered: {
             root.aiStatus = "idle";
             var ctx = simTimer.targetContext;
-            var responseContent = "```" + (ctx ? ctx.languageId : "") + "\n" + (ctx ? ctx.originalSelectedText : "// generated code") + "\n```";
+            var responseContent = "Explanation of code...\n\n```" + (ctx ? ctx.languageId : "") + "\n// example problem\n```\n\n[REPLACEMENT_CODE]\n```" + (ctx ? ctx.languageId : "") + "\n" + (ctx ? ctx.originalSelectedText : "// generated code") + "\n```";
             chatHistoryModel.append({
                 msgId: "ai_" + Date.now(),
                 role: "assistant",
@@ -489,9 +497,11 @@ Rectangle {
                 languageId: ctx ? (ctx.languageId || "") : ""
             });
             if (ctx && ctx.isSelectionRequest) {
-                var cleanSim = CodeExtractor.extractCodeFromMarkdown(responseContent, ctx.languageId);
-                if (cleanSim && cleanSim.trim().length > 0) {
-                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, cleanSim, ctx.originalSelectedText);
+                var parseResSim = CodeExtractor.parseReplacementResponse(responseContent, ctx.languageId);
+                if (parseResSim.status === "replacement" && parseResSim.code && parseResSim.code.trim().length > 0) {
+                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseResSim.code, ctx.originalSelectedText);
+                } else {
+                    root.aiReplacementFailed();
                 }
             }
             chatListView.positionViewAtEnd();

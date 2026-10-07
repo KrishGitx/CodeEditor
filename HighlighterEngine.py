@@ -6,8 +6,9 @@ Supports 25+ programming languages, file types, and dynamic color themes.
 """
 
 from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
-from PySide6.QtCore import QRegularExpression
+from PySide6.QtCore import QTimer
 import os
+import re
 
 THEMES = {
     "obsidian": {
@@ -218,6 +219,111 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         self._init_formats()
         self._build_language_regex("python")
 
+        self.viewport_start = 0
+        self.viewport_end = 150
+        self.buffer_size = 60
+        self.formatted_blocks = set()
+
+        self._pending_blocks_queue = []
+        self._slice_timer = QTimer()
+        self._slice_timer.setInterval(12)
+        self._slice_timer.timeout.connect(self._process_slice_queue)
+        self._batch_slice_size = 30
+
+    def attach_document(self, doc, file_path="", explicit_lang=None, visible_lines=150):
+        self.file_path = file_path or ""
+        ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
+        new_lang = EXT_TO_LANG.get(ext, None)
+        if not new_lang and explicit_lang:
+            new_lang = explicit_lang.lower()
+        if not new_lang:
+            new_lang = "text"
+
+        self.language = new_lang
+        self._build_language_regex(new_lang)
+
+        self._slice_timer.stop()
+        self._pending_blocks_queue.clear()
+        self.formatted_blocks.clear()
+
+        total_blocks = doc.blockCount() if doc else 0
+        self.viewport_start = 0
+        self.viewport_end = min(total_blocks, visible_lines + self.buffer_size)
+
+        self.setDocument(doc)
+        print("[Timing] First visible syntax highlight complete", flush=True)
+
+    def attach_document_incremental(self, doc, file_path="", explicit_lang=None):
+        self.attach_document(doc, file_path, explicit_lang)
+
+    def update_visible_range(self, start_line, end_line):
+        doc = self.document()
+        if not doc or self.language in ("text", "binary", "plain") or not self.unified_regex:
+            return
+
+        total_blocks = doc.blockCount()
+        w_start = max(0, start_line - self.buffer_size)
+        w_end = min(total_blocks - 1, end_line + self.buffer_size + 40)
+
+        self.viewport_start = w_start
+        self.viewport_end = w_end
+
+        new_blocks = [b for b in range(w_start, w_end + 1) if b not in self.formatted_blocks]
+        if not new_blocks:
+            return
+
+        vp_blocks = [b for b in new_blocks if start_line <= b <= end_line]
+        buf_blocks = [b for b in new_blocks if b < start_line or b > end_line]
+        sorted_blocks = vp_blocks + buf_blocks
+
+        existing_set = set(self._pending_blocks_queue)
+        for b in sorted_blocks:
+            if b not in existing_set:
+                self._pending_blocks_queue.append(b)
+
+        if not self._slice_timer.isActive():
+            self._slice_timer.start()
+
+    def _process_slice_queue(self):
+        doc = self.document()
+        if not doc or not self._pending_blocks_queue:
+            self._slice_timer.stop()
+            return
+
+        count = 0
+        while self._pending_blocks_queue and count < self._batch_slice_size:
+            b_num = self._pending_blocks_queue.pop(0)
+            if b_num not in self.formatted_blocks:
+                block = doc.findBlockByNumber(b_num)
+                if block.isValid():
+                    self.rehighlightBlock(block)
+                count += 1
+
+        if not self._pending_blocks_queue:
+            self._slice_timer.stop()
+
+    def set_language_for_file(self, file_path, explicit_lang=None, force_rehighlight=True):
+        self.file_path = file_path or ""
+        ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
+        new_lang = EXT_TO_LANG.get(ext, None)
+        if not new_lang and explicit_lang:
+            new_lang = explicit_lang.lower()
+        if not new_lang:
+            new_lang = "text"
+
+        if new_lang != self.language or force_rehighlight:
+            self.language = new_lang
+            self._build_language_regex(new_lang)
+            self._slice_timer.stop()
+            self._pending_blocks_queue.clear()
+            self.formatted_blocks.clear()
+            doc = self.document()
+            if doc and force_rehighlight:
+                total_blocks = doc.blockCount()
+                self.viewport_start = 0
+                self.viewport_end = min(total_blocks, 150 + self.buffer_size)
+                self.rehighlight()
+
     def _init_formats(self):
         self.formats.clear()
 
@@ -239,6 +345,16 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         self.formats["type"] = make_fmt(t["types"])
         self.formats["operator"] = make_fmt(t["operators"])
         self.formats["preprocessor"] = make_fmt(t["preprocessor"])
+        self.fmts_list = [
+            None,
+            self.formats["comment"],
+            self.formats["string"],
+            self.formats["keyword"],
+            self.formats["function"],
+            self.formats["number"],
+            self.formats["type"],
+            self.formats["preprocessor"]
+        ]
 
     def set_theme(self, theme_name):
         normalized = theme_name.lower()
@@ -287,7 +403,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b(?:self|cls|int|str|float|list|dict|set|tuple|bool|bytes)\b)|" # 6: type
                 r"(@[A-Za-z0-9_]+)"                              # 7: preprocessor/decorator
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 2. C / C++ / C# / Java
         elif lang in ("c", "cpp", "csharp", "java"):
@@ -319,7 +435,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 rf"({types})|"                                    # 6: type
                 r"(#[a-zA-Z_]\w*)"                                # 7: preprocessor
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 3. JavaScript / TypeScript / QML
         elif lang in ("javascript", "typescript", "qml"):
@@ -352,7 +468,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 rf"({types})|"                                    # 6: type
                 r"(@[A-Za-z0-9_]+)"                              # 7: decorator
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 4. Rust
         elif lang == "rust":
@@ -371,7 +487,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b(?:Option|Result|String|Vec|Box|Rc|Arc)\b)|" # 6: type
                 r"(#!?\[.*?\])"                                   # 7: preprocessor
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 5. Go
         elif lang == "go":
@@ -387,7 +503,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\())|"          # 4: function
                 r"(\b\d+(?:\.\d+)?\b)"                            # 5: number
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 6. HTML / XML
         elif lang in ("html", "xml"):
@@ -400,7 +516,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(&[a-zA-Z0-9#]+;)|"                             # 6: entity
                 r"(<!DOCTYPE.*?>)"                                # 7: doctype
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 7. CSS / SCSS
         elif lang in ("css", "scss"):
@@ -411,7 +527,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(#[a-zA-Z0-9_-]+|\.[a-zA-Z0-9_-]+)|"            # 4: selector (function)
                 r"(\b\d+(?:px|em|rem|%|vh|vw|s|ms|pt)?\b)"        # 5: number
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 8. JSON / YAML / TOML
         elif lang in ("json", "yaml", "toml"):
@@ -422,7 +538,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\"[^\"]+\"\s*(?=:))|"                          # 4: key
                 r"(\b\d+(?:\.\d+)?\b)"                            # 5: number
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 9. SQL
         elif lang == "sql":
@@ -439,7 +555,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\())|"          # 4: function
                 r"(\b\d+(?:\.\d+)?\b)"                            # 5: number
             )
-            self.unified_regex = QRegularExpression(pattern, QRegularExpression.CaseInsensitiveOption)
+            self.unified_regex = re.compile(pattern, re.IGNORECASE)
 
         # 10. Bash / Shell / PowerShell
         elif lang in ("bash", "powershell", "batch"):
@@ -452,7 +568,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b\d+\b)|"                                     # 5: number
                 r"(\$[a-zA-Z0-9_]+|\%[a-zA-Z0-9_]+\%)"           # 6: variable
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # 11. Markdown
         elif lang == "markdown":
@@ -464,7 +580,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b\d+\b)|"                                     # 5: number
                 r"(\*\*.*?\*\*|\*.*?\*)"                          # 6: bold/italic
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
         # Fallback Generic
         else:
@@ -475,12 +591,15 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 r"(\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\())|"          # 4: function
                 r"(\b\d+\b)"                                      # 5: number
             )
-            self.unified_regex = QRegularExpression(pattern)
+            self.unified_regex = re.compile(pattern)
 
     def highlightBlock(self, text):
         if not text or not self.unified_regex or self.language in ("text", "binary", "plain"):
             self.setCurrentBlockState(STATE_NONE)
             return
+
+        b_num = self.currentBlock().blockNumber()
+        in_window = True
 
         state = self.previousBlockState()
         if state <= 0:
@@ -492,44 +611,56 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         if state == STATE_PY_TRIPLE_DOUBLE:
             end_idx = text.find('"""')
             if end_idx == -1:
-                self.setFormat(0, len(text), self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, len(text), self.formats["comment"])
+                    self.formatted_blocks.add(b_num)
                 self.setCurrentBlockState(STATE_PY_TRIPLE_DOUBLE)
                 return
             else:
-                self.setFormat(0, end_idx + 3, self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, end_idx + 3, self.formats["comment"])
                 offset = end_idx + 3
                 state = STATE_NONE
 
         elif state == STATE_PY_TRIPLE_SINGLE:
             end_idx = text.find("'''")
             if end_idx == -1:
-                self.setFormat(0, len(text), self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, len(text), self.formats["comment"])
+                    self.formatted_blocks.add(b_num)
                 self.setCurrentBlockState(STATE_PY_TRIPLE_SINGLE)
                 return
             else:
-                self.setFormat(0, end_idx + 3, self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, end_idx + 3, self.formats["comment"])
                 offset = end_idx + 3
                 state = STATE_NONE
 
         elif state == STATE_C_BLOCK_COMMENT:
             end_idx = text.find("*/")
             if end_idx == -1:
-                self.setFormat(0, len(text), self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, len(text), self.formats["comment"])
+                    self.formatted_blocks.add(b_num)
                 self.setCurrentBlockState(STATE_C_BLOCK_COMMENT)
                 return
             else:
-                self.setFormat(0, end_idx + 2, self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, end_idx + 2, self.formats["comment"])
                 offset = end_idx + 2
                 state = STATE_NONE
 
         elif state == STATE_HTML_COMMENT:
             end_idx = text.find("-->")
             if end_idx == -1:
-                self.setFormat(0, len(text), self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, len(text), self.formats["comment"])
+                    self.formatted_blocks.add(b_num)
                 self.setCurrentBlockState(STATE_HTML_COMMENT)
                 return
             else:
-                self.setFormat(0, end_idx + 3, self.formats["comment"])
+                if in_window:
+                    self.setFormat(0, end_idx + 3, self.formats["comment"])
                 offset = end_idx + 3
                 state = STATE_NONE
 
@@ -545,7 +676,9 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             is_comment = True
 
         if is_comment:
-            self.setFormat(offset, len(rem_text), self.formats["comment"])
+            if in_window:
+                self.setFormat(offset, len(rem_text), self.formats["comment"])
+                self.formatted_blocks.add(b_num)
             self.setCurrentBlockState(STATE_NONE)
             return
 
@@ -556,15 +689,19 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             if td_idx != -1 and (ts_idx == -1 or td_idx < ts_idx):
                 close_idx = rem_text.find('"""', td_idx + 3)
                 if close_idx == -1:
-                    self._highlight_range(text, offset, offset + td_idx)
-                    self.setFormat(offset + td_idx, len(rem_text) - td_idx, self.formats["comment"])
+                    if in_window:
+                        self._highlight_range(text, offset, offset + td_idx)
+                        self.setFormat(offset + td_idx, len(rem_text) - td_idx, self.formats["comment"])
+                        self.formatted_blocks.add(b_num)
                     self.setCurrentBlockState(STATE_PY_TRIPLE_DOUBLE)
                     return
             elif ts_idx != -1:
                 close_idx = rem_text.find("'''", ts_idx + 3)
                 if close_idx == -1:
-                    self._highlight_range(text, offset, offset + ts_idx)
-                    self.setFormat(offset + ts_idx, len(rem_text) - ts_idx, self.formats["comment"])
+                    if in_window:
+                        self._highlight_range(text, offset, offset + ts_idx)
+                        self.setFormat(offset + ts_idx, len(rem_text) - ts_idx, self.formats["comment"])
+                        self.formatted_blocks.add(b_num)
                     self.setCurrentBlockState(STATE_PY_TRIPLE_SINGLE)
                     return
 
@@ -573,8 +710,10 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             if c_idx != -1:
                 close_idx = rem_text.find("*/", c_idx + 2)
                 if close_idx == -1:
-                    self._highlight_range(text, offset, offset + c_idx)
-                    self.setFormat(offset + c_idx, len(rem_text) - c_idx, self.formats["comment"])
+                    if in_window:
+                        self._highlight_range(text, offset, offset + c_idx)
+                        self.setFormat(offset + c_idx, len(rem_text) - c_idx, self.formats["comment"])
+                        self.formatted_blocks.add(b_num)
                     self.setCurrentBlockState(STATE_C_BLOCK_COMMENT)
                     return
 
@@ -583,44 +722,27 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             if h_idx != -1:
                 close_idx = rem_text.find("-->", h_idx + 4)
                 if close_idx == -1:
-                    self._highlight_range(text, offset, offset + h_idx)
-                    self.setFormat(offset + h_idx, len(rem_text) - h_idx, self.formats["comment"])
+                    if in_window:
+                        self._highlight_range(text, offset, offset + h_idx)
+                        self.setFormat(offset + h_idx, len(rem_text) - h_idx, self.formats["comment"])
+                        self.formatted_blocks.add(b_num)
                     self.setCurrentBlockState(STATE_HTML_COMMENT)
                     return
 
         self.setCurrentBlockState(STATE_NONE)
-        self._highlight_range(text, offset, len(text))
+        if in_window:
+            self._highlight_range(text, offset, len(text))
+            self.formatted_blocks.add(b_num)
 
     def _highlight_range(self, full_text, start_pos, end_pos):
         if end_pos <= start_pos or not self.unified_regex:
             return
         sub_str = full_text[start_pos:end_pos]
-        it = self.unified_regex.globalMatch(sub_str)
-        fmt_kw = self.formats.get("keyword")
-        fmt_str = self.formats.get("string")
-        fmt_com = self.formats.get("comment")
-        fmt_fn = self.formats.get("function")
-        fmt_num = self.formats.get("number")
-        fmt_type = self.formats.get("type")
-        fmt_prep = self.formats.get("preprocessor")
+        fmts = self.fmts_list
         set_fmt = self.setFormat
 
-        while it.hasNext():
-            m = it.next()
-            start = start_pos + m.capturedStart()
-            length = m.capturedLength()
-
-            if m.capturedStart(1) != -1 and fmt_com:
-                set_fmt(start, length, fmt_com)
-            elif m.capturedStart(2) != -1 and fmt_str:
-                set_fmt(start, length, fmt_str)
-            elif m.capturedStart(3) != -1 and fmt_kw:
-                set_fmt(start, length, fmt_kw)
-            elif m.capturedStart(4) != -1 and fmt_fn:
-                set_fmt(start, length, fmt_fn)
-            elif m.capturedStart(5) != -1 and fmt_num:
-                set_fmt(start, length, fmt_num)
-            elif m.capturedStart(6) != -1 and fmt_type:
-                set_fmt(start, length, fmt_type)
-            elif m.capturedStart(7) != -1 and fmt_prep:
-                set_fmt(start, length, fmt_prep)
+        for m in self.unified_regex.finditer(sub_str):
+            idx = m.lastindex
+            if idx and idx < len(fmts) and fmts[idx]:
+                s_m, e_m = m.span(idx)
+                set_fmt(start_pos + s_m, e_m - s_m, fmts[idx])

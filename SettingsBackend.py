@@ -198,19 +198,16 @@ class SettingsBackend(QObject):
     @Slot(result=list)
     def get_radial_menu_config(self):
         default_items = [
-            { "id": "save", "label": "Save", "icon": "save", "shortcut": "Ctrl+S", "enabled": True, "custom": False, "action": "" },
-            { "id": "undo", "label": "Undo", "icon": "undo", "shortcut": "Ctrl+Z", "enabled": True, "custom": False, "action": "" },
-            { "id": "redo", "label": "Redo", "icon": "redo", "shortcut": "Ctrl+Y", "enabled": True, "custom": False, "action": "" },
-            { "id": "find", "label": "Find", "icon": "search", "shortcut": "Ctrl+F", "enabled": True, "custom": False, "action": "" },
-            { "id": "run", "label": "Run File", "icon": "play", "shortcut": "F5", "enabled": True, "custom": False, "action": "" },
-            { "id": "ai", "label": "AI Copilot", "icon": "sparkles", "shortcut": "AI Panel", "enabled": True, "custom": False, "action": "" },
-            { "id": "music", "label": "Music", "icon": "music", "shortcut": "Music Panel", "enabled": True, "custom": False, "action": "" },
-            { "id": "zen", "label": "Zen Mode", "icon": "zen", "shortcut": "Ctrl+Shift+Z", "enabled": True, "custom": False, "action": "" },
-            { "id": "terminal", "label": "Terminal", "icon": "terminal", "shortcut": "Ctrl+`", "enabled": True, "custom": False, "action": "" },
-            { "id": "settings", "label": "Settings", "icon": "settings", "shortcut": "Ctrl+,", "enabled": True, "custom": False, "action": "" }
+            { "slot": 1, "id": "format", "label": "Formatter", "icon": "sparkles", "shortcut": "Shift+Alt+F", "custom": False, "action": "" },
+            { "slot": 2, "id": "run", "label": "Run", "icon": "play", "shortcut": "F5", "custom": False, "action": "" },
+            { "slot": 3, "id": "copy", "label": "Copy", "icon": "copy", "shortcut": "Ctrl+C", "custom": False, "action": "" },
+            { "slot": 4, "id": "cut", "label": "Cut", "icon": "close", "shortcut": "Ctrl+X", "custom": False, "action": "" },
+            { "slot": 5, "id": "paste", "label": "Paste", "icon": "file", "shortcut": "Ctrl+V", "custom": False, "action": "" },
+            { "slot": 6, "id": "undo", "label": "Undo", "icon": "undo", "shortcut": "Ctrl+Z", "custom": False, "action": "" },
+            { "slot": 7, "id": "find", "label": "Find", "icon": "search", "shortcut": "Ctrl+F", "custom": False, "action": "" }
         ]
         saved = self.settings.get("radial_menu_items")
-        if isinstance(saved, list) and len(saved) > 0:
+        if isinstance(saved, list) and len(saved) == 7:
             return saved
         return default_items
 
@@ -228,18 +225,33 @@ class SettingsBackend(QObject):
     @Slot(result=list)
     def reset_radial_menu_config(self):
         default_items = [
-            { "id": "save", "label": "Save", "icon": "save", "shortcut": "Ctrl+S", "enabled": True, "custom": False, "action": "" },
-            { "id": "undo", "label": "Undo", "icon": "undo", "shortcut": "Ctrl+Z", "enabled": True, "custom": False, "action": "" },
-            { "id": "redo", "label": "Redo", "icon": "redo", "shortcut": "Ctrl+Y", "enabled": True, "custom": False, "action": "" },
-            { "id": "find", "label": "Find", "icon": "search", "shortcut": "Ctrl+F", "enabled": True, "custom": False, "action": "" },
-            { "id": "run", "label": "Run File", "icon": "play", "shortcut": "F5", "enabled": True, "custom": False, "action": "" },
-            { "id": "ai", "label": "AI Copilot", "icon": "sparkles", "shortcut": "AI Panel", "enabled": True, "custom": False, "action": "" },
-            { "id": "music", "label": "Music", "icon": "music", "shortcut": "Music Panel", "enabled": True, "custom": False, "action": "" },
-            { "id": "zen", "label": "Zen Mode", "icon": "zen", "shortcut": "Ctrl+Shift+Z", "enabled": True, "custom": False, "action": "" },
-            { "id": "terminal", "label": "Terminal", "icon": "terminal", "shortcut": "Ctrl+`", "enabled": True, "custom": False, "action": "" },
-            { "id": "settings", "label": "Settings", "icon": "settings", "shortcut": "Ctrl+,", "enabled": True, "custom": False, "action": "" }
+            { "slot": 1, "id": "format", "label": "Formatter", "icon": "sparkles", "shortcut": "Shift+Alt+F", "custom": False, "action": "" },
+            { "slot": 2, "id": "run", "label": "Run", "icon": "play", "shortcut": "F5", "custom": False, "action": "" },
+            { "slot": 3, "id": "copy", "label": "Copy", "icon": "copy", "shortcut": "Ctrl+C", "custom": False, "action": "" },
+            { "slot": 4, "id": "cut", "label": "Cut", "icon": "close", "shortcut": "Ctrl+X", "custom": False, "action": "" },
+            { "slot": 5, "id": "paste", "label": "Paste", "icon": "file", "shortcut": "Ctrl+V", "custom": False, "action": "" },
+            { "slot": 6, "id": "undo", "label": "Undo", "icon": "undo", "shortcut": "Ctrl+Z", "custom": False, "action": "" },
+            { "slot": 7, "id": "find", "label": "Find", "icon": "search", "shortcut": "Ctrl+F", "custom": False, "action": "" }
         ]
         self.settings["radial_menu_items"] = default_items
         self._save_to_disk()
         self.settingChanged.emit("radial_menu_items", json.dumps(default_items))
         return default_items
+
+    @Slot(result=list)
+    def get_custom_actions(self):
+        saved = self.settings.get("radial_custom_actions")
+        if isinstance(saved, list):
+            return saved
+        return []
+
+    @Slot(str)
+    def save_custom_actions(self, custom_actions_json):
+        try:
+            items = json.loads(custom_actions_json)
+            if isinstance(items, list):
+                self.settings["radial_custom_actions"] = items
+                self._save_to_disk()
+                self.settingChanged.emit("radial_custom_actions", custom_actions_json)
+        except Exception as e:
+            print(f"[SettingsBackend] Error saving custom actions: {e}")
