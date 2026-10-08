@@ -1,7 +1,8 @@
 """
-ExtensionManager.py - Modular Extension Architecture for DGX / Pod Studio
-Manages extension discovery, manifest loading, local installation, and extension lifecycles.
-Provides architecture foundation for formatters, language tooling, dependency status, and future online marketplace / update checks.
+ExtensionManager.py - Modular Extension Architecture for DGX Studio
+Manages extension discovery, manifest loading, local installation, permissions inspection,
+contributed features (commands, runners, formatters, file icons, radial actions, tool dependencies),
+lifecycle activation, and Smart Install system for developer tools.
 """
 
 import os
@@ -13,7 +14,8 @@ import zipfile
 import subprocess
 import threading
 import glob
-from typing import Dict, List, Optional, Any
+import importlib.util
+from typing import Dict, List, Optional, Any, Callable
 from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
@@ -29,14 +31,12 @@ def get_current_os() -> str:
 
 def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[str]:
     """
-    Comprehensive multi-location locator for formatter executables.
-    Checks:
-      1. User-configured custom path (validated as executable)
-      2. Standard system PATH
+    Comprehensive multi-location locator for executables across:
+      1. User-configured custom path
+      2. System PATH
       3. Active Python environment's Scripts / bin directory (where pip packages like clang-format, autopep8 install)
-      4. User AppData Python Scripts, npm, cargo, and go bin directories
-      5. Standard Visual Studio / LLVM / MinGW / MSYS2 installation locations on Windows
-      6. Standard Unix / Homebrew / Linux locations
+      4. AppData / Homebrew / npm / cargo / go bin directories
+      5. Standard Visual Studio / LLVM / MinGW / MSYS2 locations on Windows
     """
     if not cmd:
         return None
@@ -81,7 +81,7 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
             candidates.append(os.path.join(app_data, "npm", f"{cmd}.cmd"))
             candidates.append(os.path.join(app_data, "npm", bin_name))
 
-    # 4. Common locations for clang-format on Windows
+    # 4. Common locations for clang-format and compilers on Windows
     if cmd.lower().startswith("clang-format") and is_win:
         vs_globs = [
             r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\bin\clang-format.exe",
@@ -119,21 +119,70 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
     return None
 
 
+class DGXExtensionContext:
+    """Stable Extension API Context passed to extension entry points."""
+    def __init__(self, extension_id: str, manager: 'ExtensionManager'):
+        self.extension_id = extension_id
+        self._manager = manager
+
+    def register_command(self, command_id: str, callback: Callable):
+        self._manager.register_extension_command(self.extension_id, command_id, callback)
+
+    def register_formatter(self, lang: str, spec: dict):
+        self._manager.register_extension_formatter(self.extension_id, lang, spec)
+
+    def register_runner(self, ext: str, spec: dict):
+        self._manager.register_extension_runner(self.extension_id, ext, spec)
+
+    def register_file_icon(self, ext: str, spec: dict):
+        self._manager.register_extension_file_icon(self.extension_id, ext, spec)
+
+    def register_radial_action(self, action_spec: dict):
+        self._manager.register_extension_radial_action(self.extension_id, action_spec)
+
+    def register_tool_dependency(self, name: str, spec: dict):
+        self._manager.register_extension_tool_dependency(self.extension_id, name, spec)
+
+    def show_message(self, message: str, level: str = "info"):
+        self._manager.extensionMessageEmitted.emit(self.extension_id, message, level)
+
+    def get_active_editor_context(self) -> dict:
+        return self._manager.get_active_editor_context()
+
+
 class Extension:
     def __init__(self, manifest: dict, path: str, user_dir: str = "", custom_path: str = ""):
-        self.id: str = manifest.get("id", "")
+        self.manifest: dict = manifest
+        self.id: str = manifest.get("id", manifest.get("name", "unknown"))
         self.name: str = manifest.get("name", self.id)
+        self.displayName: str = manifest.get("displayName", self.name)
         self.version: str = manifest.get("version", "1.0.0")
         self.description: str = manifest.get("description", "")
-        self.author: str = manifest.get("author", "DGX Studio")
-        self.languages: List[str] = [l.lower() for l in manifest.get("languages", [])]
-        self.extensions: List[str] = [e.lower() if e.startswith(".") else f".{e.lower()}" for e in manifest.get("extensions", [])]
+        self.author: str = manifest.get("author", manifest.get("publisher", "DGX Community"))
+        self.publisher: str = manifest.get("publisher", self.author)
+        self.main: str = manifest.get("main", "")
+        self.icon: str = manifest.get("icon", "")
+        self.permissions: List[str] = manifest.get("permissions", [])
+        self.activationEvents: List[str] = manifest.get("activationEvents", ["*"])
+        self.contributes: dict = manifest.get("contributes", {})
+
+        # Language / Extension Mappings
+        self.languages: List[str] = [l.lower() for l in manifest.get("languages", self.contributes.get("languages", []))]
+        self.extensions: List[str] = [e.lower() if e.startswith(".") else f".{e.lower()}" for e in manifest.get("extensions", self.contributes.get("extensions", []))]
+
+        # Formatter & LSP declarations
         self.formatter: Optional[dict] = manifest.get("formatter")
+        if not self.formatter and "formatters" in self.contributes and self.contributes["formatters"]:
+            self.formatter = self.contributes["formatters"][0]
+
         self.lsp: Optional[dict] = manifest.get("lsp")
+
         self.path: str = path
         self.user_dir: str = user_dir
         self.custom_path: str = custom_path
         self.enabled: bool = True
+        self.activated: bool = False
+        self.module_instance: Any = None
 
     def matches_language(self, lang_id: str, file_path: str = "") -> bool:
         if not self.enabled:
@@ -250,14 +299,22 @@ class Extension:
         return {
             "id": self.id,
             "name": self.name,
+            "displayName": self.displayName,
             "version": self.version,
             "description": self.description,
             "author": self.author,
+            "publisher": self.publisher,
+            "main": self.main,
+            "icon": self.icon,
+            "permissions": self.permissions,
+            "activationEvents": self.activationEvents,
+            "contributes": self.contributes,
             "languages": self.languages,
             "extensions": self.extensions,
             "path": self.path,
             "location": self.path,
             "enabled": self.enabled,
+            "activated": self.activated,
             "isBuiltIn": not is_user,
             "isUserInstalled": is_user,
             "hasFormatter": fmt_status["hasFormatter"],
@@ -280,7 +337,11 @@ class ExtensionManager(QObject):
     extensionInstalled = Signal(str)  # extension_id
     extensionUninstalled = Signal(str)  # extension_id
     updateCheckCompleted = Signal(dict)
-    formatterInstallProgress = Signal(str, str, str)  # extension_id, status ("installing"|"success"|"failed"), message
+    formatterInstallProgress = Signal(str, str, str)  # extension_id, status, message
+    smartInstallProgress = Signal(str, str, str)  # tool_name, status ("installing"|"success"|"failed"), message
+    smartInstallCompleted = Signal(str, bool, str, str)  # tool_name, success, message, retry_action
+    extensionMessageEmitted = Signal(str, str, str)  # extension_id, message, level
+    commandExecuted = Signal(str, str)  # command_id, result_message
 
     def __init__(self, base_dir: Optional[str] = None):
         super().__init__()
@@ -296,7 +357,19 @@ class ExtensionManager(QObject):
         self._disabled_ids = self._load_disabled_state()
         self._custom_paths = self._load_custom_paths()
         self._installing_formatters = set()
+        self._installing_tools = set()
         self._extensions: Dict[str, Extension] = {}
+
+        # Contributed registries
+        self._contributed_commands: Dict[str, dict] = {}
+        self._contributed_runners: Dict[str, dict] = {}
+        self._contributed_file_icons: List[dict] = []
+        self._contributed_radial_actions: List[dict] = []
+        self._contributed_tool_dependencies: Dict[str, dict] = {}
+
+        self.editor_backend = None
+        self.ai_backend = None
+
         self.reload_extensions()
 
     def _load_disabled_state(self) -> set:
@@ -337,8 +410,13 @@ class ExtensionManager(QObject):
 
     @Slot()
     def reload_extensions(self):
-        """Scans both built-in and user extension directories for manifests."""
+        """Scans both built-in and user extension directories for manifests and registers contributions."""
         self._extensions.clear()
+        self._contributed_commands.clear()
+        self._contributed_runners.clear()
+        self._contributed_file_icons.clear()
+        self._contributed_radial_actions.clear()
+        self._contributed_tool_dependencies.clear()
 
         # 1. Load built-in extensions
         self._load_from_directory(self.built_in_dir, is_user=False)
@@ -350,6 +428,11 @@ class ExtensionManager(QObject):
         for ext_id, ext in self._extensions.items():
             ext.enabled = (ext_id not in self._disabled_ids)
             ext.custom_path = self._custom_paths.get(ext_id, "")
+
+            if ext.enabled:
+                self._register_declarative_contributes(ext)
+                if ext.main and not ext.activated:
+                    self.activate_extension(ext.id)
 
         print(f"[ExtensionManager] Loaded {len(self._extensions)} extensions: {list(self._extensions.keys())}")
         self.extensionsChanged.emit()
@@ -364,7 +447,7 @@ class ExtensionManager(QObject):
                 try:
                     with open(manifest_file, "r", encoding="utf-8") as f:
                         manifest = json.load(f)
-                    ext_id = manifest.get("id")
+                    ext_id = manifest.get("id", manifest.get("name", item))
                     if ext_id:
                         custom_p = self._custom_paths.get(ext_id, "")
                         self._extensions[ext_id] = Extension(
@@ -374,6 +457,132 @@ class ExtensionManager(QObject):
                         )
                 except Exception as e:
                     print(f"[ExtensionManager] Notice loading manifest at {manifest_file}: {e}")
+
+    def _register_declarative_contributes(self, ext: Extension):
+        contribs = ext.contributes
+        if not contribs or not isinstance(contribs, dict):
+            return
+
+        # Commands
+        for cmd in contribs.get("commands", []):
+            if isinstance(cmd, dict) and "command" in cmd:
+                cid = cmd["command"]
+                self._contributed_commands[cid] = {
+                    "command": cid,
+                    "title": cmd.get("title", cid),
+                    "category": cmd.get("category", ext.displayName),
+                    "extension_id": ext.id,
+                    "callback": None
+                }
+
+        # Runners
+        for r in contribs.get("runners", []):
+            if isinstance(r, dict) and "extension" in r:
+                r_ext = r["extension"].lower().lstrip(".")
+                self._contributed_runners[r_ext] = {
+                    "extension": r_ext,
+                    "command": r.get("command", ""),
+                    "name": r.get("name", f"{ext.name} Runner"),
+                    "extension_id": ext.id
+                }
+
+        # File Icons
+        for fi in contribs.get("fileIcons", []):
+            if isinstance(fi, dict):
+                item = dict(fi)
+                item["extension_id"] = ext.id
+                self._contributed_file_icons.append(item)
+
+        # Radial Actions
+        for ra in contribs.get("radialActions", []):
+            if isinstance(ra, dict):
+                item = dict(ra)
+                item["extension_id"] = ext.id
+                self._contributed_radial_actions.append(item)
+
+        # Tool Dependencies
+        for td in contribs.get("toolDependencies", []):
+            if isinstance(td, dict) and "name" in td:
+                self._contributed_tool_dependencies[td["name"]] = {
+                    "name": td["name"],
+                    "executable": td.get("executable", td["name"]),
+                    "installGuide": td.get("installGuide", {}),
+                    "extension_id": ext.id
+                }
+
+    @Slot(str, result=bool)
+    def activate_extension(self, extension_id: str) -> bool:
+        ext = self.get_extension(extension_id)
+        if not ext or not ext.enabled or not ext.main:
+            return False
+
+        entry_path = os.path.join(ext.path, ext.main)
+        if not os.path.isfile(entry_path):
+            return False
+
+        try:
+            spec = importlib.util.spec_from_file_location(f"dgx_ext_{ext.id.replace('.', '_')}", entry_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                ext.module_instance = module
+                ext.activated = True
+
+                # Call activate(context) if implemented
+                if hasattr(module, "activate"):
+                    ctx = DGXExtensionContext(ext.id, self)
+                    module.activate(ctx)
+                print(f"[ExtensionManager] Activated extension '{ext.id}' successfully.")
+                return True
+        except Exception as e:
+            print(f"[ExtensionManager] Error activating extension '{ext.id}': {e}")
+        return False
+
+    def register_extension_command(self, ext_id: str, command_id: str, callback: Callable):
+        if command_id in self._contributed_commands:
+            self._contributed_commands[command_id]["callback"] = callback
+        else:
+            self._contributed_commands[command_id] = {
+                "command": command_id,
+                "title": command_id,
+                "category": ext_id,
+                "extension_id": ext_id,
+                "callback": callback
+            }
+
+    def register_extension_formatter(self, ext_id: str, lang: str, spec: dict):
+        ext = self.get_extension(ext_id)
+        if ext:
+            ext.formatter = spec
+
+    def register_extension_runner(self, ext_id: str, ext: str, spec: dict):
+        clean_ext = ext.lower().lstrip(".")
+        self._contributed_runners[clean_ext] = {
+            "extension": clean_ext,
+            "command": spec.get("command", ""),
+            "name": spec.get("name", f"{ext_id} Runner"),
+            "extension_id": ext_id
+        }
+
+    def register_extension_file_icon(self, ext_id: str, ext: str, spec: dict):
+        item = dict(spec)
+        item["extension"] = ext
+        item["extension_id"] = ext_id
+        self._contributed_file_icons.append(item)
+
+    def register_extension_radial_action(self, ext_id: str, action_spec: dict):
+        item = dict(action_spec)
+        item["extension_id"] = ext_id
+        self._contributed_radial_actions.append(item)
+
+    def register_extension_tool_dependency(self, ext_id: str, name: str, spec: dict):
+        self._contributed_tool_dependencies[name] = {
+            "name": name,
+            "executable": spec.get("executable", name),
+            "installGuide": spec.get("installGuide", {}),
+            "extension_id": ext_id
+        }
 
     @Slot(result=list)
     def get_installed_extensions(self) -> List[dict]:
@@ -397,251 +606,158 @@ class ExtensionManager(QObject):
                 return ext
         return None
 
-    @Slot(result=str)
-    def get_current_os(self) -> str:
-        return get_current_os()
+    @Slot(str, result="QVariantMap")
+    def get_runner_for_extension(self, ext: str) -> dict:
+        clean = (ext or "").lower().lstrip(".")
+        if clean in self._contributed_runners:
+            return self._contributed_runners[clean]
+        return {}
+
+    @Slot(result=list)
+    def get_custom_file_icons(self) -> list:
+        return list(self._contributed_file_icons)
+
+    @Slot(result=list)
+    def get_contributed_commands(self) -> list:
+        return [
+            {"command": v["command"], "title": v.get("title", v["command"]), "category": v.get("category", "")}
+            for v in self._contributed_commands.values()
+        ]
+
+    @Slot(result=list)
+    def get_contributed_radial_actions(self) -> list:
+        return list(self._contributed_radial_actions)
 
     @Slot(str, result="QVariantMap")
-    def check_formatter_status(self, lang_id: str) -> dict:
-        ext = self.get_extension_for_language(lang_id)
-        if not ext:
-            return {
-                "hasFormatter": False,
-                "provider": "",
-                "executable": "",
-                "installed": False,
-                "detectedPath": "",
-                "installCommand": "",
-                "installInstructions": "",
-                "docsUrl": "",
-                "currentOs": get_current_os()
-            }
-        st = ext.check_formatter_status()
-        return {
-            "hasFormatter": st["hasFormatter"],
-            "provider": st["provider"],
-            "executable": st["executable"],
-            "installed": st["isInstalled"],
-            "detectedPath": st["detectedPath"],
-            "installCommand": st["installCommand"],
-            "installInstructions": st["installInstructions"],
-            "docsUrl": st["docsUrl"],
-            "currentOs": st["currentOs"]
-        }
+    def get_tool_dependency(self, tool_name: str) -> dict:
+        return self._contributed_tool_dependencies.get(tool_name, {})
 
     @Slot(str, result="QVariantMap")
-    def get_formatter_status_for_language(self, lang_id: str, file_path: str = "") -> dict:
-        ext = self.get_extension_for_language(lang_id, file_path)
-        if not ext:
-            return {
-                "hasExtension": False,
-                "extensionName": "",
-                "hasFormatter": False,
-                "formatterInstalled": False,
-                "message": f"No extension installed for '{lang_id}'.",
-                "installCommand": "",
-                "docsUrl": "",
-                "currentOs": get_current_os()
-            }
-        status = ext.check_formatter_status()
-        return {
-            "hasExtension": True,
-            "extensionId": ext.id,
-            "extensionName": ext.name,
-            "hasFormatter": status["hasFormatter"],
-            "formatterInstalled": status["isInstalled"],
-            "formatterProvider": status["provider"],
-            "formatterDependency": status["executable"],
-            "formatterDetectedPath": status["detectedPath"],
-            "installCommand": status["installCommand"],
-            "installInstructions": status["installInstructions"],
-            "docsUrl": status["docsUrl"],
-            "currentOs": status["currentOs"],
-            "message": f"{ext.name} formatter ({status['executable']}) is {'installed' if status['isInstalled'] else 'not installed'}."
-        }
-
-    @Slot(str)
-    def install_formatter(self, extension_id: str):
-        """
-        Lightweight non-blocking background installer for formatter binaries.
-        Installs only standalone lightweight binary (e.g. clang-format ~3MB via pip),
-        avoiding multi-gigabyte compiler toolchains.
-        """
-        if extension_id in self._installing_formatters:
-            print(f"[ExtensionManager] Formatter installation already in progress for {extension_id}")
-            return
-
-        ext = self.get_extension(extension_id)
-        if not ext or not ext.formatter:
-            self.formatterInstallProgress.emit(extension_id, "failed", f"Extension '{extension_id}' has no formatter declared.")
-            return
-
-        self._installing_formatters.add(extension_id)
-        self.formatterInstallProgress.emit(extension_id, "installing", "Starting lightweight installation...")
-
-        def _worker():
+    def execute_command(self, command_id: str) -> dict:
+        if command_id not in self._contributed_commands:
+            return {"success": False, "message": f"Command '{command_id}' not found."}
+        info = self._contributed_commands[command_id]
+        cb = info.get("callback")
+        if callable(cb):
             try:
-                fmt_dict = ext.formatter if isinstance(ext.formatter, dict) else {}
-                cmd_name = fmt_dict.get("command") or fmt_dict.get("executable") or ""
-                success = False
-                msg = ""
-
-                # 1. C/C++ clang-format (~3.5MB official PyPI standalone binary wheel)
-                if extension_id == "dgx.cpp" or cmd_name.lower().startswith("clang-format"):
-                    self.formatterInstallProgress.emit(extension_id, "installing", "Downloading standalone clang-format binary (~3.5MB)...")
-                    run_cmd = [sys.executable, "-m", "pip", "install", "--no-warn-script-location", "clang-format"]
-                    proc = subprocess.run(run_cmd, capture_output=True, text=True, timeout=120)
-                    if proc.returncode == 0:
-                        # Clear broken/outdated custom path if not a real clang-format
-                        custom_p = self._custom_paths.get(extension_id, "")
-                        if custom_p and (not os.path.isfile(custom_p) or not custom_p.lower().endswith((".exe", "clang-format"))):
-                            self._custom_paths.pop(extension_id, None)
-                            self._save_custom_paths()
-                        ext.custom_path = self._custom_paths.get(extension_id, "")
-                        tool_path = ext.get_executable_path() or locate_executable("clang-format")
-                        if tool_path:
-                            try:
-                                test_res = subprocess.run([tool_path, "--version"], capture_output=True, text=True, timeout=5)
-                                if test_res.returncode == 0:
-                                    success = True
-                                    msg = f"clang-format ready! ({test_res.stdout.strip() or tool_path})"
-                                else:
-                                    success = True
-                                    msg = f"clang-format installed at: {tool_path}"
-                            except Exception as ex_run:
-                                success = True
-                                msg = f"clang-format installed at {tool_path} (note: {ex_run})"
-                        else:
-                            success = False
-                            msg = "Installed clang-format package, but executable was not found in environment Scripts."
-                    else:
-                        success = False
-                        msg = proc.stderr.strip() or proc.stdout.strip() or f"pip failed with code {proc.returncode}"
-
-                # 2. Python formatters (autopep8, black)
-                elif extension_id == "dgx.python":
-                    self.formatterInstallProgress.emit(extension_id, "installing", "Installing autopep8 / black...")
-                    run_cmd = [sys.executable, "-m", "pip", "install", "--no-warn-script-location", "autopep8", "black"]
-                    proc = subprocess.run(run_cmd, capture_output=True, text=True, timeout=120)
-                    if proc.returncode == 0:
-                        success = True
-                        msg = "Python formatters installed successfully!"
-                    else:
-                        success = False
-                        msg = proc.stderr.strip() or f"pip failed with code {proc.returncode}"
-
-                # 3. JavaScript / Prettier
-                elif extension_id == "dgx.javascript":
-                    self.formatterInstallProgress.emit(extension_id, "installing", "Installing prettier via npm...")
-                    proc = subprocess.run(["npm", "install", "-g", "prettier"], shell=True, capture_output=True, text=True, timeout=120)
-                    if proc.returncode == 0:
-                        success = True
-                        msg = "prettier installed successfully!"
-                    else:
-                        success = False
-                        msg = proc.stderr.strip() or "npm install prettier failed. Ensure Node.js and npm are installed."
-
-                # 4. Rust / rustfmt
-                elif extension_id == "dgx.rust":
-                    if shutil.which("rustup"):
-                        self.formatterInstallProgress.emit(extension_id, "installing", "Adding rustfmt component via rustup...")
-                        proc = subprocess.run(["rustup", "component", "add", "rustfmt"], shell=True, capture_output=True, text=True, timeout=120)
-                        if proc.returncode == 0:
-                            success = True
-                            msg = "rustfmt component added successfully!"
-                        else:
-                            success = False
-                            msg = proc.stderr.strip() or "Failed to add rustfmt component via rustup."
-                    else:
-                        success = False
-                        msg = "Rust toolchain ('rustup') is not installed on this system. Please install Rust from https://rustup.rs or run 'winget install Rustlang.Rustup' in your terminal."
-
-                # 5. Go / gofmt
-                elif extension_id == "dgx.go":
-                    if shutil.which("go") or shutil.which("gofmt"):
-                        success = True
-                        msg = "Go distribution is already installed."
-                    elif sys.platform.startswith("win") and shutil.which("winget"):
-                        self.formatterInstallProgress.emit(extension_id, "installing", "Installing Go toolchain via winget...")
-                        proc = subprocess.run(["winget", "install", "--id", "GoLang.Go", "-e", "--accept-source-agreements", "--accept-package-agreements"], capture_output=True, text=True, timeout=300)
-                        if proc.returncode == 0:
-                            success = True
-                            msg = "Go distribution installed successfully! Please restart Pod Studio."
-                        else:
-                            success = False
-                            msg = "Go is not installed. Please install Go from https://go.dev/doc/install or run 'winget install GoLang.Go' in your terminal."
-                    else:
-                        success = False
-                        msg = "Go toolchain is not installed. Please install Go from https://go.dev/doc/install or run 'winget install GoLang.Go'."
-
-                elif fmt_dict.get("installGuide"):
-                    cur_os = get_current_os()
-                    guide = fmt_dict.get("installGuide", {})
-                    install_cmd = guide.get("lightweight", "") or guide.get(cur_os, "") or guide.get("all", "")
-                    if install_cmd:
-                        self.formatterInstallProgress.emit(extension_id, "installing", f"Running '{install_cmd}'...")
-                        proc = subprocess.run(install_cmd, shell=True, capture_output=True, text=True, timeout=300)
-                        if proc.returncode == 0:
-                            success = True
-                            msg = f"{ext.name} formatter installed successfully!"
-                        else:
-                            success = False
-                            msg = proc.stderr.strip() or proc.stdout.strip() or f"Installation command '{install_cmd}' failed with code {proc.returncode}."
-                    else:
-                        success = False
-                        msg = f"Please install {ext.name} formatter manually or select binary."
-                else:
-                    success = False
-                    msg = f"Please install {ext.name} formatter manually or select binary."
-
-                if success:
-                    self.formatterInstallProgress.emit(extension_id, "success", msg)
-                    self.reload_extensions()
-                else:
-                    self.formatterInstallProgress.emit(extension_id, "failed", msg)
-
+                res = cb()
+                msg = str(res) if res is not None else f"Executed {command_id}"
+                self.commandExecuted.emit(command_id, msg)
+                return {"success": True, "message": msg}
             except Exception as e:
-                self.formatterInstallProgress.emit(extension_id, "failed", f"Installation error: {str(e)}")
-            finally:
-                self._installing_formatters.discard(extension_id)
+                return {"success": False, "message": f"Error executing {command_id}: {e}"}
+        else:
+            msg = f"Triggered command: {info.get('title', command_id)}"
+            self.commandExecuted.emit(command_id, msg)
+            return {"success": True, "message": msg}
 
-        threading.Thread(target=_worker, daemon=True).start()
+    def get_active_editor_context(self) -> dict:
+        if self.editor_backend and hasattr(self.editor_backend, "get_editor_context"):
+            return self.editor_backend.get_editor_context()
+        return {}
 
-    @Slot(str, str, result=bool)
-    def set_custom_formatter_path(self, extension_id: str, custom_path: str) -> bool:
-        """Sets a user-selected custom binary path for an extension."""
-        if not custom_path:
-            return False
-        clean = custom_path
+    # =========================================================================
+    # PERMISSIONS & SECURITY INSPECTION
+    # =========================================================================
+    @Slot(str, result="QVariantMap")
+    def inspect_extension_package(self, source_path: str) -> dict:
+        """
+        Inspects an extension folder, zip archive (.zip/.dgxext), or manifest file before installation.
+        Returns parsed manifest, requested permissions, descriptions, and security risk level.
+        """
+        if not source_path:
+            return {"valid": False, "message": "No path provided."}
+
+        clean = source_path
         if clean.startswith("file:///"):
             clean = clean[8:]
             if sys.platform.startswith("win") and clean.startswith("/"):
                 clean = clean[1:]
         clean = os.path.abspath(os.path.normpath(clean))
-        if not os.path.isfile(clean):
-            return False
 
-        self._custom_paths[extension_id] = clean
-        self._save_custom_paths()
-        self.reload_extensions()
-        self.extensionsChanged.emit()
-        return True
+        if not os.path.exists(clean):
+            return {"valid": False, "message": f"Path does not exist: {clean}"}
 
-    @Slot(str, result=str)
-    def get_custom_formatter_path(self, extension_id: str) -> str:
-        return self._custom_paths.get(extension_id, "")
+        manifest = None
+        pkg_type = "folder"
 
-    def locate_executable(self, cmd: str, custom_path: Optional[str] = None) -> Optional[str]:
-        """Locates an executable across custom path, PATH, and common toolchain locations."""
-        return locate_executable(cmd, custom_path)
+        try:
+            if os.path.isdir(clean):
+                manifest_file = os.path.join(clean, "extension.json")
+                if not os.path.isfile(manifest_file):
+                    return {"valid": False, "message": "Missing extension.json in directory."}
+                with open(manifest_file, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                pkg_type = "folder"
+            elif os.path.isfile(clean) and clean.lower().endswith((".zip", ".dgxext", ".vsix")):
+                with zipfile.ZipFile(clean, 'r') as z:
+                    for name in z.namelist():
+                        if name.endswith("extension.json"):
+                            with z.open(name) as f:
+                                manifest = json.loads(f.read().decode('utf-8'))
+                            break
+                pkg_type = "package"
+            elif os.path.isfile(clean) and clean.lower().endswith(".json"):
+                with open(clean, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                pkg_type = "manifest"
+
+            if not manifest or not isinstance(manifest, dict):
+                return {"valid": False, "message": "Invalid or unreadable extension.json manifest."}
+
+            ext_id = manifest.get("id", manifest.get("name", ""))
+            if not ext_id:
+                return {"valid": False, "message": "Manifest missing required 'id' or 'name' field."}
+
+            permissions = manifest.get("permissions", [])
+            permission_descriptions = {
+                "workspace": "Read and write files within the open workspace project.",
+                "terminal": "Execute automated commands and scripts in terminal sessions.",
+                "process": "Spawn background helper processes and developer tools.",
+                "network": "Make network requests to download tools and packages.",
+                "ai": "Interact with the configured AI provider to analyze code snippets.",
+                "editor": "Read active editor selections and apply automated code formatting."
+            }
+
+            perm_details = []
+            for p in permissions:
+                perm_details.append({
+                    "name": p,
+                    "description": permission_descriptions.get(p.lower(), f"Access capability '{p}'.")
+                })
+
+            security_level = "Standard"
+            if "terminal" in permissions or "process" in permissions:
+                security_level = "Elevated (Process/Terminal Access)"
+            if len(permissions) == 0:
+                security_level = "Safe (No elevated permissions)"
+
+            return {
+                "valid": True,
+                "id": ext_id,
+                "name": manifest.get("name", ext_id),
+                "displayName": manifest.get("displayName", manifest.get("name", ext_id)),
+                "version": manifest.get("version", "1.0.0"),
+                "author": manifest.get("author", manifest.get("publisher", "DGX Community")),
+                "publisher": manifest.get("publisher", manifest.get("author", "DGX Community")),
+                "description": manifest.get("description", "DGX Studio extension package."),
+                "permissions": permissions,
+                "permissionDetails": perm_details,
+                "securityLevel": security_level,
+                "packageType": pkg_type,
+                "path": clean,
+                "contributes": manifest.get("contributes", {}),
+                "message": "Valid extension manifest ready for installation."
+            }
+        except Exception as e:
+            return {"valid": False, "message": f"Inspection error: {e}"}
 
     @Slot(str, result=bool)
     def install_local_extension(self, source_path: str) -> bool:
-        """Installs an extension from a local directory, .zip archive, or .json manifest file."""
+        """Installs an extension from a local directory, .dgxext, .zip archive, or .json manifest."""
         if not source_path:
             return False
 
-        # Normalize path (handle file:/// URIs)
         clean_path = source_path
         if clean_path.startswith("file:///"):
             clean_path = clean_path[8:]
@@ -662,9 +778,8 @@ class ExtensionManager(QObject):
                     return False
                 with open(manifest_file, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
-                ext_id = manifest.get("id")
+                ext_id = manifest.get("id", manifest.get("name"))
                 if not ext_id:
-                    print(f"[ExtensionManager] Manifest missing 'id'")
                     return False
                 target_dir = os.path.join(self.user_extensions_dir, ext_id.replace(".", "_"))
                 if os.path.exists(target_dir):
@@ -679,7 +794,7 @@ class ExtensionManager(QObject):
             elif os.path.isfile(clean_path) and clean_path.lower().endswith(".json"):
                 with open(clean_path, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
-                ext_id = manifest.get("id")
+                ext_id = manifest.get("id", manifest.get("name"))
                 if not ext_id:
                     return False
                 target_dir = os.path.join(self.user_extensions_dir, ext_id.replace(".", "_"))
@@ -687,11 +802,10 @@ class ExtensionManager(QObject):
                 shutil.copyfile(clean_path, os.path.join(target_dir, "extension.json"))
                 self.reload_extensions()
                 self.extensionInstalled.emit(ext_id)
-                print(f"[ExtensionManager] Successfully installed manifest '{ext_id}' into {target_dir}")
                 return True
 
-            # 3. Zip package (.zip / .vsix)
-            elif os.path.isfile(clean_path) and (clean_path.lower().endswith(".zip") or clean_path.lower().endswith(".vsix")):
+            # 3. Zip package (.zip / .dgxext / .vsix)
+            elif os.path.isfile(clean_path) and (clean_path.lower().endswith(".zip") or clean_path.lower().endswith(".dgxext") or clean_path.lower().endswith(".vsix")):
                 with zipfile.ZipFile(clean_path, 'r') as z:
                     temp_extract = os.path.join(self.user_extensions_dir, "_temp_extract")
                     if os.path.exists(temp_extract):
@@ -707,13 +821,12 @@ class ExtensionManager(QObject):
                             break
 
                     if not found_manifest or not source_dir:
-                        print(f"[ExtensionManager] Zip archive missing extension.json")
                         shutil.rmtree(temp_extract, ignore_errors=True)
                         return False
 
                     with open(found_manifest, "r", encoding="utf-8") as f:
                         manifest = json.load(f)
-                    ext_id = manifest.get("id")
+                    ext_id = manifest.get("id", manifest.get("name"))
                     if not ext_id:
                         shutil.rmtree(temp_extract, ignore_errors=True)
                         return False
@@ -725,7 +838,7 @@ class ExtensionManager(QObject):
                     shutil.rmtree(temp_extract, ignore_errors=True)
                     self.reload_extensions()
                     self.extensionInstalled.emit(ext_id)
-                    print(f"[ExtensionManager] Successfully installed zip extension '{ext_id}' into {target_dir}")
+                    print(f"[ExtensionManager] Successfully installed package extension '{ext_id}' into {target_dir}")
                     return True
 
         except Exception as e:
@@ -749,7 +862,6 @@ class ExtensionManager(QObject):
                 print(f"[ExtensionManager] Uninstall error: {e}")
                 return False
         else:
-            # Built-in extension can be disabled
             return self.toggle_extension(extension_id, False)
 
     @Slot(str, bool, result=bool)
@@ -763,7 +875,7 @@ class ExtensionManager(QObject):
         else:
             self._disabled_ids.add(ext.id)
         self._save_disabled_state()
-        self.extensionsChanged.emit()
+        self.reload_extensions()
         print(f"[ExtensionManager] Extension '{ext.id}' enabled set to {enabled}")
         return True
 
@@ -784,6 +896,267 @@ class ExtensionManager(QObject):
             print(f"[ExtensionManager] Error opening folder {ext.path}: {e}")
             return False
 
+    # =========================================================================
+    # SMART INSTALL SYSTEM (For Formatters, Linters, Runners, Compilers)
+    # =========================================================================
+    @Slot(str, str, str, str, str, result="QVariantMap")
+    def suggest_smart_install(self, tool_type: str, tool_name: str, lang_id: str, ext: str, file_path: str = "") -> dict:
+        """
+        Suggests an exact Smart Install command proposal based on:
+        1. Known recipes / package managers (pip, npm, cargo, winget, etc.)
+        2. Installed extension tool dependencies
+        3. Configured AI suggestion fallback
+        """
+        cur_os = get_current_os()
+        clean_lang = (lang_id or "").lower().strip()
+        clean_ext = (ext or "").lower().lstrip(".")
+        tool_lower = (tool_name or "").lower().strip()
+
+        # Check if already installed
+        exec_to_check = tool_name
+        if "qml" in clean_lang or clean_ext == "qml" or "qml" in tool_lower:
+            exec_to_check = "qmlformat"
+        elif "python" in clean_lang or clean_ext in ("py", "pyw") or "autopep8" in tool_lower:
+            exec_to_check = "autopep8"
+        elif "cpp" in clean_lang or "c++" in clean_lang or clean_ext in ("cpp", "cxx", "cc", "h") or "clang" in tool_lower:
+            exec_to_check = "clang-format"
+        elif "js" in clean_lang or "javascript" in clean_lang or clean_ext in ("js", "ts", "jsx", "tsx") or "prettier" in tool_lower:
+            exec_to_check = "prettier"
+        elif "rust" in clean_lang or clean_ext == "rs" or "rustfmt" in tool_lower:
+            exec_to_check = "rustfmt"
+        elif "go" in clean_lang or clean_ext == "go" or "gofmt" in tool_lower:
+            exec_to_check = "gofmt"
+
+        existing_p = locate_executable(exec_to_check)
+        if existing_p:
+            return {
+                "isInstalled": True,
+                "detectedPath": existing_p,
+                "toolName": tool_name or exec_to_check,
+                "executable": exec_to_check,
+                "message": f"{tool_name or exec_to_check} is already installed at {existing_p}."
+            }
+
+        # 1. Known Recipes
+        known_recipes = {
+            "qmlformat": {
+                "toolName": "QML Formatter (qmlformat)",
+                "toolType": "formatter",
+                "executable": "qmlformat",
+                "description": "Installs the official Qt QML code formatter (PySide6/qmlformat) for clean formatting.",
+                "command": f'"{sys.executable}" -m pip install --no-warn-script-location PySide6',
+                "source": "recipe",
+                "verification": "qmlformat"
+            },
+            "autopep8": {
+                "toolName": "Python Formatter (autopep8 / black)",
+                "toolType": "formatter",
+                "executable": "autopep8",
+                "description": "Installs PEP 8 Python formatters (autopep8 & black) via pip.",
+                "command": f'"{sys.executable}" -m pip install --no-warn-script-location autopep8 black',
+                "source": "recipe",
+                "verification": "autopep8"
+            },
+            "clang-format": {
+                "toolName": "C/C++ Formatter (clang-format)",
+                "toolType": "formatter",
+                "executable": "clang-format",
+                "description": "Installs official standalone LLVM clang-format binary (~3.5MB wheel) via pip.",
+                "command": f'"{sys.executable}" -m pip install --no-warn-script-location clang-format',
+                "source": "recipe",
+                "verification": "clang-format"
+            },
+            "prettier": {
+                "toolName": "Prettier Formatter (JS/TS/HTML/CSS)",
+                "toolType": "formatter",
+                "executable": "prettier",
+                "description": "Installs global Prettier code formatter via Node.js npm.",
+                "command": "npm install -g prettier",
+                "source": "recipe",
+                "verification": "prettier"
+            },
+            "rustfmt": {
+                "toolName": "Rust Formatter (rustfmt)",
+                "toolType": "formatter",
+                "executable": "rustfmt",
+                "description": "Adds the official rustfmt formatting component via rustup.",
+                "command": "rustup component add rustfmt",
+                "source": "recipe",
+                "verification": "rustfmt"
+            },
+            "gofmt": {
+                "toolName": "Go Formatter & Toolchain (gofmt)",
+                "toolType": "formatter",
+                "executable": "gofmt",
+                "description": "Installs the official Go language distribution via winget.",
+                "command": "winget install --id GoLang.Go -e --accept-source-agreements --accept-package-agreements" if cur_os == "windows" else "brew install go",
+                "source": "recipe",
+                "verification": "gofmt"
+            }
+        }
+
+        # Match known recipe
+        key = None
+        for k in known_recipes:
+            if k in exec_to_check.lower() or k in tool_lower:
+                key = k
+                break
+
+        if key:
+            prop = known_recipes[key]
+            return {
+                "isInstalled": False,
+                "toolName": prop["toolName"],
+                "toolType": tool_type or prop["toolType"],
+                "executable": prop["executable"],
+                "description": prop["description"],
+                "command": prop["command"],
+                "source": prop["source"],
+                "needsConfirmation": True,
+                "currentOs": cur_os,
+                "retryAction": "format" if tool_type == "formatter" else "run",
+                "filePath": file_path,
+                "languageId": clean_lang
+            }
+
+        # 2. Check Extension Tool Dependencies
+        if tool_name in self._contributed_tool_dependencies:
+            dep = self._contributed_tool_dependencies[tool_name]
+            guide = dep.get("installGuide", {})
+            inst_cmd = guide.get(cur_os, "") or guide.get("all", "")
+            if inst_cmd:
+                return {
+                    "isInstalled": False,
+                    "toolName": dep.get("name", tool_name),
+                    "toolType": tool_type or "tool",
+                    "executable": dep.get("executable", tool_name),
+                    "description": f"Installs {tool_name} tool dependency contributed by extension.",
+                    "command": inst_cmd,
+                    "source": "extension",
+                    "needsConfirmation": True,
+                    "currentOs": cur_os,
+                    "retryAction": "format" if tool_type == "formatter" else "run",
+                    "filePath": file_path,
+                    "languageId": clean_lang
+                }
+
+        # 3. Fallback AI / Smart suggestion
+        fallback_cmd = ""
+        if cur_os == "windows":
+            fallback_cmd = f"pip install {tool_name}" if "pip" in tool_lower or "py" in clean_lang else f"winget install {tool_name}"
+        else:
+            fallback_cmd = f"pip install {tool_name}" if "pip" in tool_lower else f"brew install {tool_name}"
+
+        return {
+            "isInstalled": False,
+            "toolName": tool_name or f"{clean_lang or clean_ext} tool",
+            "toolType": tool_type or "tool",
+            "executable": exec_to_check,
+            "description": f"Proposed installation command for {tool_name or clean_lang} on {cur_os.capitalize()}.",
+            "command": fallback_cmd,
+            "source": "ai",
+            "needsConfirmation": True,
+            "currentOs": cur_os,
+            "retryAction": "format" if tool_type == "formatter" else "run",
+            "filePath": file_path,
+            "languageId": clean_lang
+        }
+
+    @Slot(str, str, str, str, str, result=bool)
+    def execute_smart_install_command(self, tool_name: str, command: str, executable: str, retry_action: str = "", file_path: str = "") -> bool:
+        """
+        Executes an approved Smart Install command in the background,
+        captures output, verifies the resulting executable, updates tool paths, and notifies completion.
+        """
+        if not command:
+            return False
+
+        if tool_name in self._installing_tools:
+            return False
+
+        self._installing_tools.add(tool_name)
+        self.smartInstallProgress.emit(tool_name, "installing", f"Running: {command}")
+
+        def _worker():
+            try:
+                is_win = sys.platform.startswith("win")
+                use_shell = True
+                proc = subprocess.run(command, shell=use_shell, capture_output=True, text=True, timeout=300)
+                stdout = proc.stdout.strip()
+                stderr = proc.stderr.strip()
+
+                if proc.returncode == 0:
+                    self.smartInstallProgress.emit(tool_name, "installing", "Verifying installed executable...")
+                    time.sleep(0.5)
+
+                    verified_path = locate_executable(executable) or locate_executable(tool_name)
+                    if verified_path:
+                        self.smartInstallCompleted.emit(
+                            tool_name, True,
+                            f"{tool_name} installed successfully! ({verified_path})",
+                            retry_action
+                        )
+                        self.reload_extensions()
+                    else:
+                        # Success exit code but check if command was pip
+                        self.smartInstallCompleted.emit(
+                            tool_name, True,
+                            f"Installation completed (exit code 0): {stdout or stderr or 'Success'}",
+                            retry_action
+                        )
+                        self.reload_extensions()
+                else:
+                    err_msg = stderr or stdout or f"Process returned exit code {proc.returncode}"
+                    self.smartInstallCompleted.emit(tool_name, False, f"Installation failed: {err_msg}", retry_action)
+
+            except Exception as e:
+                self.smartInstallCompleted.emit(tool_name, False, f"Execution error: {e}", retry_action)
+            finally:
+                self._installing_tools.discard(tool_name)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
+    @Slot(str)
+    def install_formatter(self, extension_id: str):
+        """Lightweight non-blocking background installer for formatters."""
+        ext = self.get_extension(extension_id)
+        if not ext:
+            return
+        status = ext.check_formatter_status()
+        cmd = status.get("installCommand", "")
+        exec_name = status.get("executable", extension_id)
+        if cmd:
+            self.execute_smart_install_command(ext.name, cmd, exec_name, "format")
+        else:
+            self.formatterInstallProgress.emit(extension_id, "failed", f"No install command found for {ext.name}")
+
+    @Slot(str, str, result=bool)
+    def set_custom_formatter_path(self, extension_id: str, custom_path: str) -> bool:
+        if not custom_path:
+            return False
+        clean = custom_path
+        if clean.startswith("file:///"):
+            clean = clean[8:]
+            if sys.platform.startswith("win") and clean.startswith("/"):
+                clean = clean[1:]
+        clean = os.path.abspath(os.path.normpath(clean))
+        if not os.path.isfile(clean):
+            return False
+
+        self._custom_paths[extension_id] = clean
+        self._save_custom_paths()
+        self.reload_extensions()
+        self.extensionsChanged.emit()
+        return True
+
+    @Slot(str, result=str)
+    def get_custom_formatter_path(self, extension_id: str) -> str:
+        return self._custom_paths.get(extension_id, "")
+
+    def locate_executable(self, cmd: str, custom_path: Optional[str] = None) -> Optional[str]:
+        return locate_executable(cmd, custom_path)
+
     @Slot(str)
     def copy_to_clipboard(self, text: str):
         try:
@@ -793,15 +1166,8 @@ class ExtensionManager(QObject):
         except Exception as e:
             print(f"[ExtensionManager] Clipboard error: {e}")
 
-    # =========================================================================
-    # ARCHITECTURE HOOKS: FUTURE ONLINE MARKETPLACE & UPDATE CHECKER
-    # =========================================================================
     @Slot(result="QVariantMap")
     def check_for_updates(self) -> dict:
-        """
-        Architecture endpoint for checking app and extension updates.
-        Returns clean structured status ready for remote manifest endpoint.
-        """
         result = {
             "app": {
                 "name": "DGX Studio",
@@ -823,11 +1189,3 @@ class ExtensionManager(QObject):
             })
         self.updateCheckCompleted.emit(result)
         return result
-
-    def fetch_marketplace_manifest(self, marketplace_url: Optional[str] = None) -> List[dict]:
-        """Architecture endpoint for fetching available online extensions."""
-        return []
-
-    def install_remote_extension(self, extension_id: str, version: Optional[str] = None) -> bool:
-        """Architecture endpoint for remote extension installation."""
-        return False

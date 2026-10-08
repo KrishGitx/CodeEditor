@@ -313,6 +313,66 @@ class TerminalBackend(QObject):
     def is_command_running(self):
         return self.sessions[0].is_command_running if 0 in self.sessions else False
 
+    @Slot(list, str)
+    @Slot(list)
+    def execute_command_sequence(self, commands, action_type="bash"):
+        """
+        Executes a sequence of commands sequentially in the primary terminal session.
+        Stops on first command failure.
+        """
+        self.execute_session_command_sequence(0, commands, action_type)
+
+    @Slot(int, list, str)
+    @Slot(int, list)
+    def execute_session_command_sequence(self, session_id, commands, action_type="bash"):
+        """
+        Executes a sequence of commands sequentially in the specified terminal session.
+        Stops immediately on failure of any command in the sequence.
+        """
+        if not commands:
+            return
+
+        clean_cmds = [str(c).strip() for c in commands if str(c).strip()]
+        if not clean_cmds:
+            return
+
+        act_type = (action_type or "bash").lower().strip()
+
+        if session_id not in self.sessions:
+            if session_id == 0:
+                self.create_session(self.default_cwd)
+            else:
+                return
+
+        session = self.sessions[session_id]
+        if not session.process or session.process.poll() is not None:
+            session._start_shell()
+
+        # Single command: execute directly
+        if len(clean_cmds) == 1:
+            session.send_command(clean_cmds[0])
+            return
+
+        # Multiple commands: sequential execution with failure stopping
+        if sys.platform == "win32":
+            if act_type == "cmd":
+                # In CMD shell, && runs the next command only if previous exited with 0
+                joined = " && ".join(clean_cmds)
+                session.send_command(f'cmd /c "{joined}"')
+            else:
+                # In PowerShell, chain each command conditionally on $? and $LASTEXITCODE
+                nested = ""
+                for cmd in reversed(clean_cmds):
+                    if not nested:
+                        nested = cmd
+                    else:
+                        nested = f'{cmd}; if (($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq $null) -and $?) {{ {nested} }}'
+                session.send_command(nested)
+        else:
+            # Unix / macOS (bash/zsh/sh):
+            joined = " && ".join(clean_cmds)
+            session.send_command(joined)
+
     @Slot(str)
     def send_command(self, command):
         if 0 in self.sessions:

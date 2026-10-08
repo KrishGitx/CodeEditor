@@ -11,7 +11,7 @@ Item {
     property bool hasSelectedCode: false
     property string selectedCode: ""
 
-    signal actionSelected(string actionId, string customAction)
+    signal actionSelected(string actionId, string customAction, string actionType, var commands)
     signal closeRequested()
 
     width: 220
@@ -35,13 +35,21 @@ Item {
                 for (var j = 0; j < total; j++) {
                     var item = enabledList[j];
                     var angle = (j / total) * 360.0 - 90.0;
+                    var cmds = item.commands || [];
+                    if (!cmds || cmds.length === 0) {
+                        if (item.action) {
+                            cmds = item.action.split("\n");
+                        }
+                    }
                     res.push({
                         id: item.id,
                         label: item.label,
                         icon: item.icon || "file",
                         angle: angle,
-                        action: item.action || "",
-                        action_type: item.action_type || "",
+                        action: item.action || (cmds ? cmds.join("\n") : ""),
+                        commands: cmds,
+                        action_type: item.action_type || item.type || "bash",
+                        type: item.type || item.action_type || "bash",
                         custom: item.custom || false
                     });
                 }
@@ -171,7 +179,7 @@ Item {
                     onEntered: root.selectedIndex = index
                     onClicked: {
                         var actId = actionNode.isAskAiNode ? "ask_ai" : modelData.id;
-                        root.actionSelected(actId, modelData.action || "");
+                        root.actionSelected(actId, modelData.action || "", modelData.action_type || modelData.type || "bash", modelData.commands || []);
                         root.closeRequested();
                     }
                 }
@@ -215,7 +223,7 @@ Item {
         if (dist > 22 && root.selectedIndex >= 0 && root.selectedIndex < root.actions.length) {
             var selectedNode = root.actions[root.selectedIndex];
             var actId = (selectedNode.id === "run" && root.hasSelectedCode) ? "ask_ai" : selectedNode.id;
-            root.actionSelected(actId, selectedNode.action || "");
+            root.actionSelected(actId, selectedNode.action || "", selectedNode.action_type || selectedNode.type || "bash", selectedNode.commands || []);
             root.closeRequested();
             return true;
         }

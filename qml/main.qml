@@ -547,6 +547,22 @@ Window {
 
             onSettingsRequested: settingsOverlay.visible = true
             onThemeSelected: function(tName) { theme.setTheme(tName); }
+            onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+        }
+    }
+
+    // =========================================================================
+    // SMART INSTALL MODAL OVERLAY
+    // =========================================================================
+    SmartInstallDialog {
+        id: smartInstallDialog
+        z: 9990
+        onRetryRequested: function(action, filePath, langId) {
+            if (action === "format") {
+                editorArea.formatDocument();
+            } else if (action === "run") {
+                mainWindow.runActiveFile();
+            }
         }
     }
 
@@ -636,8 +652,8 @@ Window {
         z: 999
     }
 
-    function showNotification(msg, type, title, duration) {
-        notificationToast.show(msg, type, title, duration);
+    function showNotification(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb) {
+        notificationToast.show(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb);
     }
 
     // =========================================================================
@@ -679,12 +695,15 @@ Window {
             mainWindow.showNotification("Please save the file first before running.", "warning", "Run");
             return;
         }
-        mainWindow.terminalVisible = true;
         var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
         var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
         var cmd = "";
 
-        if (ext === "py" || ext === "pyw") {
+        // 1. Check extension-contributed runners
+        var extRunner = (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_runner_for_extension) ? extensionManager.get_runner_for_extension(ext) : null;
+        if (extRunner && extRunner.command) {
+            cmd = extRunner.command.replace(/\$\{filePath\}/g, rawPath);
+        } else if (ext === "py" || ext === "pyw") {
             cmd = 'python "' + rawPath + '"';
         } else if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") {
             cmd = 'g++ -std=c++17 "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
@@ -717,10 +736,35 @@ Window {
                 return;
             }
         } else {
-            mainWindow.terminalVisible = true;
-            cmd = 'Write-Host "No runner configured for .' + ext + ' files." -ForegroundColor Yellow';
+            // Clean application-level unsupported runner error (no raw Write-Host command)
+            var cleanErr = "No runner configured for ." + ext + " files.";
+            terminalPanel.addOutputLog("Build/Run", cleanErr);
+
+            // Offer Smart Install if a known recipe/tool exists
+            var proposal = null;
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
+                proposal = extensionManager.suggest_smart_install("runner", ext + " runner", editorArea.currentLanguageId, ext, rawPath);
+            }
+            if (proposal && !proposal.isInstalled && proposal.command) {
+                mainWindow.showNotification(
+                    cleanErr,
+                    "warning",
+                    "Run",
+                    9000,
+                    "Smart Install",
+                    function() {
+                        smartInstallDialog.openProposal(proposal);
+                    },
+                    "Close",
+                    function() {}
+                );
+            } else {
+                mainWindow.showNotification(cleanErr, "warning", "Run");
+            }
+            return;
         }
 
+        mainWindow.terminalVisible = true;
         terminalPanel.addOutputLog("Build/Run", "Executing " + (editorArea.activeFileName || "script") + " [" + cmd + "]");
         terminalPanel.executeCommand(cmd);
     }

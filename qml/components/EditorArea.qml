@@ -36,7 +36,8 @@ Item {
     property string clipboardWholeLineText: ""
     property var activeSnippetStops: []
     property int activeSnippetStopIndex: -1
-            property var selectionOccurrences: []
+    property var selectionOccurrences: []
+
 
     Shortcut {
         sequence: "Ctrl+P"
@@ -130,8 +131,35 @@ Item {
             var currentText = codeTextArea.text;
 
             if (available === false) {
-                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                    mainWindow.showNotification(message || "No formatter available for this language.", "warning", "Formatter");
+                var langName = root.currentLanguageId || "this language";
+                var extStr = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
+                var proposal = null;
+
+                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
+                    proposal = extensionManager.suggest_smart_install("formatter", langName + " formatter", root.currentLanguageId, extStr, root.activeFilePath || root.activeFileName);
+                }
+
+                if (proposal && !proposal.isInstalled && proposal.command) {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(
+                            message || ("No formatter installed for " + (root.currentLanguageId || extStr || "this language") + "."),
+                            "warning",
+                            "Formatter",
+                            9000,
+                            "Smart Install",
+                            function() {
+                                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                    smartInstallDialog.openProposal(proposal);
+                                }
+                            },
+                            "Close",
+                            function() {}
+                        );
+                    }
+                } else {
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."), "warning", "Formatter");
+                    }
                 }
                 return;
             }
@@ -885,220 +913,6 @@ Item {
                                                     isShifting = false;
                                                 }
                                             }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                            }
-                                                var newStart = Math.max(0, viewCenterLine - halfWindow);
-                                                var newEnd = Math.min(paneTotalLineCount - 1, newStart + 800);
-                                                newStart = Math.max(0, newEnd - 800);
-                                                
-                                                if (newStart === windowStartLine && newEnd === windowEndLine && !force) return;
-                                                
-                                                var sliceObj = backend.get_backing_slice(tabKey, newStart, newEnd);
-                                                if (sliceObj && sliceObj.text !== undefined) {
-                                                    isShifting = true;
-                                                    var viewStart = Math.max(0, Math.floor(viewTop / lineH));
-                                                    var viewEnd = viewStart + Math.ceil(editorFlickable.height / lineH);
-                                                    console.log("[Virtualization Shift]", "reason:", reason || "wheel",
-                                                        "globalTotalLines:", paneTotalLineCount,
-                                                        "window:", (windowStartLine + 1) + ".." + (windowEndLine + 1), "->", (sliceObj.startLine + 1) + ".." + (sliceObj.endLine + 1),
-                                                        "viewport:", viewStart + ".." + viewEnd,
-                                                        "contentY:", Math.round(viewTop), "contentHeight:", Math.round(editorFlickable.contentHeight),
-                                                        "flickWidth:", editorFlickable.width,
-                                                        "matX:", materializedEditorContainer.x, "matW:", materializedEditorContainer.width,
-                                                        "codeX:", codeTextArea.x, "codeW:", codeTextArea.width,
-                                                        "gutterW:", gutter.width);
-                                                    
-                                                    var oldScrollY = editorFlickable.contentY;
-                                                    var oldScrollX = editorFlickable.contentX;
-                                                    var globalLine = root.cursorLine;
-                                                    var globalCol = root.cursorColumn;
-                                                    
-                                                    root.isRestoringTab = true;
-                                                    try {
-                                                        windowStartLine = sliceObj.startLine;
-                                                        windowEndLine = sliceObj.endLine;
-                                                        codeTextArea.text = sliceObj.text;
-                                                        
-                                                        if (globalLine >= windowStartLine + 1 && globalLine <= windowEndLine + 1) {
-                                                            var localLine = globalLine - windowStartLine;
-                                                            var localLines = sliceObj.text.split("\n");
-                                                            var targetLine = Math.min(localLine, localLines.length);
-                                                            var charPos = 0;
-                                                            for (var l = 0; l < targetLine - 1; l++) {
-                                                                charPos += localLines[l].length + 1;
-                                                            }
-                                                            if (targetLine - 1 < localLines.length) {
-                                                                charPos += Math.min(globalCol - 1, localLines[targetLine - 1].length);
-                                                            }
-                                                            codeTextArea.cursorPosition = Math.min(charPos, sliceObj.text.length);
-                                                        }
-
-                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
-                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
-                                                        if (tabPane.index === root.activeTabIndex) {
-                                                            indentGuidesCanvas.requestPaint();
-                                                        }
-                                                    } finally {
-                                                        root.isRestoringTab = false;
-                                                    }
-                                                    
-                                                    editorFlickable.contentY = oldScrollY;
-                                                    editorFlickable.contentX = oldScrollX;
-                                                    isShifting = false;
-                                                }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                                    isShifting = false;
-                                                }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
-                                            }
                                         }
 
                                         function syncFontMetricsAndGeometry() {
@@ -1571,6 +1385,37 @@ Item {
                                                             selectByMouse: true
                                                             focus: tabPane.index === root.activeTabIndex
                                                             cursorVisible: true
+                                                            cursorDelegate: Rectangle {
+                                                                id: caretRect
+                                                                width: 2
+                                                                color: (typeof theme !== "undefined" && theme && theme.accent) ? theme.accent : "#38bdf8"
+                                                                visible: codeTextArea.cursorVisible && (tabPane.index === root.activeTabIndex)
+                                                                opacity: 1.0
+
+                                                                Timer {
+                                                                    id: caretBlinkTimer
+                                                                    interval: 530
+                                                                    repeat: true
+                                                                    running: caretRect.visible && codeTextArea.activeFocus
+                                                                    onTriggered: caretRect.opacity = (caretRect.opacity > 0.5 ? 0.0 : 1.0)
+                                                                }
+
+                                                                Connections {
+                                                                    target: codeTextArea
+                                                                    function onCursorPositionChanged() {
+                                                                        caretRect.opacity = 1.0;
+                                                                        if (codeTextArea.activeFocus) {
+                                                                            caretBlinkTimer.restart();
+                                                                        }
+                                                                    }
+                                                                    function onActiveFocusChanged() {
+                                                                        caretRect.opacity = 1.0;
+                                                                        if (codeTextArea.activeFocus) {
+                                                                            caretBlinkTimer.restart();
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                             textFormat: TextArea.PlainText
                                                             background: null
                                                             text: (typeof model !== "undefined" && model && model.content) ? model.content : ""
@@ -2654,9 +2499,9 @@ Item {
                             visible: false
                             z: 110
 
-                            onActionSelected: function(actionId, customAction) {
+                            onActionSelected: function(actionId, customAction, actionType, commands) {
                                 radialContextMenu.visible = false;
-                                root.executeEditorAction(actionId, customAction);
+                                root.executeEditorAction(actionId, customAction, actionType, commands);
                             }
 
                             onCloseRequested: radialContextMenu.visible = false
@@ -3365,7 +3210,7 @@ Item {
         }
     }
 
-    function executeEditorAction(actionId, customAction) {
+    function executeEditorAction(actionId, customAction, actionType, commands) {
         if (actionId === "format") {
             root.formatDocument();
         } else if (actionId === "ask_ai") {
@@ -3436,11 +3281,15 @@ Item {
             if (codeTextArea) codeTextArea.redo();
         } else if (actionId === "find") {
             root.showFind(false);
-        } else if (customAction && customAction.length > 0) {
-            if (typeof terminalPanel !== "undefined" && terminalPanel && terminalPanel.executeCommand) {
+        } else if ((customAction && customAction.length > 0) || (commands && commands.length > 0)) {
+            if (typeof terminalPanel !== "undefined" && terminalPanel) {
                 terminalPanel.activeTab = "TERMINAL";
                 if (typeof mainWindow !== "undefined" && mainWindow) mainWindow.terminalVisible = true;
-                terminalPanel.executeCommand(customAction);
+                if (terminalPanel.executeCustomAction) {
+                    terminalPanel.executeCustomAction(customAction, actionType, commands);
+                } else if (terminalPanel.executeCommand) {
+                    terminalPanel.executeCommand(customAction);
+                }
             }
         }
     }
@@ -3512,8 +3361,35 @@ Item {
             }
             if (formatResult) {
                 if (formatResult.available === false) {
-                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                        mainWindow.showNotification(formatResult.message || "No formatter available for this language.", "warning", "Formatter");
+                    var langNameSync = root.currentLanguageId || "this language";
+                    var extStrSync = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
+                    var proposalSync = null;
+
+                    if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
+                        proposalSync = extensionManager.suggest_smart_install("formatter", langNameSync + " formatter", root.currentLanguageId, extStrSync, effectivePath);
+                    }
+
+                    if (proposalSync && !proposalSync.isInstalled && proposalSync.command) {
+                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                            mainWindow.showNotification(
+                                formatResult.message || ("No formatter installed for " + (root.currentLanguageId || extStrSync || "this language") + "."),
+                                "warning",
+                                "Formatter",
+                                9000,
+                                "Smart Install",
+                                function() {
+                                    if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                        smartInstallDialog.openProposal(proposalSync);
+                                    }
+                                },
+                                "Close",
+                                function() {}
+                            );
+                        }
+                    } else {
+                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                            mainWindow.showNotification(formatResult.message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."), "warning", "Formatter");
+                        }
                     }
                     return;
                 }
@@ -3542,9 +3418,33 @@ Item {
             }
         }
 
-        var warnMsg = "No formatter is currently installed for '" + (lang || ext || "this file") + "'.";
-        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-            mainWindow.showNotification(warnMsg, "warning", "Formatter");
+        var warnLang = lang || ext || "this file";
+        var trailingProposal = null;
+        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
+            trailingProposal = extensionManager.suggest_smart_install("formatter", warnLang + " formatter", root.currentLanguageId, ext, effectivePath);
+        }
+        if (trailingProposal && !trailingProposal.isInstalled && trailingProposal.command) {
+            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                mainWindow.showNotification(
+                    "No formatter installed for " + warnLang + ".",
+                    "warning",
+                    "Formatter",
+                    9000,
+                    "Smart Install",
+                    function() {
+                        if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                            smartInstallDialog.openProposal(trailingProposal);
+                        }
+                    },
+                    "Close",
+                    function() {}
+                );
+            }
+        } else {
+            var warnMsg = "No formatter is currently installed for '" + warnLang + "'.";
+            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                mainWindow.showNotification(warnMsg, "warning", "Formatter");
+            }
         }
     }
 

@@ -7,13 +7,15 @@ Rectangle {
     id: root
 
     property string playbackState: "stopped" // "playing", "paused", "stopped"
-    property string currentTitle: "Coding Focus Lo-Fi"
-    property string currentArtist: "Deep Code Audio"
-    property string currentVideoId: "demo_1"
-    property string currentCoverUrl: "https://img.youtube.com/vi/3_g2un5M350/hqdefault.jpg"
+    property string currentTitle: "No Track Selected"
+    property string currentArtist: "Ready to Play"
+    property string currentVideoId: ""
+    property string currentCoverUrl: ""
     property real currentVolume: 0.8
     property string viewMode: "player" // "player" or "search"
+    property string activeCategory: "search" // "search", "liked", "recommended"
     property bool showInfoCard: false
+    property bool isCurrentLiked: false
 
     // Playback Progress Tracking (in seconds)
     property int currentPositionSec: 0
@@ -37,6 +39,16 @@ Rectangle {
                         musicPlayer.set_volume(v);
                     }
                 }
+            }
+        }
+        if (typeof musicPlayer !== "undefined" && musicPlayer) {
+            root.playbackState = musicPlayer.playbackState || "stopped";
+            if (musicPlayer.currentVideoId) {
+                root.currentVideoId = musicPlayer.currentVideoId;
+                root.currentTitle = musicPlayer.currentTitle || "No Track Selected";
+                root.currentArtist = musicPlayer.currentArtist || "Ready to Play";
+                root.totalDurationSec = musicPlayer.currentDuration || 210;
+                root.isCurrentLiked = musicPlayer.is_liked ? musicPlayer.is_liked(root.currentVideoId) : false;
             }
         }
     }
@@ -151,13 +163,6 @@ Rectangle {
 
     ListModel {
         id: songListModel
-
-        Component.onCompleted: {
-            append({ title: "Coding Focus Lo-Fi Flow", artist: "Deep Code Audio", videoId: "demo_1", duration: 225 });
-            append({ title: "Midnight Ambient Beats", artist: "Studio Soundscapes", videoId: "demo_2", duration: 198 });
-            append({ title: "Deep Synthwave Rhythm", artist: "Cyber Pulse", videoId: "demo_3", duration: 264 });
-            append({ title: "Chill Coffeehouse Acoustic", artist: "Acoustic Vibes", videoId: "demo_4", duration: 180 });
-        }
     }
 
     Connections {
@@ -165,10 +170,36 @@ Rectangle {
         ignoreUnknownSignals: true
 
         function onSearchResults(songs) {
+            if (root.activeCategory !== "search") return;
             songListModel.clear();
             if (!songs || songs.length === 0) return;
             for (var i = 0; i < songs.length; i++) {
                 songListModel.append(songs[i]);
+            }
+        }
+
+        function onLikedSongsChanged(songs) {
+            if (typeof musicPlayer !== "undefined" && musicPlayer && root.currentVideoId) {
+                root.isCurrentLiked = musicPlayer.is_liked(root.currentVideoId);
+            }
+            if (root.activeCategory === "liked") {
+                songListModel.clear();
+                if (songs && songs.length > 0) {
+                    for (var i = 0; i < songs.length; i++) {
+                        songListModel.append(songs[i]);
+                    }
+                }
+            }
+        }
+
+        function onRecommendationsReady(songs) {
+            if (root.activeCategory === "recommended") {
+                songListModel.clear();
+                if (songs && songs.length > 0) {
+                    for (var i = 0; i < songs.length; i++) {
+                        songListModel.append(songs[i]);
+                    }
+                }
             }
         }
 
@@ -186,6 +217,9 @@ Rectangle {
             root.totalDurationSec = duration || 210;
             root.currentPositionSec = 0;
             root.viewMode = "player";
+            if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.is_liked) {
+                root.isCurrentLiked = musicPlayer.is_liked(videoId);
+            }
             if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.coverUrl) {
                 root.currentCoverUrl = musicPlayer.coverUrl;
             } else {
@@ -606,6 +640,34 @@ Rectangle {
                         }
                     }
 
+                    // Like / Love Button
+                    Rectangle {
+                        width: 26
+                        height: 26
+                        radius: 13
+                        color: likeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+                        border.color: root.isCurrentLiked ? "#f43f5e" : (theme ? theme.borderNormal : "#333333")
+                        border.width: 1
+
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: root.isCurrentLiked ? "heart-filled" : "heart"
+                            size: 11
+                            color: root.isCurrentLiked ? "#f43f5e" : (theme ? theme.textSecondary : "#858585")
+                        }
+
+                        ToolTip.visible: likeMa.containsMouse
+                        ToolTip.text: root.isCurrentLiked ? "Liked Song (Click to Unlike)" : "Like Song"
+
+                        MouseArea {
+                            id: likeMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleCurrentLike()
+                        }
+                    }
+
                     Item { Layout.fillWidth: true }
 
                     // Rotary Volume Knob
@@ -715,11 +777,106 @@ Rectangle {
                 anchors.fill: parent
                 spacing: 0
 
-                // Search Input Field
+                // Category Selector Bar (Search / Liked / Recommended)
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 26
+                    color: theme ? theme.bgHeader : "#141414"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        spacing: 2
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: 2
+                            color: root.activeCategory === "search" ? (theme ? theme.bgSurfaceActive : "#2a2d2e") : "transparent"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Search"
+                                color: root.activeCategory === "search" ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#888888")
+                                font.pixelSize: 10
+                                font.bold: root.activeCategory === "search"
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.activeCategory = "search"
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: 2
+                            color: root.activeCategory === "liked" ? (theme ? theme.bgSurfaceActive : "#2a2d2e") : "transparent"
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                VectorIcon {
+                                    name: "heart-filled"
+                                    size: 8
+                                    color: root.activeCategory === "liked" ? "#f43f5e" : (theme ? theme.textMuted : "#888888")
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                Text {
+                                    text: "Liked"
+                                    color: root.activeCategory === "liked" ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#888888")
+                                    font.pixelSize: 10
+                                    font.bold: root.activeCategory === "liked"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.activeCategory = "liked";
+                                    root.loadLikedSongs();
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: 2
+                            color: root.activeCategory === "recommended" ? (theme ? theme.bgSurfaceActive : "#2a2d2e") : "transparent"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "✦ Recommended"
+                                color: root.activeCategory === "recommended" ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.textMuted : "#888888")
+                                font.pixelSize: 10
+                                font.bold: root.activeCategory === "recommended"
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.activeCategory = "recommended";
+                                    root.loadRecommendations();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Search Input Field (Visible in search category)
                 Rectangle {
                     Layout.fillWidth: true
                     height: 30
                     color: theme ? theme.bgPanel : "#181818"
+                    visible: root.activeCategory === "search"
 
                     RowLayout {
                         anchors.fill: parent
@@ -758,6 +915,42 @@ Rectangle {
                 Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+
+                    // Empty state indicator
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: parent.width - 24
+                        height: 80
+                        color: "transparent"
+                        visible: songListModel.count === 0
+
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 6
+
+                            VectorIcon {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                name: root.activeCategory === "liked" ? "heart" : (root.activeCategory === "recommended" ? "sparkles" : "music")
+                                size: 18
+                                color: theme ? theme.textMuted : "#555555"
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.activeCategory === "liked" ? "No liked songs yet" : (root.activeCategory === "recommended" ? "Finding recommendations..." : "No songs yet")
+                                color: theme ? theme.textSecondary : "#888888"
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: root.activeCategory === "liked" ? "Click the heart button to save favorite tracks." : (root.activeCategory === "recommended" ? "Signals based on your loved tracks and artists." : "Type above to search online tracks.")
+                                color: theme ? theme.textMuted : "#666666"
+                                font.pixelSize: 9
+                            }
+                        }
+                    }
 
                     ScrollView {
                         anchors.fill: parent
@@ -828,6 +1021,14 @@ Rectangle {
                                             Layout.fillWidth: true
                                         }
                                     }
+
+                                    // Like indicator in list item
+                                    VectorIcon {
+                                        name: "heart-filled"
+                                        size: 9
+                                        color: "#f43f5e"
+                                        visible: (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.is_liked) ? musicPlayer.is_liked(model.videoId) : false
+                                    }
                                 }
 
                                 MouseArea {
@@ -844,6 +1045,38 @@ Rectangle {
                     }
                 }
             }
+        }
+    }
+
+    function toggleCurrentLike() {
+        if (!root.currentVideoId) return;
+        if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.toggle_like) {
+            root.isCurrentLiked = musicPlayer.toggle_like(
+                root.currentVideoId,
+                root.currentTitle,
+                root.currentArtist,
+                root.totalDurationSec,
+                root.currentCoverUrl
+            );
+        }
+    }
+
+    function loadLikedSongs() {
+        songListModel.clear();
+        if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.get_liked_songs) {
+            var liked = musicPlayer.get_liked_songs();
+            if (liked && liked.length > 0) {
+                for (var i = 0; i < liked.length; i++) {
+                    songListModel.append(liked[i]);
+                }
+            }
+        }
+    }
+
+    function loadRecommendations() {
+        songListModel.clear();
+        if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.fetch_recommendations) {
+            musicPlayer.fetch_recommendations();
         }
     }
 

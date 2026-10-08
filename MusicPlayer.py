@@ -2,6 +2,7 @@ from ytmusicapi import YTMusic
 import subprocess
 import sys
 import os
+import json
 import tempfile
 import threading
 import queue
@@ -64,6 +65,8 @@ class MusicPlayer(QObject):
     volumeChanged = Signal(float)
     songFinished = Signal(str)  # videoId
     coverUrlChanged = Signal(str)
+    likedSongsChanged = Signal(list)
+    recommendationsReady = Signal(list)
 
     def __init__(self):
         super().__init__()
@@ -91,9 +94,162 @@ class MusicPlayer(QObject):
         self._stream_thread = None
         self._song_cache = {}
 
+        # Liked Songs Storage (~/.dgx/liked_songs.json)
+        self._liked_file = os.path.join(os.path.expanduser("~"), ".dgx", "liked_songs.json")
+        os.makedirs(os.path.dirname(self._liked_file), exist_ok=True)
+        self._liked_songs = self._load_liked_songs()
+
+    def _load_liked_songs(self) -> list:
+        if os.path.isfile(self._liked_file):
+            try:
+                with open(self._liked_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        for s in data:
+                            if isinstance(s, dict) and "videoId" in s:
+                                self._song_cache[s["videoId"]] = s
+                        return data
+            except Exception as e:
+                print("[MusicPlayer] Notice loading liked songs:", e)
+        return []
+
+    def _save_liked_songs(self):
+        try:
+            with open(self._liked_file, "w", encoding="utf-8") as f:
+                json.dump(self._liked_songs, f, indent=2)
+        except Exception as e:
+            print("[MusicPlayer] Notice saving liked songs:", e)
+
     @Property(str, notify=coverUrlChanged)
     def coverUrl(self):
         return self._current_cover_url
+
+    @Property(str, notify=playbackStateChanged)
+    def playbackState(self):
+        return self._playback_state
+
+    @Property(str, notify=currentSongChanged)
+    def currentTitle(self):
+        return self._current_title
+
+    @Property(str, notify=currentSongChanged)
+    def currentArtist(self):
+        return self._current_artist
+
+    @Property(str, notify=currentSongChanged)
+    def currentVideoId(self):
+        return self._current_video or ""
+
+    @Property(int, notify=currentSongChanged)
+    def currentDuration(self):
+        return self._current_duration
+
+    @Slot(result=list)
+    def get_liked_songs(self) -> list:
+        return list(self._liked_songs)
+
+    @Slot(str, result=bool)
+    def is_liked(self, video_id: str) -> bool:
+        if not video_id:
+            return False
+        return any(s.get("videoId") == video_id for s in self._liked_songs)
+
+    @Slot(str, str, str, int, str, result=bool)
+    def toggle_like(self, video_id: str, title: str = "", artist: str = "", duration: int = 0, cover_url: str = "") -> bool:
+        if not video_id:
+            return False
+
+        existing_idx = next((i for i, s in enumerate(self._liked_songs) if s.get("videoId") == video_id), None)
+        if existing_idx is not None:
+            # Unlike
+            self._liked_songs.pop(existing_idx)
+            self._save_liked_songs()
+            self.likedSongsChanged.emit(self._liked_songs)
+            return False
+        else:
+            # Like
+            dur_sec = duration or 210
+            dur_text = f"{dur_sec//60}:{dur_sec%60:02d}"
+            item = {
+                "videoId": video_id,
+                "title": title or (self._current_title if self._current_video == video_id else "Track"),
+                "artist": artist or (self._current_artist if self._current_video == video_id else "Artist"),
+                "duration": dur_sec,
+                "durationText": dur_text,
+                "coverUrl": cover_url or (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+                "likedAt": time.time()
+            }
+            self._liked_songs.insert(0, item)
+            self._song_cache[video_id] = item
+            self._save_liked_songs()
+            self.likedSongsChanged.emit(self._liked_songs)
+            return True
+
+    @Slot(str, result=bool)
+    def remove_liked_song(self, video_id: str) -> bool:
+        if not video_id:
+            return False
+        before_len = len(self._liked_songs)
+        self._liked_songs = [s for s in self._liked_songs if s.get("videoId") != video_id]
+        if len(self._liked_songs) != before_len:
+            self._save_liked_songs()
+            self.likedSongsChanged.emit(self._liked_songs)
+            return True
+        return False
+
+    @Slot()
+    def fetch_recommendations(self):
+        """Generates lightweight music recommendations based on liked songs and artists."""
+        def _worker():
+            try:
+                liked = self._liked_songs
+                queries = []
+                if liked:
+                    # Collect top artists & track vibes from liked songs
+                    artists = [s.get("artist") for s in liked if s.get("artist") and s.get("artist") != "Artist"]
+                    if artists:
+                        # Pick most recent liked artist or combination
+                        queries.append(f"{artists[0]} songs")
+                        if len(artists) > 1:
+                            queries.append(f"{artists[1]} music")
+                if not queries:
+                    queries = ["lofi chill coding beats", "ambient focus synthwave"]
+
+                results = []
+                seen_ids = set(s.get("videoId") for s in liked)
+                if self.yt is None:
+                    self.yt = YTMusic()
+
+                for q in queries[:2]:
+                    try:
+                        raw = self.yt.search(q, filter="songs")
+                        for song in raw[:6]:
+                            vid = song.get("videoId", "")
+                            if vid and vid not in seen_ids:
+                                seen_ids.add(vid)
+                                dur_sec = self._parse_duration(song.get("duration_seconds") or song.get("duration"))
+                                thumbnails = song.get("thumbnails", [])
+                                cover_url = thumbnails[-1]["url"] if thumbnails else f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+                                artists_list = song.get("artists", [])
+                                item = {
+                                    "title": song.get("title", "Unknown Title"),
+                                    "artist": artists_list[0]["name"] if artists_list else "Unknown Artist",
+                                    "videoId": vid,
+                                    "duration": dur_sec,
+                                    "durationText": song.get("duration", f"{dur_sec//60}:{dur_sec%60:02d}"),
+                                    "coverUrl": cover_url
+                                }
+                                results.append(item)
+                                self._song_cache[vid] = item
+                    except Exception as ex_q:
+                        print("[MusicPlayer] Recommendation search error for query:", q, ex_q)
+
+                self.recommendationsReady.emit(results)
+            except Exception as e:
+                print("[MusicPlayer] Fetch recommendations error:", e)
+                self.recommendationsReady.emit([])
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     @staticmethod
     def _parse_duration(dur_val):
@@ -144,16 +300,8 @@ class MusicPlayer(QObject):
                 self.searchResults.emit(songs)
             except Exception as e:
                 print("Search error:", e)
-                # Fallback demo items if offline or search limit reached
-                fallback_songs = [
-                    {"title": f"{query} - Starboy Flow", "artist": "The Weeknd", "videoId": "demo_1", "duration": 230, "durationText": "03:50", "coverUrl": "https://img.youtube.com/vi/3_g2un5M350/hqdefault.jpg"},
-                    {"title": f"{query} - Lo-Fi Chill Beats", "artist": "Synthwave Collective", "videoId": "demo_2", "duration": 225, "durationText": "03:45", "coverUrl": "https://img.youtube.com/vi/suxP321fM5s/hqdefault.jpg"},
-                    {"title": f"{query} - Ambient Focus Flow", "artist": "Deep Code Audio", "videoId": "demo_3", "duration": 198, "durationText": "03:18", "coverUrl": "https://img.youtube.com/vi/5qap5aO4i9A/hqdefault.jpg"},
-                    {"title": f"{query} - Midnight Cyber Hack", "artist": "Neural Soundscapes", "videoId": "demo_4", "duration": 264, "durationText": "04:24", "coverUrl": "https://img.youtube.com/vi/DWcJFNfaw90/hqdefault.jpg"},
-                ]
-                for s in fallback_songs:
-                    self._song_cache[s["videoId"]] = s
-                self.searchResults.emit(fallback_songs)
+                # No fake demo tracks on search failure
+                self.searchResults.emit([])
 
         t = threading.Thread(target=_do_search, daemon=True)
         t.start()

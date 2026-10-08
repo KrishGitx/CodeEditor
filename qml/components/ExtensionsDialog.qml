@@ -526,7 +526,7 @@ Rectangle {
                                             width: 36
                                             height: 36
                                             radius: 4
-                                            color: modelData.enabled ? (theme ? theme.accentSubtle : "#1a2736") : "#252526"
+                                            color: modelData.enabled ? (theme ? theme.accentMuted : "#1a2736") : "#252526"
                                             border.color: modelData.enabled ? (theme ? theme.accent : "#0078d4") : "#3e3e42"
                                             border.width: 1
 
@@ -647,7 +647,7 @@ Rectangle {
                                     width: 46
                                     height: 46
                                     radius: 6
-                                    color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accentSubtle : "#1a2736") : "#252526"
+                                    color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accentMuted : "#1a2736") : "#252526"
                                     border.color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accent : "#0078d4") : "#3e3e42"
                                     border.width: 1
 

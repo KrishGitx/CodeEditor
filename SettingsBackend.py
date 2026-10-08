@@ -242,7 +242,35 @@ class SettingsBackend(QObject):
     def get_custom_actions(self):
         saved = self.settings.get("radial_custom_actions")
         if isinstance(saved, list):
-            return saved
+            normalized = []
+            for item in saved:
+                if isinstance(item, dict):
+                    it = dict(item)
+                    label_val = it.get("label") or it.get("name") or "Custom Action"
+                    it["label"] = label_val
+                    it["name"] = label_val
+
+                    type_val = it.get("action_type") or it.get("type") or "bash"
+                    it["action_type"] = type_val.lower()
+                    it["type"] = type_val.lower()
+
+                    # Extract commands list
+                    raw_cmds = it.get("commands")
+                    if isinstance(raw_cmds, list) and raw_cmds:
+                        cmds = [str(c).strip() for c in raw_cmds if str(c).strip()]
+                    elif "command" in it and isinstance(it["command"], str):
+                        cmds = [it["command"].strip()]
+                    elif "action" in it and isinstance(it["action"], str):
+                        cmds = [line.strip() for line in it["action"].split("\n") if line.strip()]
+                    else:
+                        cmds = []
+
+                    it["commands"] = cmds
+                    it["action"] = "\n".join(cmds)
+                    it["custom"] = True
+                    it["shortcut"] = "CMD" if it["action_type"] == "cmd" else "Bash"
+                    normalized.append(it)
+            return normalized
         return []
 
     @Slot(str)
@@ -250,8 +278,36 @@ class SettingsBackend(QObject):
         try:
             items = json.loads(custom_actions_json)
             if isinstance(items, list):
-                self.settings["radial_custom_actions"] = items
+                normalized = []
+                for item in items:
+                    if isinstance(item, dict):
+                        it = dict(item)
+                        label_val = it.get("label") or it.get("name") or "Custom Action"
+                        it["label"] = label_val
+                        it["name"] = label_val
+                        type_val = it.get("action_type") or it.get("type") or "bash"
+                        it["action_type"] = type_val.lower()
+                        it["type"] = type_val.lower()
+
+                        raw_cmds = it.get("commands")
+                        if isinstance(raw_cmds, list) and raw_cmds:
+                            cmds = [str(c).strip() for c in raw_cmds if str(c).strip()]
+                        elif "command" in it and isinstance(it["command"], str):
+                            cmds = [it["command"].strip()]
+                        elif "action" in it and isinstance(it["action"], str):
+                            cmds = [line.strip() for line in it["action"].split("\n") if line.strip()]
+                        else:
+                            cmds = []
+
+                        it["commands"] = cmds
+                        it["action"] = "\n".join(cmds)
+                        it["custom"] = True
+                        it["shortcut"] = "CMD" if it["action_type"] == "cmd" else "Bash"
+                        normalized.append(it)
+
+                self.settings["radial_custom_actions"] = normalized
                 self._save_to_disk()
-                self.settingChanged.emit("radial_custom_actions", custom_actions_json)
+                self.settingChanged.emit("radial_custom_actions", json.dumps(normalized))
         except Exception as e:
             print(f"[SettingsBackend] Error saving custom actions: {e}")
+

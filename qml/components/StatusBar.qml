@@ -13,6 +13,7 @@ Rectangle {
     signal languageSelected(string lang)
     signal settingsRequested()
     signal themeSelected(string themeName)
+    signal toggleMusicRequested()
 
     height: 22
     color: theme ? theme.bgHeader : "#181818"
@@ -119,6 +120,89 @@ Rectangle {
 
         Item {
             Layout.fillWidth: true
+        }
+
+        // Music Now-Playing Tab / Indicator (visible while playing or paused)
+        Rectangle {
+            id: musicStatusPill
+            height: 18
+            radius: 3
+            color: musicStatusMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+            visible: typeof musicPlayer !== "undefined" && musicPlayer && (musicPlayer.playbackState === "playing" || musicPlayer.playbackState === "paused")
+            Layout.preferredWidth: musicStatusRow.implicitWidth + 8
+
+            Row {
+                id: musicStatusRow
+                anchors.centerIn: parent
+                spacing: 5
+
+                // Mini animated frequency equalizer bars (4 bars)
+                Canvas {
+                    id: miniEqCanvas
+                    width: 12
+                    height: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    renderTarget: Canvas.Image
+
+                    property real phase: 0.0
+                    property bool isPlaying: typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.playbackState === "playing"
+
+                    Timer {
+                        interval: 50
+                        running: miniEqCanvas.isPlaying
+                        repeat: true
+                        onTriggered: {
+                            miniEqCanvas.phase += 0.25;
+                            miniEqCanvas.requestPaint();
+                        }
+                    }
+
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        ctx.clearRect(0, 0, width, height);
+
+                        var color = (typeof theme !== "undefined" && theme && theme.accent) ? theme.accent : "#38bdf8";
+                        ctx.fillStyle = color;
+
+                        var barW = 2;
+                        var gap = 1;
+                        var bars = 4;
+
+                        for (var i = 0; i < bars; i++) {
+                            var h = 3;
+                            if (miniEqCanvas.isPlaying) {
+                                var val = Math.sin(miniEqCanvas.phase + i * 0.9) * 0.5 + 0.5;
+                                h = Math.max(2, Math.floor(val * (height - 1)) + 1);
+                            } else {
+                                h = (i % 2 === 0) ? 3 : 5;
+                            }
+                            ctx.fillRect(i * (barW + gap), height - h, barW, h);
+                        }
+                    }
+                }
+
+                Text {
+                    text: (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.currentTitle) ? ("Music: " + musicPlayer.currentTitle) : "Music"
+                    color: (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.playbackState === "playing") ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#888888")
+                    font.pixelSize: 11
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                    anchors.verticalCenter: parent.verticalCenter
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    width: Math.min(180, implicitWidth)
+                }
+            }
+
+            MouseArea {
+                id: musicStatusMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    root.toggleMusicRequested();
+                }
+            }
         }
 
         // 4. Quick Notification / Ready State

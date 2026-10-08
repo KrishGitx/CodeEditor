@@ -11,6 +11,11 @@ Rectangle {
     property string sourceTitle: ""
     property int autoDismissDuration: 5000
 
+    property string actionButtonText: ""
+    property var actionButtonCallback: null
+    property string secondaryActionText: ""
+    property var secondaryActionCallback: null
+
     visible: opacity > 0.01
     opacity: 0.0
     width: 360
@@ -63,7 +68,7 @@ Rectangle {
         }
         onExited: {
             if (toastRoot.opacity > 0) {
-                dismissTimer.interval = 2500;
+                dismissTimer.interval = toastRoot.actionButtonText !== "" ? 6000 : 2500;
                 dismissTimer.restart();
             }
         }
@@ -152,13 +157,105 @@ Rectangle {
             maximumLineCount: 6
             elide: Text.ElideRight
         }
+
+        // Action Buttons Row (e.g. [ Smart Install ] [ Close ])
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+            Layout.bottomMargin: 2
+            spacing: 8
+            visible: toastRoot.actionButtonText !== "" || toastRoot.secondaryActionText !== ""
+
+            Item { Layout.fillWidth: true }
+
+            // Secondary Action (e.g. Close)
+            Rectangle {
+                visible: toastRoot.secondaryActionText !== ""
+                width: secText.implicitWidth + 16
+                height: 24
+                radius: 3
+                color: secMa.containsMouse ? (typeof theme !== "undefined" && theme ? theme.bgHover : "#3c3c3c") : (typeof theme !== "undefined" && theme ? theme.bgSurface : "#2d2d2d")
+                border.color: typeof theme !== "undefined" && theme ? theme.borderSubtle : "#444444"
+                border.width: 1
+
+                Text {
+                    id: secText
+                    anchors.centerIn: parent
+                    text: toastRoot.secondaryActionText
+                    color: typeof theme !== "undefined" && theme ? theme.textSecondary : "#cccccc"
+                    font.pixelSize: 11
+                }
+
+                MouseArea {
+                    id: secMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (toastRoot.secondaryActionCallback) {
+                            try { toastRoot.secondaryActionCallback(); } catch (e) {}
+                        }
+                        toastRoot.hide();
+                    }
+                }
+            }
+
+            // Primary Action (e.g. Smart Install)
+            Rectangle {
+                visible: toastRoot.actionButtonText !== ""
+                width: actRow.implicitWidth + 18
+                height: 24
+                radius: 3
+                color: actMa.containsMouse ? (typeof theme !== "undefined" && theme ? theme.accentHover : "#006cbd") : (typeof theme !== "undefined" && theme ? theme.accent : "#0078d4")
+
+                Row {
+                    id: actRow
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    VectorIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "download"
+                        size: 10
+                        color: "#ffffff"
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: toastRoot.actionButtonText
+                        color: "#ffffff"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                }
+
+                MouseArea {
+                    id: actMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var cb = toastRoot.actionButtonCallback;
+                        toastRoot.hide();
+                        if (cb) {
+                            try { cb(); } catch (e) { console.log("[NotificationToast] Action error:", e); }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    function show(msg, type, title, duration) {
+    function show(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb) {
         toastRoot.messageText = msg || "";
         toastRoot.messageType = type || "info";
         toastRoot.sourceTitle = title || "";
-        toastRoot.autoDismissDuration = duration > 0 ? duration : (type === "error" ? 7000 : 5000);
+        toastRoot.actionButtonText = actionText || "";
+        toastRoot.actionButtonCallback = (typeof actionCb === "function") ? actionCb : null;
+        toastRoot.secondaryActionText = secActionText || "";
+        toastRoot.secondaryActionCallback = (typeof secActionCb === "function") ? secActionCb : null;
+
+        toastRoot.autoDismissDuration = duration > 0 ? duration : (actionText ? 10000 : (type === "error" ? 7000 : 5000));
         toastRoot.opacity = 1.0;
         dismissTimer.interval = toastRoot.autoDismissDuration;
         dismissTimer.restart();
@@ -167,5 +264,10 @@ Rectangle {
     function hide() {
         dismissTimer.stop();
         toastRoot.opacity = 0.0;
+        toastRoot.actionButtonText = "";
+        toastRoot.actionButtonCallback = null;
+        toastRoot.secondaryActionText = "";
+        toastRoot.secondaryActionCallback = null;
     }
 }
+

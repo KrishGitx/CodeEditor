@@ -1,0 +1,69 @@
+{
+  "id": "dgx.meower",
+  "name": "meower",
+  "displayName": "Meower Coding Companion",
+  "version": "1.0.0",
+  "publisher": "DGX Community",
+  "description": "A playful editor assistant that observes idle moments to provide concise code tips and smart local suggestions.",
+  "main": "meower.py",
+  "icon": "icon.png",
+  "permissions": [
+    "editor",
+    "ai",
+    "process"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:qml",
+    "onLanguage:cpp",
+    "*"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "meower.meow",
+        "title": "Meower: Meow at Code",
+        "category": "Meower"
+      },
+      {
+        "command": "meower.suggestTip",
+        "title": "Meower: Suggest Code Improvement",
+        "category": "Meower"
+      }
+    ],
+    "fileIcons": [
+      {
+        "extension": ".meow",
+        "icon": "sparkles",
+        "color": "#f472b6",
+        "badge": "MEOW"
+      }
+    ],
+    "runners": [
+      {
+        "extension": "meow",
+        "name": "Meow Script Runner",
+        "command": "python -c \"print('Meow! Code is purr-fect!')\""
+      }
+    ],
+    "toolDependencies": [
+      {
+        "name": "meowfmt",
+        "executable": "meowfmt",
+        "installGuide": {
+          "windows": "pip install meowfmt",
+          "all": "pip install meowfmt"
+        }
+      }
+    ],
+    "radialActions": [
+      {
+        "id": "meower_action",
+        "title": "Ask Meower",
+        "icon": "sparkles",
+        "command": "meower.suggestTip"
+      }
+    ]
+  }
+}

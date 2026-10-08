@@ -600,8 +600,11 @@ Window {
                 return;
             }
         } else {
-            mainWindow.terminalVisible = true;
-            cmd = 'Write-Host "No runner configured for .' + ext + ' files." -ForegroundColor Yellow';
+            // Clean application-level unsupported runner error
+            var cleanErr = "No runner configured for ." + ext + " files.";
+            terminalPanel.addOutputLog("Build/Run", cleanErr);
+            mainWindow.showNotification(cleanErr, "warning", "Run");
+            return;
         }
 
         terminalPanel.executeCommand(cmd);

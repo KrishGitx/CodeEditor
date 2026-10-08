@@ -547,20 +547,132 @@ Item {
                 ctx.arc(w / 2, h / 2, w * 0.08, 0, Math.PI * 2);
                 ctx.fill();
             }
-            else if (n === "trash" || n === "delete") {
-                // Trash can
+            else if (n === "heart" || n === "like") {
+                // Outline Heart
                 ctx.beginPath();
-                ctx.moveTo(pad * 1.2, pad * 1.6);
-                ctx.lineTo(w - pad * 1.2, pad * 1.6);
-                ctx.moveTo(pad * 1.6, pad * 1.6);
-                ctx.lineTo(pad * 1.8, h - pad * 0.8);
-                ctx.lineTo(w - pad * 1.8, h - pad * 0.8);
-                ctx.lineTo(w - pad * 1.6, pad * 1.6);
-                ctx.moveTo(w * 0.38, pad * 1.6);
-                ctx.lineTo(w * 0.38, pad * 0.9);
-                ctx.lineTo(w * 0.62, pad * 0.9);
-                ctx.lineTo(w * 0.62, pad * 1.6);
+                var topCurveHeight = h * 0.3;
+                ctx.moveTo(w / 2, h * 0.82);
+                ctx.bezierCurveTo(w * 0.1, h * 0.55, w * 0.05, h * 0.2, w * 0.3, h * 0.2);
+                ctx.bezierCurveTo(w * 0.42, h * 0.2, w * 0.48, h * 0.32, w / 2, h * 0.38);
+                ctx.bezierCurveTo(w * 0.52, h * 0.32, w * 0.58, h * 0.2, w * 0.7, h * 0.2);
+                ctx.bezierCurveTo(w * 0.95, h * 0.2, w * 0.9, h * 0.55, w / 2, h * 0.82);
+                ctx.closePath();
                 ctx.stroke();
+            }
+            else if (n === "heart-filled" || n === "liked") {
+                // Filled Heart
+                ctx.beginPath();
+                ctx.moveTo(w / 2, h * 0.82);
+                ctx.bezierCurveTo(w * 0.1, h * 0.55, w * 0.05, h * 0.2, w * 0.3, h * 0.2);
+                ctx.bezierCurveTo(w * 0.42, h * 0.2, w * 0.48, h * 0.32, w / 2, h * 0.38);
+                ctx.bezierCurveTo(w * 0.52, h * 0.32, w * 0.58, h * 0.2, w * 0.7, h * 0.2);
+                ctx.bezierCurveTo(w * 0.95, h * 0.2, w * 0.9, h * 0.55, w / 2, h * 0.82);
+                ctx.closePath();
+                ctx.fill();
+            }
+            else if (n === "equalizer" || n === "waveform") {
+                // Animated / Static Equalizer Bars
+                var barW = Math.max(1.5, w * 0.14);
+                var gap = w * 0.09;
+                var b1H = h * 0.45;
+                var b2H = h * 0.75;
+                var b3H = h * 0.55;
+                var b4H = h * 0.35;
+                var xStart = pad;
+
+                ctx.fillRect(xStart, h - pad - b1H, barW, b1H);
+                ctx.fillRect(xStart + barW + gap, h - pad - b2H, barW, b2H);
+                ctx.fillRect(xStart + (barW + gap) * 2, h - pad - b3H, barW, b3H);
+                ctx.fillRect(xStart + (barW + gap) * 3, h - pad - b4H, barW, b4H);
+            }
+            else if (n === "file-code") {
+                // Document with code brackets
+                ctx.beginPath();
+                ctx.moveTo(pad + w * 0.1, pad);
+                ctx.lineTo(w - pad - w * 0.25, pad);
+                ctx.lineTo(w - pad, pad + h * 0.25);
+                ctx.lineTo(w - pad, h - pad);
+                ctx.lineTo(pad + w * 0.1, h - pad);
+                ctx.closePath();
+                ctx.stroke();
+
+                // Bracket < >
+                ctx.beginPath();
+                ctx.moveTo(w * 0.44, h * 0.45);
+                ctx.lineTo(w * 0.34, h * 0.58);
+                ctx.lineTo(w * 0.44, h * 0.71);
+                ctx.moveTo(w * 0.56, h * 0.45);
+                ctx.lineTo(w * 0.66, h * 0.58);
+                ctx.lineTo(w * 0.56, h * 0.71);
+                ctx.stroke();
+            }
+            else if (n === "file-image") {
+                // Document with mountain and sun
+                ctx.beginPath();
+                ctx.rect(pad, pad * 1.1, w - pad * 2, h - pad * 2.2);
+                ctx.stroke();
+                // Sun
+                ctx.beginPath();
+                ctx.arc(pad + (w - pad * 2) * 0.3, pad * 1.1 + (h - pad * 2.2) * 0.3, w * 0.1, 0, Math.PI * 2);
+                ctx.fill();
+                // Mountain
+                ctx.beginPath();
+                ctx.moveTo(pad, h - pad * 1.1);
+                ctx.lineTo(pad + (w - pad * 2) * 0.45, pad * 1.1 + (h - pad * 2.2) * 0.45);
+                ctx.lineTo(pad + (w - pad * 2) * 0.7, pad * 1.1 + (h - pad * 2.2) * 0.7);
+                ctx.lineTo(pad + (w - pad * 2) * 0.85, pad * 1.1 + (h - pad * 2.2) * 0.55);
+                ctx.lineTo(w - pad, h - pad * 1.1);
+                ctx.stroke();
+            }
+            else if (n === "file-audio" || n === "file-music") {
+                // Document with musical note
+                ctx.beginPath();
+                ctx.moveTo(pad + w * 0.1, pad);
+                ctx.lineTo(w - pad - w * 0.25, pad);
+                ctx.lineTo(w - pad, pad + h * 0.25);
+                ctx.lineTo(w - pad, h - pad);
+                ctx.lineTo(pad + w * 0.1, h - pad);
+                ctx.closePath();
+                ctx.stroke();
+                // Note
+                ctx.beginPath();
+                ctx.arc(w * 0.42, h * 0.68, w * 0.1, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(w * 0.52, h * 0.68);
+                ctx.lineTo(w * 0.52, h * 0.42);
+                ctx.lineTo(w * 0.68, h * 0.36);
+                ctx.lineTo(w * 0.68, h * 0.52);
+                ctx.stroke();
+            }
+            else if (n === "file-binary" || n === "file-exe") {
+                // Binary / Terminal file
+                ctx.beginPath();
+                ctx.rect(pad, pad * 1.1, w - pad * 2, h - pad * 2.2);
+                ctx.stroke();
+                // Prompt >_
+                ctx.beginPath();
+                ctx.moveTo(pad + w * 0.15, pad * 1.1 + h * 0.25);
+                ctx.lineTo(pad + w * 0.35, pad * 1.1 + h * 0.4);
+                ctx.lineTo(pad + w * 0.15, pad * 1.1 + h * 0.55);
+                ctx.moveTo(pad + w * 0.42, pad * 1.1 + h * 0.55);
+                ctx.lineTo(pad + w * 0.65, pad * 1.1 + h * 0.55);
+                ctx.stroke();
+            }
+            else if (n === "file-archive" || n === "file-zip") {
+                // Zip file
+                ctx.beginPath();
+                ctx.moveTo(pad + w * 0.1, pad);
+                ctx.lineTo(w - pad - w * 0.25, pad);
+                ctx.lineTo(w - pad, pad + h * 0.25);
+                ctx.lineTo(w - pad, h - pad);
+                ctx.lineTo(pad + w * 0.1, h - pad);
+                ctx.closePath();
+                ctx.stroke();
+                // Zipper teeth
+                for (var zY = pad + h * 0.15; zY <= h - pad * 1.5; zY += h * 0.12) {
+                    ctx.fillRect(w * 0.45, zY, w * 0.1, h * 0.05);
+                }
             }
             else {
                 // Default bullet/dot

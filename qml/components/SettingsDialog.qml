@@ -110,31 +110,61 @@ Rectangle {
     function assignActionToSelectedSlot(actionObj) {
         if (!actionObj || selectedRadialSlot < 0 || selectedRadialSlot >= radialConfigItems.length) return;
         var arr = radialConfigItems.slice();
+        var cmds = actionObj.commands;
+        if (!cmds || !Array.isArray(cmds) || cmds.length === 0) {
+            if (actionObj.action) {
+                cmds = actionObj.action.split("\n");
+            } else {
+                cmds = [];
+            }
+        }
         arr[selectedRadialSlot] = {
             slot: selectedRadialSlot + 1,
             id: actionObj.id,
-            label: actionObj.label,
+            label: actionObj.label || actionObj.name || "Action",
+            name: actionObj.name || actionObj.label || "Action",
             icon: actionObj.icon || "file",
             shortcut: actionObj.shortcut || "",
             custom: actionObj.custom === true,
-            action: actionObj.action || "",
-            action_type: actionObj.action_type || ""
+            action: actionObj.action || (cmds ? cmds.join("\n") : ""),
+            commands: cmds,
+            action_type: actionObj.action_type || actionObj.type || "bash",
+            type: actionObj.type || actionObj.action_type || "bash"
         };
         radialConfigItems = arr;
         saveRadialConfig();
     }
 
-    function addCustomAction(name, cmd, actionType) {
-        if (!name || !cmd) return;
+    function addCustomAction(name, cmdOrCmds, actionType) {
+        if (!name || !cmdOrCmds) return;
         var list = customActions.slice();
+        var cmdList = [];
+        if (Array.isArray(cmdOrCmds)) {
+            for (var i = 0; i < cmdOrCmds.length; i++) {
+                var c = (cmdOrCmds[i] || "").trim();
+                if (c.length > 0) cmdList.push(c);
+            }
+        } else if (typeof cmdOrCmds === "string") {
+            var rawLines = cmdOrCmds.split("\n");
+            for (var j = 0; j < rawLines.length; j++) {
+                var l = rawLines[j].trim();
+                if (l.length > 0) cmdList.push(l);
+            }
+        }
+        if (cmdList.length === 0) return;
+
+        var actType = (actionType || "bash").toLowerCase();
         var newAction = {
             id: "custom_" + Date.now(),
+            name: name,
             label: name,
             icon: "code",
-            shortcut: (actionType === "cmd" ? "CMD" : "Bash"),
-            action_type: actionType || "bash",
+            shortcut: (actType === "cmd" ? "CMD" : "Bash"),
+            action_type: actType,
+            type: actType,
             custom: true,
-            action: cmd
+            action: cmdList.join("\n"),
+            commands: cmdList
         };
         list.push(newAction);
         customActions = list;
@@ -1613,7 +1643,7 @@ Rectangle {
                                                         font.bold: true
                                                     }
                                                     Text {
-                                                        text: modelData.custom ? ((modelData.action_type === "cmd" ? "CMD: " : "Bash: ") + modelData.action) : (modelData.shortcut || "")
+                                                        text: modelData.custom ? ((modelData.action_type === "cmd" ? "CMD: " : "Bash: ") + (modelData.commands && modelData.commands.length > 1 ? (modelData.commands.length + " cmds: " + modelData.commands.join(" && ")) : (modelData.action || (modelData.commands ? modelData.commands.join(" ") : "")))) : (modelData.shortcut || "")
                                                         color: theme ? theme.textMuted : "#888888"
                                                         font.pixelSize: 9
                                                         elide: Text.ElideRight
@@ -1676,7 +1706,7 @@ Rectangle {
                                 }
                             }
 
-                            // 4. ADD CUSTOM ACTION
+                            // 4. ADD CUSTOM ACTION (Supports Single or Multi-Command Sequences)
                             Rectangle {
                                 Layout.fillWidth: true
                                 radius: 6
@@ -1688,11 +1718,11 @@ Rectangle {
                                 ColumnLayout {
                                     id: customActionCol
                                     anchors.fill: parent
-                                    anchors.margins: 10
+                                    anchors.margins: 12
                                     spacing: 8
 
                                     Text {
-                                        text: "+ Add Custom Action (Bash script or CMD command)"
+                                        text: "+ Add Custom Action (Bash script or CMD sequence)"
                                         color: theme ? theme.accent : "#38bdf8"
                                         font.pixelSize: 11
                                         font.bold: true
@@ -1704,24 +1734,9 @@ Rectangle {
 
                                         TextField {
                                             id: customNameInput
-                                            Layout.preferredWidth: 140
-                                            height: 28
-                                            placeholderText: "Action Name (e.g. Build)"
-                                            font.pixelSize: 11
-                                            color: theme ? theme.textPrimary : "#ffffff"
-                                            placeholderTextColor: theme ? theme.textMuted : "#666666"
-                                            background: Rectangle {
-                                                color: theme ? theme.bgInput : "#141822"
-                                                border.color: theme ? theme.borderNormal : "#333a4d"
-                                                radius: 4
-                                            }
-                                        }
-
-                                        TextField {
-                                            id: customCmdInput
                                             Layout.fillWidth: true
                                             height: 28
-                                            placeholderText: "Command (e.g. ./build.sh or npm test)"
+                                            placeholderText: "Action Name (e.g. Git Update, Deploy Script)"
                                             font.pixelSize: 11
                                             color: theme ? theme.textPrimary : "#ffffff"
                                             placeholderTextColor: theme ? theme.textMuted : "#666666"
@@ -1734,13 +1749,58 @@ Rectangle {
 
                                         ComboBox {
                                             id: customTypeCombo
-                                            Layout.preferredWidth: 80
+                                            Layout.preferredWidth: 90
                                             height: 28
                                             model: ["Bash", "CMD"]
                                         }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+
+                                        Text {
+                                            text: "Commands (single command or multi-command sequence, one per line):"
+                                            color: theme ? theme.textSecondary : "#a0a0a0"
+                                            font.pixelSize: 10
+                                        }
 
                                         Rectangle {
-                                            width: 90
+                                            Layout.fillWidth: true
+                                            height: 76
+                                            radius: 4
+                                            color: theme ? theme.bgInput : "#141822"
+                                            border.color: theme ? theme.borderNormal : "#333a4d"
+                                            border.width: 1
+
+                                            ScrollView {
+                                                anchors.fill: parent
+                                                anchors.margins: 6
+                                                clip: true
+
+                                                TextArea {
+                                                    id: customCmdsInput
+                                                    placeholderText: "git add .\ngit commit -m \"Update\"\ngit push"
+                                                    font.pixelSize: 11
+                                                    font.family: (theme && theme.fontFamily) ? theme.fontFamily : "Consolas, monospace"
+                                                    color: theme ? theme.textPrimary : "#ffffff"
+                                                    placeholderTextColor: theme ? theme.textMuted : "#666666"
+                                                    wrapMode: TextEdit.NoWrap
+                                                    selectByMouse: true
+                                                    background: null
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        Item { Layout.fillWidth: true }
+
+                                        Rectangle {
+                                            width: 100
                                             height: 28
                                             radius: 4
                                             color: addCustomBtnMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
@@ -1760,11 +1820,21 @@ Rectangle {
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: {
                                                     var name = (customNameInput.text || "").trim();
-                                                    var cmd = (customCmdInput.text || "").trim();
-                                                    if (name.length > 0 && cmd.length > 0) {
-                                                        root.addCustomAction(name, cmd, customTypeCombo.currentText.toLowerCase());
-                                                        customNameInput.text = "";
-                                                        customCmdInput.text = "";
+                                                    var rawCmds = (customCmdsInput.text || "").trim();
+                                                    if (name.length > 0 && rawCmds.length > 0) {
+                                                        var lines = rawCmds.split("\n");
+                                                        var cmdList = [];
+                                                        for (var i = 0; i < lines.length; i++) {
+                                                            var line = lines[i].trim();
+                                                            if (line.length > 0) {
+                                                                cmdList.push(line);
+                                                            }
+                                                        }
+                                                        if (cmdList.length > 0) {
+                                                            root.addCustomAction(name, cmdList, customTypeCombo.currentText.toLowerCase());
+                                                            customNameInput.text = "";
+                                                            customCmdsInput.text = "";
+                                                        }
                                                     }
                                                 }
                                             }

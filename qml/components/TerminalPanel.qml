@@ -949,6 +949,42 @@ Rectangle {
         }
     }
 
+    function executeCustomAction(customAction, actionType, commands) {
+        root.activeTab = "TERMINAL";
+        var cmdList = [];
+        if (commands && Array.isArray(commands) && commands.length > 0) {
+            for (var i = 0; i < commands.length; i++) {
+                var c = (commands[i] || "").trim();
+                if (c.length > 0) cmdList.push(c);
+            }
+        } else if (customAction) {
+            var rawLines = customAction.split("\n");
+            for (var j = 0; j < rawLines.length; j++) {
+                var l = rawLines[j].trim();
+                if (l.length > 0) cmdList.push(l);
+            }
+        }
+
+        if (cmdList.length === 0) return;
+
+        var shellType = (actionType || "bash").toLowerCase();
+
+        if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.execute_command_sequence) {
+            terminalBackend.execute_command_sequence(cmdList, shellType);
+            return;
+        }
+
+        if (cmdList.length === 1) {
+            root.executeCommand(cmdList[0]);
+        } else {
+            if (shellType === "cmd") {
+                root.executeCommand('cmd /c "' + cmdList.join(' && ') + '"');
+            } else {
+                root.executeCommand(cmdList.join(' && '));
+            }
+        }
+    }
+
     function clearTerminal() {
         if (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.clear) {
             terminalBackend.clear();

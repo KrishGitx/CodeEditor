@@ -288,9 +288,10 @@ Rectangle {
 
                             // File / Folder Icon
                             VectorIcon {
-                                name: itemRow.isFolder ? (itemRow.isCollapsed ? "folder" : "folder-open") : "file"
+                                readonly property var fileInfo: itemRow.isFolder ? null : root.getFileIconInfo(model.name)
+                                name: itemRow.isFolder ? (itemRow.isCollapsed ? "folder" : "folder-open") : (fileInfo ? fileInfo.icon : "file")
                                 size: 12
-                                color: itemRow.isFolder ? (theme ? theme.textSecondary : "#858585") : (theme ? theme.textMuted : "#656565")
+                                color: itemRow.isFolder ? (theme ? theme.textSecondary : "#858585") : (fileInfo ? fileInfo.color : (theme ? theme.textMuted : "#656565"))
                             }
 
                             // Label
@@ -1528,5 +1529,63 @@ Rectangle {
                 }
             }
         }
+    }
+
+    function getFileIconInfo(fileName) {
+        if (!fileName) return { icon: "file", color: theme ? theme.textMuted : "#656565" };
+        var lower = fileName.toLowerCase();
+
+        // 1. Check extension-registered custom file icons from ExtensionManager
+        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_custom_file_icons) {
+            var customIcons = extensionManager.get_custom_file_icons();
+            if (customIcons && customIcons.length > 0) {
+                for (var c = 0; c < customIcons.length; c++) {
+                    var item = customIcons[c];
+                    if (item.filename && lower === item.filename.toLowerCase()) {
+                        return { icon: item.icon || "file-code", color: item.color || "#38bdf8" };
+                    }
+                    if (item.extension && (lower.endsWith(item.extension.toLowerCase()) || lower.endsWith("." + item.extension.toLowerCase()))) {
+                        return { icon: item.icon || "file-code", color: item.color || "#38bdf8" };
+                    }
+                }
+            }
+        }
+
+        // 2. Special filenames
+        if (lower === "package.json" || lower === "package-lock.json") return { icon: "file-code", color: "#facc15" };
+        if (lower === "cargo.toml" || lower === "cargo.lock") return { icon: "file-code", color: "#ea580c" };
+        if (lower === "cmakelists.txt") return { icon: "file-code", color: "#60a5fa" };
+        if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return { icon: "file-binary", color: "#38bdf8" };
+        if (lower === "extension.json") return { icon: "puzzle", color: "#a855f7" };
+        if (lower === ".gitignore" || lower === ".gitmodules") return { icon: "file-text", color: "#f97316" };
+        if (lower === "readme.md") return { icon: "file-text", color: "#38bdf8" };
+
+        // 3. Extension based mappings
+        var ext = lower.split(".").pop();
+        if (ext === "py" || ext === "pyw") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") return { icon: "file-code", color: "#60a5fa" };
+        if (ext === "c") return { icon: "file-code", color: "#93c5fd" };
+        if (ext === "h" || ext === "hpp" || ext === "hxx") return { icon: "file-code", color: "#a78bfa" };
+        if (ext === "qml") return { icon: "file-code", color: "#4ade80" };
+        if (ext === "js" || ext === "mjs" || ext === "cjs") return { icon: "file-code", color: "#facc15" };
+        if (ext === "jsx") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "ts") return { icon: "file-code", color: "#3b82f6" };
+        if (ext === "tsx") return { icon: "file-code", color: "#60a5fa" };
+        if (ext === "html" || ext === "htm") return { icon: "file-code", color: "#f97316" };
+        if (ext === "css" || ext === "scss" || ext === "less") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "json") return { icon: "file-code", color: "#facc15" };
+        if (ext === "xml" || ext === "svg") return { icon: "file-code", color: "#fb923c" };
+        if (ext === "yaml" || ext === "yml") return { icon: "file-code", color: "#ef4444" };
+        if (ext === "rs") return { icon: "file-code", color: "#ea580c" };
+        if (ext === "go") return { icon: "file-code", color: "#06b6d4" };
+        if (ext === "java") return { icon: "file-code", color: "#f87171" };
+        if (ext === "cs") return { icon: "file-code", color: "#a855f7" };
+        if (ext === "md" || ext === "markdown") return { icon: "file-text", color: "#38bdf8" };
+        if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "ico" || ext === "bmp") return { icon: "file-image", color: "#a855f7" };
+        if (ext === "mp3" || ext === "wav" || ext === "ogg" || ext === "flac" || ext === "m4a") return { icon: "file-audio", color: "#ec4899" };
+        if (ext === "exe" || ext === "bat" || ext === "cmd" || ext === "ps1" || ext === "sh" || ext === "bin") return { icon: "file-binary", color: "#4ade80" };
+        if (ext === "zip" || ext === "tar" || ext === "gz" || ext === "7z" || ext === "rar" || ext === "dgxext" || ext === "vsix") return { icon: "file-archive", color: "#f59e0b" };
+
+        return { icon: "file", color: theme ? theme.textMuted : "#656565" };
     }
 }
