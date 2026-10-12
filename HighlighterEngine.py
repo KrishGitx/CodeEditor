@@ -307,22 +307,38 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
         new_lang = EXT_TO_LANG.get(ext, None)
         if not new_lang and explicit_lang:
-            new_lang = explicit_lang.lower()
+            new_lang = explicit_lang.lower().strip()
         if not new_lang:
             new_lang = "text"
 
-        if new_lang != self.language or force_rehighlight:
+        # Alias normalization
+        if new_lang in ("shell", "sh", "bash", "powershell", "bat", "cmd", "batch"):
+            new_lang = "bash" if new_lang in ("shell", "sh", "bash") else new_lang
+        elif new_lang in ("plain", "plaintext"):
+            new_lang = "text"
+        elif new_lang in ("js", "javascript"):
+            new_lang = "javascript"
+        elif new_lang in ("ts", "typescript"):
+            new_lang = "typescript"
+        elif new_lang in ("py", "python"):
+            new_lang = "python"
+        elif new_lang in ("c++", "cpp"):
+            new_lang = "cpp"
+
+        lang_changed = (new_lang != self.language or self.unified_regex is None)
+        if lang_changed or force_rehighlight:
             self.language = new_lang
             self._build_language_regex(new_lang)
             self._slice_timer.stop()
             self._pending_blocks_queue.clear()
             self.formatted_blocks.clear()
-            doc = self.document()
-            if doc and force_rehighlight:
-                total_blocks = doc.blockCount()
-                self.viewport_start = 0
-                self.viewport_end = min(total_blocks, 150 + self.buffer_size)
-                self.rehighlight()
+
+        doc = self.document()
+        if doc and (force_rehighlight or lang_changed):
+            total_blocks = doc.blockCount()
+            self.viewport_start = 0
+            self.viewport_end = min(total_blocks, 150 + self.buffer_size)
+            self.rehighlight()
 
     def _init_formats(self):
         self.formats.clear()
@@ -364,23 +380,6 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             self._init_formats()
             if self.document():
                 self.rehighlight()
-
-    def set_language_for_file(self, file_path, explicit_lang=None, force_rehighlight=True):
-        self.file_path = file_path or ""
-        ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
-        new_lang = EXT_TO_LANG.get(ext, None)
-        if not new_lang and explicit_lang:
-            new_lang = explicit_lang.lower()
-        if not new_lang:
-            new_lang = "text"
-
-        lang_changed = (new_lang != self.language or self.unified_regex is None)
-        if lang_changed:
-            self.language = new_lang
-            self._build_language_regex(new_lang)
-
-        if (force_rehighlight or lang_changed) and self.document():
-            self.rehighlight()
 
     def _build_language_regex(self, lang):
         if lang == "text" or lang == "binary" or lang == "plain":
@@ -558,7 +557,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             self.unified_regex = re.compile(pattern, re.IGNORECASE)
 
         # 10. Bash / Shell / PowerShell
-        elif lang in ("bash", "powershell", "batch"):
+        elif lang in ("bash", "powershell", "batch", "shell"):
             kw = r"\b(?:if|else|elif|fi|for|in|while|do|done|case|esac|function|echo|exit|set|export)\b"
             pattern = (
                 r"((?:#|::|REM\s).*)|"                            # 1: comment
@@ -668,7 +667,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         rem_text = text[offset:]
         s_text = rem_text.lstrip()
         is_comment = False
-        if self.language in ("python", "bash", "powershell", "yaml", "toml") and s_text.startswith("#"):
+        if self.language in ("python", "bash", "powershell", "yaml", "toml", "shell") and s_text.startswith("#"):
             is_comment = True
         elif self.language in ("c", "cpp", "csharp", "java", "javascript", "typescript", "qml", "rust", "go", "css", "scss") and s_text.startswith("//"):
             is_comment = True

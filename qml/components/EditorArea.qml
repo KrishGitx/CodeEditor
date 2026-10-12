@@ -133,42 +133,111 @@ Item {
             if (available === false) {
                 var langName = root.currentLanguageId || "this language";
                 var extStr = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
-                var proposal = null;
-
-                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
-                    proposal = extensionManager.suggest_smart_install("formatter", langName + " formatter", root.currentLanguageId, extStr, root.activeFilePath || root.activeFileName);
+                var installCtx = null;
+                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                    installCtx = extensionManager.create_smart_install_context(
+                        "Format " + (root.currentLanguageId || extStr || "document"),
+                        "formatter",
+                        root.currentLanguageId,
+                        root.activeFilePath || root.activeFileName,
+                        "",
+                        langName + " formatter",
+                        0,
+                        "",
+                        message || ("No formatter installed for " + (root.currentLanguageId || extStr || "this language") + "."),
+                        "No formatter installed for " + (root.currentLanguageId || extStr || "this language") + ".",
+                        "Missing formatter tool",
+                        langName + " formatter",
+                        "format"
+                    );
                 }
 
-                if (proposal && !proposal.isInstalled && proposal.command) {
-                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                        mainWindow.showNotification(
-                            message || ("No formatter installed for " + (root.currentLanguageId || extStr || "this language") + "."),
-                            "warning",
-                            "Formatter",
-                            9000,
-                            "Smart Install",
-                            function() {
-                                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
-                                    smartInstallDialog.openProposal(proposal);
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification(
+                        message || ("No formatter installed for " + (root.currentLanguageId || extStr || "this language") + "."),
+                        "warning",
+                        "Formatter",
+                        10000,
+                        "Smart Install",
+                        function() {
+                            console.log("[SmartInstall] Smart Install clicked");
+                            if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                if (installCtx) {
+                                    smartInstallDialog.openContext(installCtx);
+                                } else if (extensionManager && extensionManager.suggest_smart_install) {
+                                    smartInstallDialog.openProposal(extensionManager.suggest_smart_install("formatter", langName + " formatter", root.currentLanguageId, extStr, root.activeFilePath || root.activeFileName));
                                 }
-                            },
-                            "Close",
-                            function() {}
-                        );
-                    }
-                } else {
-                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                        mainWindow.showNotification(message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."), "warning", "Formatter");
-                    }
+                            }
+                        },
+                        "Close",
+                        function() {}
+                    );
                 }
                 return;
             }
 
             if (!success) {
+                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                    if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                        smartInstallDialog.reportRetryResult(false, message || "Formatting failed.");
+                    }
+                }
+                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.report_retry_result) {
+                    extensionManager.report_retry_result(root.currentLanguageId || "formatter", false, message || "Formatting failed.");
+                }
+
+                var errLang = root.currentLanguageId || "this language";
+                var errExt = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
+                var errCtx = null;
+                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                    errCtx = extensionManager.create_smart_install_context(
+                        "Format " + (root.currentLanguageId || errExt || "document"),
+                        "formatter",
+                        root.currentLanguageId,
+                        root.activeFilePath || root.activeFileName,
+                        "",
+                        errLang + " formatter",
+                        1,
+                        "",
+                        message || "Formatting failed.",
+                        message || "Formatting failed.",
+                        "Formatter execution failed",
+                        errLang + " formatter",
+                        "format"
+                    );
+                }
+
                 if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                    mainWindow.showNotification(message || "Formatting failed.", "error", "Formatter");
+                    mainWindow.showNotification(
+                        message || "Formatting failed.",
+                        "error",
+                        "Formatter",
+                        10000,
+                        "Smart Install",
+                        function() {
+                            console.log("[SmartInstall] Smart Install clicked");
+                            if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                if (errCtx) {
+                                    smartInstallDialog.openContext(errCtx);
+                                } else if (extensionManager && extensionManager.suggest_smart_install) {
+                                    smartInstallDialog.openProposal(extensionManager.suggest_smart_install("formatter", errLang + " formatter", root.currentLanguageId, errExt, root.activeFilePath || root.activeFileName));
+                                }
+                            }
+                        },
+                        "Close",
+                        function() {}
+                    );
                 }
                 return;
+            }
+
+            if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                    smartInstallDialog.reportRetryResult(true, "");
+                }
+            }
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.report_retry_result) {
+                extensionManager.report_retry_result(root.currentLanguageId || "formatter", true, "");
             }
 
             var formattedText = formattedCode || currentText;
@@ -627,7 +696,7 @@ Item {
     signal requestOpenFolder()
     signal requestRunFile()
 
-    signal askAi(string code, int selectionStart, int selectionEnd, string languageId)
+    signal askAi(string code, int selectionStart, int selectionEnd, string languageId, string surroundingContext, int totalDocLength)
     signal sendAiPrompt(string prompt)
 
     property string pendingAiCode: ""
@@ -2525,7 +2594,7 @@ Item {
                             }
                             Action {
                                 text: (root.codeTextArea && root.codeTextArea.selectedText) ? "Ask AI": "Run File\tF5"
-                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText, root.codeTextArea.selectionStart, root.codeTextArea.selectionEnd, root.currentLanguageId) : root.requestRunFile()
+                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText, root.codeTextArea.selectionStart, root.codeTextArea.selectionEnd, root.currentLanguageId, root.codeTextArea.text, (root.codeTextArea.text ? root.codeTextArea.text.length : 0)) : root.requestRunFile()
                             }
 
                             MenuSeparator {
@@ -3221,7 +3290,7 @@ Item {
             }
             var code = (codeTextArea && codeTextArea.selectedText) ? codeTextArea.selectedText : "";
             if (code.length > 0) {
-                root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
+                root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId, (codeTextArea ? codeTextArea.text : ""), (codeTextArea && codeTextArea.text ? codeTextArea.text.length : 0));
             }
         } else if (actionId === "ai" || actionId === "radial_ai") {
             // 2. Radial Menu -> AI: ONLY this action opens the compact Ctrl+P prompt popup
@@ -3255,7 +3324,7 @@ Item {
             }
         } else if (actionId === "run") {
             if (codeTextArea && codeTextArea.selectedText && codeTextArea.selectedText.trim().length > 0) {
-                root.askAi(codeTextArea.selectedText, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
+                root.askAi(codeTextArea.selectedText, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId, (codeTextArea ? codeTextArea.text : ""), (codeTextArea && codeTextArea.text ? codeTextArea.text.length : 0));
                 return;
             }
             var ext = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
@@ -3363,39 +3432,90 @@ Item {
                 if (formatResult.available === false) {
                     var langNameSync = root.currentLanguageId || "this language";
                     var extStrSync = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
-                    var proposalSync = null;
-
-                    if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
-                        proposalSync = extensionManager.suggest_smart_install("formatter", langNameSync + " formatter", root.currentLanguageId, extStrSync, effectivePath);
+                    var syncCtx = null;
+                    if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                        syncCtx = extensionManager.create_smart_install_context(
+                            "Format " + (root.currentLanguageId || extStrSync || "document"),
+                            "formatter",
+                            root.currentLanguageId,
+                            effectivePath,
+                            "",
+                            langNameSync + " formatter",
+                            0,
+                            "",
+                            formatResult.message || ("No formatter installed for " + (root.currentLanguageId || extStrSync || "this language") + "."),
+                            "No formatter installed for " + (root.currentLanguageId || extStrSync || "this language") + ".",
+                            "Missing formatter tool",
+                            langNameSync + " formatter",
+                            "format"
+                        );
                     }
 
-                    if (proposalSync && !proposalSync.isInstalled && proposalSync.command) {
-                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                            mainWindow.showNotification(
-                                formatResult.message || ("No formatter installed for " + (root.currentLanguageId || extStrSync || "this language") + "."),
-                                "warning",
-                                "Formatter",
-                                9000,
-                                "Smart Install",
-                                function() {
-                                    if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
-                                        smartInstallDialog.openProposal(proposalSync);
+                    if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                        mainWindow.showNotification(
+                            formatResult.message || ("No formatter installed for " + (root.currentLanguageId || extStrSync || "this language") + "."),
+                            "warning",
+                            "Formatter",
+                            10000,
+                            "Smart Install",
+                            function() {
+                                console.log("[SmartInstall] Smart Install clicked");
+                                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                    if (syncCtx) {
+                                        smartInstallDialog.openContext(syncCtx);
+                                    } else if (extensionManager && extensionManager.suggest_smart_install) {
+                                        smartInstallDialog.openProposal(extensionManager.suggest_smart_install("formatter", langNameSync + " formatter", root.currentLanguageId, extStrSync, effectivePath));
                                     }
-                                },
-                                "Close",
-                                function() {}
-                            );
-                        }
-                    } else {
-                        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                            mainWindow.showNotification(formatResult.message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."), "warning", "Formatter");
-                        }
+                                }
+                            },
+                            "Close",
+                            function() {}
+                        );
                     }
                     return;
                 }
                 if (!formatResult.success) {
+                    var syncErrLang = root.currentLanguageId || "this language";
+                    var syncErrExt = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
+                    var syncErrCtx = null;
+                    if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                        syncErrCtx = extensionManager.create_smart_install_context(
+                            "Format " + (root.currentLanguageId || syncErrExt || "document"),
+                            "formatter",
+                            root.currentLanguageId,
+                            effectivePath,
+                            "",
+                            syncErrLang + " formatter",
+                            1,
+                            "",
+                            formatResult.message || "Formatting failed.",
+                            formatResult.message || "Formatting failed.",
+                            "Formatter execution failed",
+                            syncErrLang + " formatter",
+                            "format"
+                        );
+                    }
+
                     if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                        mainWindow.showNotification(formatResult.message || "Formatting failed.", "error", "Formatter");
+                        mainWindow.showNotification(
+                            formatResult.message || "Formatting failed.",
+                            "error",
+                            "Formatter",
+                            10000,
+                            "Smart Install",
+                            function() {
+                                console.log("[SmartInstall] Smart Install clicked");
+                                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                                    if (syncErrCtx) {
+                                        smartInstallDialog.openContext(syncErrCtx);
+                                    } else if (extensionManager && extensionManager.suggest_smart_install) {
+                                        smartInstallDialog.openProposal(extensionManager.suggest_smart_install("formatter", syncErrLang + " formatter", root.currentLanguageId, syncErrExt, effectivePath));
+                                    }
+                                }
+                            },
+                            "Close",
+                            function() {}
+                        );
                     }
                     return;
                 }
@@ -3419,32 +3539,44 @@ Item {
         }
 
         var warnLang = lang || ext || "this file";
-        var trailingProposal = null;
-        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
-            trailingProposal = extensionManager.suggest_smart_install("formatter", warnLang + " formatter", root.currentLanguageId, ext, effectivePath);
+        var trailingCtx = null;
+        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+            trailingCtx = extensionManager.create_smart_install_context(
+                "Format " + (root.currentLanguageId || warnLang || "document"),
+                "formatter",
+                root.currentLanguageId,
+                effectivePath,
+                "",
+                warnLang + " formatter",
+                0,
+                "",
+                "No formatter installed for " + warnLang + ".",
+                "No formatter installed for " + warnLang + ".",
+                "Missing formatter tool",
+                warnLang + " formatter",
+                "format"
+            );
         }
-        if (trailingProposal && !trailingProposal.isInstalled && trailingProposal.command) {
-            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                mainWindow.showNotification(
-                    "No formatter installed for " + warnLang + ".",
-                    "warning",
-                    "Formatter",
-                    9000,
-                    "Smart Install",
-                    function() {
-                        if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
-                            smartInstallDialog.openProposal(trailingProposal);
+        if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+            mainWindow.showNotification(
+                "No formatter installed for " + warnLang + ".",
+                "warning",
+                "Formatter",
+                10000,
+                "Smart Install",
+                function() {
+                    console.log("[SmartInstall] Smart Install clicked");
+                    if (typeof smartInstallDialog !== "undefined" && smartInstallDialog) {
+                        if (trailingCtx) {
+                            smartInstallDialog.openContext(trailingCtx);
+                        } else if (extensionManager && extensionManager.suggest_smart_install) {
+                            smartInstallDialog.openProposal(extensionManager.suggest_smart_install("formatter", warnLang + " formatter", root.currentLanguageId, ext, effectivePath));
                         }
-                    },
-                    "Close",
-                    function() {}
-                );
-            }
-        } else {
-            var warnMsg = "No formatter is currently installed for '" + warnLang + "'.";
-            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
-                mainWindow.showNotification(warnMsg, "warning", "Formatter");
-            }
+                    }
+                },
+                "Close",
+                function() {}
+            );
         }
     }
 
@@ -4505,8 +4637,13 @@ Item {
                 if (i === root.activeTabIndex) {
                     root.currentLanguage = langObj.name;
                     root.currentLanguageId = langObj.id;
-                    if (typeof backend !== "undefined" && backend && backend.set_active_file) {
-                        backend.set_active_file(normNew, langObj.id);
+                    if (typeof backend !== "undefined" && backend) {
+                        if (backend.set_active_file) {
+                            backend.set_active_file(normNew, langObj.id);
+                        }
+                        if (backend.register_text_area && root.codeTextArea) {
+                            backend.register_text_area(root.codeTextArea, normNew, langObj.id);
+                        }
                     }
                     root.activeFileChanged(normNew, newFileName, langObj.name, t.isDirty || false);
                 }
@@ -4591,6 +4728,9 @@ Item {
 
         if (typeof backend !== "undefined" && backend) {
             backend.save_file(cleanPath, canonical);
+            if (backend.set_active_file) {
+                backend.set_active_file(cleanPath, langObj.id);
+            }
             if (backend.register_text_area && root.codeTextArea) {
                 backend.register_text_area(root.codeTextArea, cleanPath, langObj.id);
             }
@@ -4655,10 +4795,14 @@ Item {
     }
 
     function replaceSelection(startPos, endPos, newCode, originalText) {
-        if (!codeTextArea) return false;
+        if (!codeTextArea) {
+            console.log("[AIReplacement] Replacement applied: false");
+            return false;
+        }
         var docText = codeTextArea.text;
         var textLen = docText.length;
         if (startPos === undefined || startPos < 0 || endPos === undefined || endPos < startPos) {
+            console.log("[AIReplacement] Replacement applied: false");
             return false;
         }
         var s = Math.min(startPos, textLen);
@@ -4674,8 +4818,21 @@ Item {
                     e = foundIndex + originalText.length;
                 } else {
                     console.warn("[EditorArea] Selection text mismatch, skipping replace to avoid altering wrong code.");
+                    console.log("[AIReplacement] Replacement applied: false");
                     return false;
                 }
+            }
+
+            // Severe scope hazard check: Prevent replacing large selection with a tiny partial snippet
+            var origLines = originalText.trim().split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+            var newLines = (newCode || "").trim().split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+            if (origLines.length >= 8 && newLines.length <= 3) {
+                console.warn("[EditorArea] Aborting replacement: replacement has only " + newLines.length + " lines for a " + origLines.length + "-line selection.");
+                if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                    mainWindow.showNotification("AI returned a partial snippet instead of the complete selected scope. Replacement was safely blocked.", "warning", "AI Replacement");
+                }
+                console.log("[AIReplacement] Replacement applied: false");
+                return false;
             }
         }
 
@@ -4688,6 +4845,7 @@ Item {
         root.clearPendingAiReplacement();
         root.updateCursorPosition();
         root.ensureCursorVisible();
+        console.log("[AIReplacement] Replacement applied: true");
         return true;
     }
 

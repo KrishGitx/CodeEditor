@@ -14,6 +14,8 @@ import zipfile
 import subprocess
 import threading
 import glob
+import re
+import platform
 import importlib.util
 from typing import Dict, List, Optional, Any, Callable
 from PySide6.QtCore import QObject, Signal, Slot
@@ -29,13 +31,183 @@ def get_current_os() -> str:
     return "linux"
 
 
+def resolve_python_tool(package_name: str, executable_name: Optional[str] = None, python_executable: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Identifies the active Python interpreter and its environment,
+    checks whether package_name is installed in THAT environment,
+    and resolves the console-script executable from that environment.
+    Caches nothing that can become stale after installation.
+    """
+    py_exec = python_executable or sys.executable
+    if not py_exec or not os.path.exists(py_exec):
+        py_exec = sys.executable
+
+    exec_name = executable_name or package_name
+    is_win = sys.platform.startswith("win")
+    bin_name = f"{exec_name}.exe" if is_win else exec_name
+
+    py_dir = os.path.dirname(os.path.abspath(py_exec))
+    env_root = os.path.dirname(py_dir) if os.path.basename(py_dir).lower() in ("scripts", "bin") else py_dir
+
+    candidate_dirs = [
+        # 1. Scripts/bin in same dir as python
+        py_dir,
+        os.path.join(py_dir, "Scripts"),
+        os.path.join(py_dir, "bin"),
+        # 2. Virtualenv / prefix root
+        os.path.join(env_root, "Scripts"),
+        os.path.join(env_root, "bin"),
+        os.path.join(sys.prefix, "Scripts"),
+        os.path.join(sys.prefix, "bin"),
+        os.path.join(sys.base_prefix, "Scripts"),
+        os.path.join(sys.base_prefix, "bin"),
+    ]
+
+    if is_win:
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            candidate_dirs.append(os.path.join(local_app_data, "Programs", "Python", "*", "Scripts"))
+            candidate_dirs.append(os.path.join(local_app_data, "Python", "*", "Scripts"))
+            candidate_dirs.append(os.path.join(local_app_data, "Programs", "Python", "*"))
+        app_data = os.environ.get("APPDATA", "")
+        if app_data:
+            candidate_dirs.append(os.path.join(app_data, "Python", "*", "Scripts"))
+
+    resolved_path = ""
+    for c_dir in candidate_dirs:
+        if "*" in c_dir:
+            for g_dir in glob.glob(c_dir):
+                p = os.path.join(g_dir, bin_name)
+                if os.path.isfile(p):
+                    resolved_path = os.path.abspath(p)
+                    break
+        else:
+            p = os.path.join(c_dir, bin_name)
+            if os.path.isfile(p):
+                resolved_path = os.path.abspath(p)
+                break
+        if resolved_path:
+            break
+
+    # If not found directly in candidate dirs, check system PATH
+    if not resolved_path:
+        w = shutil.which(exec_name)
+        if w and os.path.isfile(w):
+            resolved_path = os.path.abspath(w)
+
+    # Check whether package is installed in active Python environment
+    package_installed = False
+    clean_pkg_id = package_name.lower().replace("-", "_")
+    try:
+        import importlib.util
+        if importlib.util.find_spec(clean_pkg_id) is not None:
+            package_installed = True
+        else:
+            check_proc = subprocess.run(
+                [py_exec, "-m", "pip", "show", package_name],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if check_proc.returncode == 0:
+                package_installed = True
+    except Exception:
+        pass
+
+    return {
+        "package": package_name,
+        "python": py_exec,
+        "package_installed": package_installed,
+        "executable": resolved_path,
+        "console_script_exists": bool(resolved_path and os.path.isfile(resolved_path))
+    }
+
+
+def resolve_dotnet_global_tool(package_name: str, executable_name: Optional[str] = None, dotnet_executable: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Generic environment-aware resolver for .NET global tools.
+    1. Checks if dotnet CLI exists.
+    2. Identifies .NET global tool directory (%USERPROFILE%\\.dotnet\\tools on Windows, ~/.dotnet/tools on Unix).
+    3. Resolves the executable path (e.g. csharpier.exe, dotnet-csharpier.exe, dotnet-ef.exe).
+    4. Queries `dotnet tool list --global` to check if package is installed.
+    5. Returns structured information including resolved absolute executable path.
+    """
+    dotnet_bin = dotnet_executable or locate_executable("dotnet") or shutil.which("dotnet")
+    is_win = sys.platform.startswith("win")
+
+    # Determine .NET global tools directory
+    user_home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    dotnet_tools_dir = os.environ.get("DOTNET_TOOLS_PATH") or os.path.join(user_home, ".dotnet", "tools")
+
+    # Ensure dotnet tools dir is added to current process PATH
+    if os.path.isdir(dotnet_tools_dir) and dotnet_tools_dir.lower() not in os.environ.get("PATH", "").lower():
+        os.environ["PATH"] = dotnet_tools_dir + os.pathsep + os.environ.get("PATH", "")
+
+    clean_pkg = (package_name or "").strip()
+    exec_candidates = []
+    if executable_name:
+        exec_candidates.append(executable_name)
+    if clean_pkg:
+        exec_candidates.append(clean_pkg)
+        if not clean_pkg.startswith("dotnet-"):
+            exec_candidates.append(f"dotnet-{clean_pkg}")
+        else:
+            exec_candidates.append(clean_pkg[7:])
+
+    resolved_path = ""
+    for candidate in exec_candidates:
+        bin_name = f"{candidate}.exe" if is_win else candidate
+        p = os.path.join(dotnet_tools_dir, bin_name)
+        if os.path.isfile(p):
+            resolved_path = os.path.abspath(p)
+            break
+        w = shutil.which(candidate)
+        if w and os.path.isfile(w):
+            resolved_path = os.path.abspath(w)
+            break
+
+    # Query dotnet global tool list
+    global_tool_installed = False
+    if dotnet_bin:
+        try:
+            proc = subprocess.run(
+                [dotnet_bin, "tool", "list", "--global"],
+                capture_output=True,
+                text=True,
+                timeout=8
+            )
+            if proc.returncode == 0:
+                output_lower = proc.stdout.lower()
+                clean_pkg_lower = clean_pkg.lower()
+                for line in output_lower.splitlines():
+                    parts = line.split()
+                    if parts and parts[0] == clean_pkg_lower:
+                        global_tool_installed = True
+                        break
+        except Exception:
+            pass
+
+    if resolved_path and os.path.isfile(resolved_path):
+        global_tool_installed = True
+
+    return {
+        "package": clean_pkg,
+        "dotnet": dotnet_bin or "",
+        "global_tool_installed": global_tool_installed,
+        "package_installed": global_tool_installed,
+        "executable": resolved_path,
+        "executable_exists": bool(resolved_path and os.path.isfile(resolved_path)),
+        "tools_directory": dotnet_tools_dir
+    }
+
+
 def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[str]:
     """
     Comprehensive multi-location locator for executables across:
       1. User-configured custom path
       2. System PATH
       3. Active Python environment's Scripts / bin directory (where pip packages like clang-format, autopep8 install)
-      4. AppData / Homebrew / npm / cargo / go bin directories
+      4. AppData / Homebrew / npm / cargo / go / .dotnet tool directories
       5. Standard Visual Studio / LLVM / MinGW / MSYS2 locations on Windows
     """
     if not cmd:
@@ -54,14 +226,17 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
     if found and os.path.isfile(found):
         return os.path.abspath(found)
 
-    # 3. Python environment Scripts / bin directories
+    # 3. Environment-specific tool directories
     candidates = []
     py_dir = os.path.dirname(sys.executable)
+    user_home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
 
     candidates.append(os.path.join(py_dir, "Scripts", bin_name))
     candidates.append(os.path.join(py_dir, "bin", bin_name))
     candidates.append(os.path.join(sys.prefix, "Scripts", bin_name))
     candidates.append(os.path.join(sys.prefix, "bin", bin_name))
+    candidates.append(os.path.join(user_home, ".dotnet", "tools", bin_name))
+    candidates.append(os.path.join(os.path.expanduser("~"), ".dotnet", "tools", bin_name))
     candidates.append(os.path.join(os.path.expanduser("~"), ".dgx", "bin", bin_name))
     candidates.append(os.path.join(os.path.expanduser("~"), ".local", "bin", bin_name))
     candidates.append(os.path.join(os.path.expanduser("~"), ".cargo", "bin", bin_name))
@@ -81,23 +256,83 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
             candidates.append(os.path.join(app_data, "npm", f"{cmd}.cmd"))
             candidates.append(os.path.join(app_data, "npm", bin_name))
 
-    # 4. Common locations for clang-format and compilers on Windows
-    if cmd.lower().startswith("clang-format") and is_win:
-        vs_globs = [
-            r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\bin\clang-format.exe",
-            r"C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\Llvm\bin\clang-format.exe",
-            r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin\clang-format.exe",
-            r"C:\Program Files\LLVM\bin\clang-format.exe",
-            r"C:\Program Files (x86)\LLVM\bin\clang-format.exe",
-            r"C:\msys64\mingw64\bin\clang-format.exe",
-            r"C:\msys64\ucrt64\bin\clang-format.exe",
-            r"C:\msys64\clang64\bin\clang-format.exe",
-            r"C:\MinGW\bin\clang-format.exe"
-        ]
-        for pattern in vs_globs:
-            for match in glob.glob(pattern):
-                if os.path.isfile(match):
-                    return os.path.abspath(match)
+    # 4. Common locations on Windows
+    if is_win:
+        cmd_l = cmd.lower()
+        if cmd_l.startswith("clang-format"):
+            vs_globs = [
+                r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\bin\clang-format.exe",
+                r"C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\Llvm\bin\clang-format.exe",
+                r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin\clang-format.exe",
+                r"C:\Program Files\LLVM\bin\clang-format.exe",
+                r"C:\Program Files (x86)\LLVM\bin\clang-format.exe",
+                r"C:\msys64\mingw64\bin\clang-format.exe",
+                r"C:\msys64\ucrt64\bin\clang-format.exe",
+                r"C:\msys64\clang64\bin\clang-format.exe",
+                r"C:\MinGW\bin\clang-format.exe"
+            ]
+            for pattern in vs_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+        elif cmd_l in ("g++", "gcc", "clang", "clang++"):
+            cpp_globs = [
+                os.path.join(r"C:\msys64\mingw64\bin", bin_name),
+                os.path.join(r"C:\msys64\ucrt64\bin", bin_name),
+                os.path.join(r"C:\msys64\clang64\bin", bin_name),
+                os.path.join(r"C:\MinGW\bin", bin_name),
+                os.path.join(r"C:\TDM-GCC-64\bin", bin_name),
+                os.path.join(r"C:\Program Files\LLVM\bin", bin_name)
+            ]
+            for pattern in cpp_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+        elif cmd_l in ("java", "javac", "javaw"):
+            java_home = os.environ.get("JAVA_HOME", "")
+            if java_home:
+                jp = os.path.join(java_home, "bin", bin_name)
+                if os.path.isfile(jp):
+                    return os.path.abspath(jp)
+            java_globs = [
+                os.path.join(r"C:\Program Files\Java", "*", "bin", bin_name),
+                os.path.join(r"C:\Program Files (x86)\Java", "*", "bin", bin_name),
+                os.path.join(r"C:\Program Files\Eclipse Adoptium", "*", "bin", bin_name),
+                os.path.join(r"C:\Program Files\Microsoft", "jdk-*", "bin", bin_name),
+                os.path.join(r"C:\Program Files\Amazon Corretto", "*", "bin", bin_name),
+                os.path.join(r"C:\Program Files\BellSoft", "*", "bin", bin_name),
+                os.path.join(r"C:\Program Files\Zulu", "*", "bin", bin_name)
+            ]
+            for pattern in java_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+        elif cmd_l in ("node", "npm", "npx"):
+            node_paths = [
+                os.path.join(r"C:\Program Files\nodejs", bin_name),
+                os.path.join(r"C:\Program Files (x86)\nodejs", bin_name)
+            ]
+            for np in node_paths:
+                if os.path.isfile(np):
+                    return os.path.abspath(np)
+        elif cmd_l in ("go", "gofmt"):
+            goroot = os.environ.get("GOROOT", "")
+            if goroot:
+                gp = os.path.join(goroot, "bin", bin_name)
+                if os.path.isfile(gp):
+                    return os.path.abspath(gp)
+            go_paths = [os.path.join(r"C:\Program Files\Go\bin", bin_name)]
+            for gp in go_paths:
+                if os.path.isfile(gp):
+                    return os.path.abspath(gp)
+        elif cmd_l in ("dotnet", "csharpier"):
+            dotnet_paths = [
+                os.path.join(r"C:\Program Files\dotnet", bin_name),
+                os.path.join(r"C:\Program Files (x86)\dotnet", bin_name)
+            ]
+            for dp in dotnet_paths:
+                if os.path.isfile(dp):
+                    return os.path.abspath(dp)
 
     # 5. Common locations for Unix / macOS
     if not is_win:
@@ -106,7 +341,9 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
             f"/usr/local/bin/{cmd}",
             f"/usr/bin/{cmd}",
             f"/bin/{cmd}",
-            os.path.expanduser(f"~/.local/bin/{cmd}")
+            os.path.expanduser(f"~/.local/bin/{cmd}"),
+            os.path.expanduser(f"~/.cargo/bin/{cmd}"),
+            os.path.expanduser(f"~/go/bin/{cmd}")
         ]
         for p in unix_paths:
             if os.path.isfile(p):
@@ -188,12 +425,81 @@ class Extension:
         if not self.enabled:
             return False
         clean_lang = (lang_id or "").lower().strip()
+        lang_aliases = {
+            "py": "python", "pyw": "python",
+            "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascriptreact",
+            "ts": "typescript", "tsx": "typescriptreact",
+            "c++": "cpp", "cxx": "cpp", "cc": "cpp",
+            "cs": "csharp",
+            "rs": "rust",
+            "golang": "go",
+            "htm": "html",
+            "yml": "yaml"
+        }
+        clean_lang = lang_aliases.get(clean_lang, clean_lang)
         if clean_lang and clean_lang in self.languages:
             return True
         if file_path:
             ext = os.path.splitext(file_path)[1].lower()
             if ext and ext in self.extensions:
                 return True
+        return False
+
+    def supports_language_for_formatting(self, lang_id: str, file_path: str = "") -> bool:
+        """
+        Strictly verifies whether this extension's formatter provider explicitly supports
+        the given language or file extension. Never allows cross-language fallbacks.
+        """
+        if not self.enabled or not self.formatter:
+            return False
+        clean_lang = (lang_id or "").lower().strip()
+        ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+
+        lang_aliases = {
+            "py": "python", "pyw": "python",
+            "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascriptreact",
+            "ts": "typescript", "tsx": "typescriptreact",
+            "c++": "cpp", "cxx": "cpp", "cc": "cpp",
+            "cs": "csharp",
+            "rs": "rust",
+            "golang": "go",
+            "htm": "html",
+            "yml": "yaml"
+        }
+        clean_lang = lang_aliases.get(clean_lang, clean_lang)
+
+        fmt_spec = self.formatter if isinstance(self.formatter, dict) else {}
+        supported_langs = [l.lower() for l in fmt_spec.get("supportedLanguages", [])]
+
+        if supported_langs:
+            if clean_lang and clean_lang in supported_langs:
+                return True
+            ext_to_lang = {
+                ".c": "c", ".h": "c",
+                ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".cu": "cuda",
+                ".py": "python", ".pyw": "python",
+                ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascriptreact",
+                ".ts": "typescript", ".tsx": "typescriptreact",
+                ".html": "html", ".htm": "html",
+                ".css": "css", ".scss": "scss", ".less": "less",
+                ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+                ".rs": "rust",
+                ".go": "go",
+                ".qml": "qml",
+                ".cs": "csharp",
+                ".java": "java",
+                ".sql": "sql"
+            }
+            mapped_lang = ext_to_lang.get(ext, "")
+            if mapped_lang and mapped_lang in supported_langs:
+                return True
+            return False
+
+        # Fallback to extension language definitions ONLY if explicit formatter spec omitted
+        if clean_lang and clean_lang in self.languages:
+            return True
+        if ext and ext in self.extensions:
+            return True
         return False
 
     def get_executable_path(self) -> Optional[str]:
@@ -338,10 +644,27 @@ class ExtensionManager(QObject):
     extensionUninstalled = Signal(str)  # extension_id
     updateCheckCompleted = Signal(dict)
     formatterInstallProgress = Signal(str, str, str)  # extension_id, status, message
+    smartInstallAnalysisStarted = Signal(str)  # tool_name / operation
+    smartInstallResolved = Signal("QVariantMap")  # resolved proposal
+    smartInstallAnalysisFailed = Signal(str, str)  # tool_name, reason
     smartInstallProgress = Signal(str, str, str)  # tool_name, status ("installing"|"success"|"failed"), message
     smartInstallCompleted = Signal(str, bool, str, str)  # tool_name, success, message, retry_action
+    smartInstallPostInstallVerified = Signal(str, str, str, str, str, str)  # tool_name, status ("success"|"fix_available"|"manual_installation_required"|"failed"), message, retry_action, file_path, lang_id
+    smartInstallFixProposed = Signal(str, str, str, str, str, str, int)  # tool_name, fix_command, fix_explanation, retry_action, file_path, verify_command, fix_attempt_count
+    originalOperationRetried = Signal(str, bool, str)  # tool_name, success, error_message
     extensionMessageEmitted = Signal(str, str, str)  # extension_id, message, level
     commandExecuted = Signal(str, str)  # command_id, result_message
+
+    _custom_ai_resolver: Optional[Callable[[str], str]] = None
+
+    @classmethod
+    def set_ai_provider(cls, provider_fn: Optional[Callable[[str], str]]):
+        cls._custom_ai_resolver = provider_fn
+        try:
+            from AIBackend import AIBackend
+            AIBackend.set_ai_provider(provider_fn)
+        except Exception:
+            pass
 
     def __init__(self, base_dir: Optional[str] = None):
         super().__init__()
@@ -600,10 +923,14 @@ class ExtensionManager(QObject):
                 return ext
         return None
 
-    def get_extension_for_language(self, lang_id: str, file_path: str = "") -> Optional[Extension]:
+    def get_extension_for_language(self, lang_id: str, file_path: str = "", for_formatting: bool = False) -> Optional[Extension]:
         for ext in self._extensions.values():
-            if ext.matches_language(lang_id, file_path):
-                return ext
+            if for_formatting:
+                if ext.supports_language_for_formatting(lang_id, file_path):
+                    return ext
+            else:
+                if ext.matches_language(lang_id, file_path):
+                    return ext
         return None
 
     @Slot(str, result="QVariantMap")
@@ -897,225 +1224,1316 @@ class ExtensionManager(QObject):
             return False
 
     # =========================================================================
-    # SMART INSTALL SYSTEM (For Formatters, Linters, Runners, Compilers)
+    # SMART INSTALL SYSTEM (AI-POWERED ISSUE RESOLUTION ENGINE)
     # =========================================================================
+    _custom_ai_resolver = None
+
+    @classmethod
+    def set_ai_provider(cls, provider_func):
+        """Allows injecting custom or mock AI resolver for testing / pluggable providers."""
+        cls._custom_ai_resolver = provider_func
+        try:
+            from AIBackend import AIBackend
+            AIBackend.set_ai_provider(provider_func)
+        except Exception:
+            pass
+
+    @staticmethod
+    def validate_command_safety(command: str, tool_name: str = "") -> tuple:
+        """
+        Validates that the command is safe, non-destructive, and appropriate for tool installation.
+        """
+        if not command or not command.strip():
+            return False, "Installation command is empty."
+
+        cmd_clean = command.strip().lower()
+
+        # Blacklist destructive operations
+        destructive_patterns = [
+            r"\brm\s+-[a-zA-Z]*r",
+            r"\bdel\s+/[a-zA-Z]*f",
+            r"\bformat\s+[a-zA-Z]:",
+            r"\bmkfs\b",
+            r"\bdd\s+if=",
+            r"\bshutdown\b",
+            r"\breboot\b",
+            r":\(\)\s*\{\s*:\|:&\s*\};:",
+            r">\s*/dev/sd",
+            r"\bdrop\s+database\b",
+            r"\bchmod\s+-[a-zA-Z]*R\s+777\s+/",
+        ]
+        for pat in destructive_patterns:
+            if re.search(pat, cmd_clean):
+                return False, "Command rejected: Destructive or unsafe system operation detected."
+
+        # Validate that command uses known package managers or standard installation mechanisms
+        allowed_installers = [
+            "pip", "npm", "yarn", "pnpm", "cargo", "winget", "choco", "scoop",
+            "brew", "apt", "apt-get", "pacman", "yum", "dnf", "rustup", "dotnet",
+            "go install", "gem", "setup.py", "python -m pip", "python3 -m pip", "pyside6",
+            "python", "python3", "py"
+        ]
+        has_installer = any(mgr in cmd_clean for mgr in allowed_installers)
+        if not has_installer:
+            if not any(k in cmd_clean for k in ("install", "add", "setup", "get")):
+                return False, "Command rejected: Command is not a recognized developer tool installation command."
+
+        return True, "Valid"
+
+    @staticmethod
+    def validate_package_name(package_name: str, install_cmd: str = "", lang_id: str = "") -> tuple:
+        """
+        Validates that a package or tool name is real, single-word/syntactically valid,
+        and not a hallucinated phrase like 'sql formatter'.
+        """
+        if not package_name or not package_name.strip():
+            return False, "Package name is empty."
+
+        clean_pkg = package_name.strip()
+
+        # Reject multi-word hallucinated names (e.g. "sql formatter", "python pep8 tool")
+        if " " in clean_pkg and not clean_pkg.startswith(("@", "-")):
+            return False, f"Invalid package name '{clean_pkg}': contains spaces and is not a valid package identifier."
+
+        # Syntactic checks
+        if not re.match(r"^(@[a-zA-Z0-9_\-\.]+\/)?[a-zA-Z0-9_\-\.:#]+$", clean_pkg):
+            return False, f"Invalid package name syntax: '{clean_pkg}'."
+
+        return True, "Valid package identifier"
+
+    def validate_resolution(self, res: dict, context: dict) -> tuple:
+        """
+        Validates the AI resolution against command safety, package validity,
+        strict language isolation, and working software checks.
+        """
+        res_type = res.get("resolutionType") or res.get("resolution_type", "cannot_resolve")
+        if res_type == "cannot_resolve":
+            return True, "Cannot resolve is valid"
+
+        cmd = res.get("command", "")
+        steps = res.get("steps", [])
+        tool = res.get("toolName") or res.get("tool", "")
+        pkg = res.get("packageName") or res.get("package", "")
+        lang = (context.get("language") or context.get("languageId") or "").lower().strip()
+        stderr = (context.get("stderr") or context.get("errorMessage") or "").lower()
+
+        if res_type == "single_command":
+            if not cmd or not cmd.strip():
+                return False, "Empty command provided for single_command resolution."
+            is_safe, s_msg = self.validate_command_safety(cmd, tool)
+            if not is_safe:
+                return False, s_msg
+            if pkg:
+                pkg_valid, p_msg = self.validate_package_name(pkg, cmd, lang)
+                if not pkg_valid:
+                    return False, p_msg
+        elif res_type == "complex_setup":
+            if not steps and not cmd:
+                return False, "No steps provided for complex_setup resolution."
+
+        # Strict language isolation validation
+        cmd_lower = (cmd or "").lower()
+        if lang in ("csharp", "cs"):
+            if "clang-format" in cmd_lower or "pip install" in cmd_lower:
+                return False, "Cross-language mismatch: C# tooling cannot use clang-format or Python pip."
+        elif lang in ("cpp", "c", "c++"):
+            if "csharpier" in cmd_lower or "dotnet tool" in cmd_lower:
+                return False, "Cross-language mismatch: C/C++ cannot use C# .NET tooling."
+        elif lang == "java":
+            if "clang-format" in cmd_lower or "autopep8" in cmd_lower or "csharpier" in cmd_lower:
+                return False, "Cross-language mismatch: Java cannot use C++/Python/C# formatters."
+        elif lang in ("python", "py"):
+            if "csharpier" in cmd_lower or "gofmt" in cmd_lower:
+                return False, "Cross-language mismatch: Python cannot use C# or Go tooling."
+        elif lang == "sql":
+            if "clang-format" in cmd_lower or "gofmt" in cmd_lower:
+                return False, "Cross-language mismatch: SQL cannot use C++ or Go formatters."
+
+        # Do not misdiagnose working software: if error is an application error (e.g. SQLException, ClassNotFound), Java itself is installed!
+        if ("sqlexception" in stderr or "classnotfoundexception" in stderr or "driver" in stderr) and ("install --id oracle.jdk" in cmd_lower or "install openjdk" in cmd_lower):
+            return False, "Misdiagnosis: Application error indicates Java runtime is already installed; missing JDBC dependency, not JDK runtime."
+
+        return True, "Valid"
+
+    @Slot(str, str, str, str, str, str, int, str, str, str, str, str, str, result="QVariantMap")
+    @Slot(str, str, str, str, str, str, int, str, str, str, result="QVariantMap")
+    @Slot(str, str, str, str, str, str, result="QVariantMap")
+    @Slot(str, str, str, str, result="QVariantMap")
+    @Slot(str, str, str, result="QVariantMap")
+    @Slot(str, str, result="QVariantMap")
+    @Slot(str, result="QVariantMap")
+    def create_smart_install_context(
+        self,
+        operation: str = "",
+        operation_type: str = "",
+        language: str = "",
+        file_path: str = "",
+        command_attempted: str = "",
+        executable: str = "",
+        exit_code: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        error_message: str = "",
+        detected_problem: str = "",
+        detected_missing_dependency: str = "",
+        retry_action: str = "",
+        **kwargs
+    ) -> dict:
+        """
+        Creates a structured SmartInstallContext containing real failure information.
+        This represents the entry point for Smart Install investigation.
+        """
+        cur_os = get_current_os()
+        clean_lang = (language or "").lower().strip()
+        clean_ext = os.path.splitext(file_path)[1].lower().lstrip(".") if file_path else ""
+
+        # Collect available package managers
+        avail_pms = []
+        for pm in ("winget", "pip", "npm", "cargo", "dotnet", "choco", "scoop", "brew", "apt"):
+            if locate_executable(pm):
+                avail_pms.append(pm)
+
+        resolved_retry = retry_action
+        if not resolved_retry:
+            if operation_type == "formatter" or "format" in (operation or "").lower():
+                resolved_retry = "format"
+            elif operation_type in ("runner", "compiler", "runtime", "sdk", "interpreter") or "run" in (operation or "").lower():
+                resolved_retry = "run"
+            else:
+                resolved_retry = "command"
+
+        ctx = {
+            "operation": operation or "Issue Resolution",
+            "operationType": operation_type or "dependency",
+            "language": clean_lang or clean_ext,
+            "languageId": clean_lang or clean_ext,
+            "filePath": file_path or "",
+            "operatingSystem": cur_os,
+            "architecture": platform.machine(),
+            "pythonExecutable": sys.executable,
+            "pythonVersion": platform.python_version(),
+            "availablePackageManagers": avail_pms,
+            "retryAction": resolved_retry
+        }
+
+        if command_attempted:
+            ctx["commandAttempted"] = command_attempted
+        if executable:
+            ctx["executable"] = executable
+        if exit_code != 0:
+            ctx["exitCode"] = exit_code
+        if stdout:
+            ctx["stdout"] = stdout
+        if stderr:
+            ctx["stderr"] = stderr
+        if error_message:
+            ctx["errorMessage"] = error_message
+        if detected_problem:
+            ctx["detectedProblem"] = detected_problem
+        if detected_missing_dependency:
+            ctx["detectedMissingDependency"] = detected_missing_dependency
+        if kwargs.get("failureType") or kwargs.get("failure_type"):
+            ctx["failureType"] = kwargs.get("failureType") or kwargs.get("failure_type")
+        if kwargs.get("formatterAvailable") is not None or kwargs.get("formatter_available") is not None:
+            ctx["formatterAvailable"] = kwargs.get("formatterAvailable") if kwargs.get("formatterAvailable") is not None else kwargs.get("formatter_available")
+        if kwargs.get("dependencyMissing") is not None or kwargs.get("dependency_missing") is not None:
+            ctx["dependencyMissing"] = kwargs.get("dependencyMissing") if kwargs.get("dependencyMissing") is not None else kwargs.get("dependency_missing")
+        if kwargs.get("formatter"):
+            ctx["formatter"] = kwargs.get("formatter")
+        if file_path:
+            ctx["projectDirectory"] = os.path.dirname(os.path.abspath(file_path))
+            ctx["workingDirectory"] = os.path.dirname(os.path.abspath(file_path))
+
+        print(f"[SmartInstall] Entry point created: {ctx.get('operation')}")
+        print(f"[SmartInstall] Entry point shown")
+        return ctx
+
+    def generate_smart_install_prompt(
+        self,
+        context: Optional[dict] = None,
+        tool_name: str = "",
+        tool_type: str = "",
+        missing_dependency: str = "",
+        lang_id: str = "",
+        ext: str = "",
+        cur_os: str = "",
+        shell_name: str = "",
+        python_env: str = "",
+        operation: str = "",
+        failure_context: str = ""
+    ) -> str:
+        """
+        Constructs the structured prompt sent to the AI backend for environment/dependency setup resolution.
+        Enforces authoritative trust of backend facts, distinct failure classification, and actionable resolution.
+        """
+        if context is None:
+            context = {}
+
+        op = context.get("operation") or operation or "Environment/Dependency Resolution"
+        op_type = context.get("operationType") or tool_type or "dependency"
+        lang = context.get("language") or context.get("languageId") or lang_id or ext or "general"
+        target_file = context.get("filePath") or ""
+        cmd_att = context.get("commandAttempted") or ""
+        exec_name = context.get("executable") or tool_name or ""
+        exit_c = context.get("exitCode", "")
+        out_txt = context.get("stdout") or ""
+        err_txt = context.get("stderr") or context.get("errorMessage") or failure_context or ""
+        os_name = context.get("operatingSystem") or cur_os or get_current_os()
+        sh_name = shell_name or ("PowerShell" if os_name == "windows" else os.environ.get("SHELL", "bash").split("/")[-1])
+        py_path = context.get("pythonExecutable") or python_env or sys.executable
+        pms = ", ".join(context.get("availablePackageManagers", [])) or "standard system package managers"
+
+        missing_dep = context.get("detectedMissingDependency") or missing_dependency or exec_name or tool_name
+        formatter_name = context.get("formatter") or context.get("toolName") or (exec_name if op_type == "formatter" or "format" in op.lower() else "")
+        formatter_avail = context.get("formatterAvailable") if context.get("formatterAvailable") is not None else context.get("formatter_available")
+        dep_missing = context.get("dependencyMissing") if context.get("dependencyMissing") is not None else context.get("dependency_missing")
+        failure_type = context.get("failureType") or context.get("failure_type")
+
+        if dep_missing is None and (missing_dep or (op_type in ("dependency", "formatter", "runner") and not locate_executable(exec_name or tool_name))):
+            dep_missing = True
+
+        if formatter_avail is None and formatter_name:
+            formatter_avail = bool(locate_executable(formatter_name))
+
+        if not failure_type:
+            if dep_missing:
+                failure_type = "missing_dependency"
+            elif "syntax" in err_txt.lower() or "parse error" in err_txt.lower() or "invalid syntax" in err_txt.lower() or "unexpected token" in err_txt.lower():
+                failure_type = "source_error"
+            else:
+                failure_type = "missing_dependency" if (missing_dep or not locate_executable(exec_name)) else "runtime_error"
+
+        details = []
+        if target_file:
+            details.append(f"Target file: {target_file}")
+        if cmd_att:
+            details.append(f"Command attempted: {cmd_att}")
+        if missing_dep:
+            details.append(f"Missing dependency: {missing_dep}")
+        if exec_name and exec_name != missing_dep:
+            details.append(f"Missing executable / tool: {exec_name}")
+        if exit_c:
+            details.append(f"Exit code: {exit_c}")
+        if out_txt:
+            details.append(f"Stdout:\n{out_txt}")
+        if err_txt:
+            details.append(f"Stderr / Error:\n{err_txt}")
+
+        details_block = "\n".join(details) if details else "No additional error output available."
+
+        return (
+            "You are an AI developer environment resolver for DGX Studio.\n"
+            "Your job is to SOLVE the detected environment or dependency problem. You must NOT merely repeat or echo the error.\n\n"
+            "BACKEND VERIFIED FACTS (AUTHORITATIVE):\n"
+            f"- Formatter / Tool: {formatter_name or exec_name or tool_name or 'Unspecified'}\n"
+            f"- Executable: {exec_name or formatter_name or 'Unspecified'}\n"
+            f"- Formatter available: {str(bool(formatter_avail)).lower() if formatter_avail is not None else 'unknown'}\n"
+            f"- Dependency missing: {str(bool(dep_missing)).lower() if dep_missing is not None else 'unknown'}\n"
+            f"- Failure type: {failure_type}\n"
+            f"- Operation: {op}\n"
+            f"- Operation type: {op_type}\n"
+            f"- Language: {lang}\n"
+            f"- Operating system: {os_name}\n"
+            f"- Shell: {sh_name}\n"
+            f"- Active Python interpreter: {py_path}\n"
+            f"- Available package managers: {pms}\n\n"
+            f"FAILURE CONTEXT:\n{details_block}\n\n"
+            "CORE RESOLUTION RULES:\n"
+            "1. TRUST BACKEND FACTS:\n"
+            "   The Smart Install backend has already determined important facts. Treat backend facts as authoritative.\n"
+            "   If Dependency missing is true or Failure type is 'missing_dependency', the tool is missing. You MUST determine the appropriate installation command for the target OS (" + os_name + ") and shell (" + sh_name + ") and return it (e.g. `npm install -g prettier` with verification `prettier --version`).\n"
+            "   Do NOT reinterpret this as invalid JSON, invalid source, unknown formatter, or configuration error unless the supplied backend facts explicitly say that.\n\n"
+            "2. DO NOT CONFUSE FAILURE TYPES:\n"
+            "   - missing_dependency: The required tool does not exist -> resolve installation.\n"
+            "   - source_error: The tool exists and reports invalid source / syntax error -> explain the source error; do NOT recommend installing another formatter.\n"
+            "   - configuration_error: Tool exists but configuration is wrong -> determine whether configuration can safely be fixed.\n"
+            "   - runtime_error: Tool exists but operation failed -> analyze the real failure. Do NOT recommend software that is already proven to be installed (e.g. if Java threw an application error, Java is installed).\n"
+            "   - environment_error: PATH/tool/environment resolution is broken -> determine whether it can safely be repaired.\n\n"
+            "3. JAVA & UNSPECIFIED FORMATTER BEHAVIOR:\n"
+            "   If Language is Java and operation is formatting and formatter is unspecified/unknown with dependency missing: do NOT immediately say 'The required formatter is unspecified'. Instead, identify a reasonable standard Java formatter (such as google-java-format) and provide the installation/verification resolution. Only return cannot_resolve when there genuinely is not enough information to safely choose a solution.\n\n"
+            "4. SMART INSTALL MUST ACTUALLY SOLVE (RESOLVER, NOT ECHOER):\n"
+            "   Bad: 'The formatter is missing.'\n"
+            "   Good: 'Prettier is not installed. Install it with: npm install -g prettier. Verify with: prettier --version'\n"
+            "   - Strict language isolation: NEVER recommend cross-language tools (e.g. do not suggest clang-format for C#, do not suggest Python tools for Java).\n"
+            "   - If using Python pip, use active Python interpreter path: \"" + py_path + "\" -m pip install <package_name>\n\n"
+            "5. RESPONSE CONTRACT (VALID JSON ONLY):\n"
+            "Return valid JSON only matching this schema:\n"
+            "{\n"
+            '  "resolutionType": "single_command" | "complex_setup" | "cannot_resolve",\n'
+            '  "source": "ai",\n'
+            '  "title": "<concise title>",\n'
+            '  "diagnosis": "<concise root cause>",\n'
+            '  "explanation": "<actionable explanation of solution>",\n'
+            '  "command": "<exact single install command if single_command, else empty string>",\n'
+            '  "steps": ["<step 1>", "<step 2>"],\n'
+            '  "verificationCommand": "<verification command e.g. tool --version>",\n'
+            '  "tool": "<tool name>",\n'
+            '  "package": "<package identifier>",\n'
+            '  "executable": "<executable name>",\n'
+            '  "retryOperation": true\n'
+            "}"
+        )
+
+    @staticmethod
+    def parse_ai_install_response(response_text: str, fallback_tool: str = "", fallback_exec: str = "", fallback_type: str = "tool") -> dict:
+        """
+        Parses AI JSON or structured text response into normalized dictionary.
+        """
+        if not response_text:
+            return {
+                "tool": fallback_tool,
+                "dependency_type": fallback_type,
+                "package": fallback_exec or fallback_tool,
+                "executable": fallback_exec or fallback_tool,
+                "resolutionType": "cannot_resolve",
+                "resolution_type": "cannot_resolve",
+                "command": "",
+                "verify": f"{fallback_exec or fallback_tool} --version",
+                "verificationCommand": f"{fallback_exec or fallback_tool} --version",
+                "explanation": "",
+                "diagnosis": "",
+                "source": "ai"
+            }
+
+        text = response_text.strip()
+        if text.lower().startswith("chatgpt said:"):
+            text = text[13:].strip()
+
+        # 1. Try parsing JSON block (including markdown fences)
+        json_cand = text
+        if "```json" in text or "```" in text:
+            m = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', text, re.IGNORECASE)
+            if m:
+                json_cand = m.group(1).strip()
+        elif "{" in text and "}" in text:
+            m = re.search(r'(\{[\s\S]+\})', text)
+            if m:
+                json_cand = m.group(1).strip()
+
+        data = None
+        try:
+            data = json.loads(json_cand)
+        except Exception:
+            try:
+                # Repair unescaped Windows backslashes in JSON string
+                repaired = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_cand)
+                data = json.loads(repaired)
+            except Exception:
+                pass
+
+        if isinstance(data, dict):
+            r_type = data.get("resolutionType") or data.get("resolution_type") or ("single_command" if data.get("command") else "cannot_resolve")
+            cmd = data.get("command", "")
+            steps = data.get("steps", [])
+            if isinstance(steps, str):
+                steps = [s.strip() for s in steps.splitlines() if s.strip()]
+            v_cmd = data.get("verificationCommand") or data.get("verify") or ""
+            t_name = data.get("tool") or data.get("toolName") or fallback_tool
+            pkg_name = data.get("package") or data.get("packageName") or fallback_exec or fallback_tool
+            exec_name = data.get("executable") or fallback_exec or fallback_tool
+
+            return {
+                "tool": t_name,
+                "toolName": t_name,
+                "title": data.get("title") or f"Install {t_name}",
+                "dependency_type": data.get("dependencyType") or data.get("dependency_type") or fallback_type,
+                "dependencyType": data.get("dependencyType") or data.get("dependency_type") or fallback_type,
+                "package": pkg_name,
+                "packageName": pkg_name,
+                "executable": exec_name,
+                "resolutionType": r_type,
+                "resolution_type": r_type,
+                "command": cmd,
+                "steps": steps,
+                "verify": v_cmd or f"{exec_name} --version",
+                "verificationCommand": v_cmd or f"{exec_name} --version",
+                "diagnosis": data.get("diagnosis", ""),
+                "explanation": data.get("explanation", ""),
+                "source": "ai",
+                "retryOperation": data.get("retryOperation", True)
+            }
+
+        # 2. Key-value fallback parsing
+        tool_val = ""
+        type_val = ""
+        pkg_val = ""
+        exec_val = ""
+        res_type_val = ""
+        cmd_val = ""
+        ver_val = ""
+        exp_val = ""
+        diag_val = ""
+        steps_val = []
+
+        tool_m = re.search(r'(?:^|\n)\s*Tool\s*:\s*(.+)', text, re.IGNORECASE)
+        type_m = re.search(r'(?:^|\n)\s*Dependency\s*Type\s*:\s*(.+)', text, re.IGNORECASE)
+        pkg_m = re.search(r'(?:^|\n)\s*Package\s*:\s*(.+)', text, re.IGNORECASE)
+        exec_m = re.search(r'(?:^|\n)\s*Executable\s*:\s*(.+)', text, re.IGNORECASE)
+        res_m = re.search(r'(?:^|\n)\s*Resolution\s*Type\s*:\s*(.+)', text, re.IGNORECASE)
+        cmd_m = re.search(r'(?:^|\n)\s*(?:Command|Install)\s*:\s*(.+)', text, re.IGNORECASE)
+        ver_m = re.search(r'(?:^|\n)\s*Verify\s*:\s*(.+)', text, re.IGNORECASE)
+        diag_m = re.search(r'(?:^|\n)\s*Diagnosis\s*:\s*(.+)', text, re.IGNORECASE)
+        exp_m = re.search(r'(?:^|\n)\s*Explanation\s*:\s*([\s\S]+?)(?=\n\s*(?:Tool|Dependency|Package|Executable|Resolution|Command|Install|Verify|Diagnosis)|$)', text, re.IGNORECASE)
+
+        if tool_m:
+            tool_val = tool_m.group(1).strip()
+        if type_m:
+            type_val = type_m.group(1).strip().lower()
+        if pkg_m:
+            pkg_val = pkg_m.group(1).strip()
+        if exec_m:
+            exec_val = exec_m.group(1).strip()
+        if res_m:
+            res_type_val = res_m.group(1).strip().lower()
+        if cmd_m:
+            cmd_val = cmd_m.group(1).strip()
+        if ver_m:
+            ver_val = ver_m.group(1).strip()
+        if diag_m:
+            diag_val = diag_m.group(1).strip()
+        if exp_m:
+            exp_val = exp_m.group(1).strip()
+
+        if not cmd_val:
+            code_m = re.search(r'```(?:bash|sh|shell|powershell|cmd|batch|text)?\s*([\s\S]+?)```', text, re.IGNORECASE)
+            if code_m:
+                lines = [l.strip() for l in code_m.group(1).strip().splitlines() if l.strip() and not l.strip().startswith("#")]
+                if lines:
+                    cmd_val = lines[0]
+
+        if cmd_val:
+            cmd_val = cmd_val.strip("`").strip()
+            if cmd_val.lower() in ("none", "n/a", "null", "cannot_resolve", "") or cmd_val.lower().startswith("verify:"):
+                cmd_val = ""
+
+        if not res_type_val:
+            if not cmd_val:
+                res_type_val = "cannot_resolve"
+            elif "\n" in cmd_val or "step 1" in text.lower():
+                res_type_val = "complex_setup"
+            else:
+                res_type_val = "single_command"
+
+        if res_type_val == "cannot_resolve":
+            cmd_val = ""
+            steps_val = []
+
+        if res_type_val == "complex_setup" and cmd_val and "\n" in cmd_val:
+            steps_val = [s.strip() for s in cmd_val.splitlines() if s.strip()]
+
+        if not exp_val and text:
+            clean_lines = [l for l in text.splitlines() if not l.lower().startswith(("tool:", "dependency", "package:", "executable:", "resolution", "command:", "install:", "verify:", "diagnosis:")) and l.strip()]
+            if clean_lines:
+                exp_val = " ".join(clean_lines)[:300]
+
+        t_name = tool_val or fallback_tool
+        exec_name = exec_val or pkg_val or fallback_exec or fallback_tool
+        pkg_name = pkg_val or exec_val or fallback_exec or fallback_tool
+
+        return {
+            "tool": t_name,
+            "toolName": t_name,
+            "title": f"Install {t_name}",
+            "dependency_type": type_val or fallback_type,
+            "dependencyType": type_val or fallback_type,
+            "package": pkg_name,
+            "packageName": pkg_name,
+            "executable": exec_name,
+            "resolutionType": res_type_val,
+            "resolution_type": res_type_val,
+            "command": cmd_val,
+            "steps": steps_val,
+            "verify": ver_val or f"{exec_name} --version",
+            "verificationCommand": ver_val or f"{exec_name} --version",
+            "diagnosis": diag_val or f"Missing dependency {t_name}",
+            "explanation": exp_val or f"Installs {t_name}.",
+            "source": "ai",
+            "retryOperation": True
+        }
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def resolve_smart_install_context(self, context: dict) -> dict:
+        """
+        NOW actually invokes the AI resolver:
+        1. Emits smartInstallAnalysisStarted and logs lifecycle.
+        2. Sends structured failure context to configured AI backend.
+        3. Parses response and validates command safety, package syntax, and domain isolation.
+        4. If validation fails, performs ONE corrective retry before falling back.
+        5. Returns structured recommendation for explicit user approval.
+        """
+        cur_os = get_current_os()
+        tool_name = context.get("toolName") or context.get("executable") or context.get("operation", "Developer Tool")
+        clean_lang = (context.get("language") or context.get("languageId") or "").lower().strip()
+        retry_act = context.get("retryAction", "run")
+        file_path = context.get("filePath", "")
+
+        print(f"[SmartInstall] ==================================================")
+        print(f"[SmartInstall] AI analysis started")
+        self.smartInstallAnalysisStarted.emit(tool_name)
+
+        # 1. Generate prompt from context
+        prompt = self.generate_smart_install_prompt(context=context)
+        print(f"[SmartInstall] AI request sent")
+
+        # 2. Query configured AI backend through centralized AI pipeline
+        print(f"[SmartInstall] Sending request through existing AI backend")
+        ai_response_text = ""
+        is_ai_available = False
+        ai_failure_reason = ""
+
+        try:
+            from AIBackend import AIBackend
+            ai_backend = self.ai_backend or AIBackend.get_instance()
+            ai_response_text = ai_backend.ask(prompt)
+            if ai_response_text:
+                is_ai_available = True
+            else:
+                ai_failure_reason = "AI backend returned empty response"
+        except Exception as ex:
+            ai_failure_reason = str(ex)
+            is_ai_available = False
+
+        # Check for manifest-contributed recipe if AI failed
+        manifest_recipe = self._contributed_tool_dependencies.get(tool_name, {})
+        recipe_cmd = ""
+        if manifest_recipe:
+            guide = manifest_recipe.get("installGuide", {})
+            recipe_cmd = guide.get(cur_os, "") or guide.get("all", "")
+
+        if is_ai_available and ai_response_text:
+            print(f"[SmartInstall] AI request completed")
+            print(f"[SmartInstall] Raw AI response received: {ai_response_text}")
+
+            parsed = self.parse_ai_install_response(ai_response_text, fallback_tool=tool_name, fallback_exec=tool_name, fallback_type=context.get("operationType", "tool"))
+            print(f"[SmartInstall] AI response parsed")
+
+            # Validate resolution
+            is_valid, val_reason = self.validate_resolution(parsed, context)
+            print(f"[SmartInstall] AI response validation result: is_safe={is_valid}, pkg_valid={is_valid}")
+
+            # Corrective AI retry if invalid
+            if not is_valid:
+                print(f"[SmartInstall] Corrective AI retry started: {val_reason}")
+                reprompt = (
+                    f"Your previous recommendation had an issue: {val_reason}.\n"
+                    f"Please provide a valid, safe, official package identifier and installation command on {cur_os} in valid JSON format.\n\n"
+                    + prompt
+                )
+                corr_text = ""
+                try:
+                    from AIBackend import AIBackend
+                    ai_backend = self.ai_backend or AIBackend.get_instance()
+                    print(f"[SmartInstall] Sending request through existing AI backend")
+                    corr_text = ai_backend.ask(reprompt)
+                    if corr_text:
+                        parsed_corr = self.parse_ai_install_response(corr_text, fallback_tool=tool_name, fallback_exec=tool_name, fallback_type=context.get("operationType", "tool"))
+                        c_valid, c_msg = self.validate_resolution(parsed_corr, context)
+                        if c_valid:
+                            parsed = parsed_corr
+                            is_valid = True
+                        else:
+                            val_reason = c_msg
+                except Exception as rex:
+                    print(f"[SmartInstall] Re-prompt error: {rex}")
+
+            if not is_valid:
+                parsed["resolutionType"] = "cannot_resolve"
+                parsed["resolution_type"] = "cannot_resolve"
+                parsed["command"] = ""
+                parsed["explanation"] = f"Validation blocked command: {val_reason}"
+
+            final_res_type = parsed.get("resolutionType", "single_command")
+            final_source = "ai"
+            final_cmd = parsed.get("command", "")
+
+            proposal = {
+                "toolName": parsed.get("tool") or tool_name,
+                "toolType": parsed.get("dependencyType", "tool"),
+                "dependencyType": parsed.get("dependencyType", "tool"),
+                "packageName": parsed.get("package", tool_name),
+                "executable": parsed.get("executable", tool_name),
+                "resolutionType": final_res_type,
+                "title": parsed.get("title") or f"Install {parsed.get('tool', tool_name)}",
+                "diagnosis": parsed.get("diagnosis") or f"Missing {parsed.get('tool', tool_name)}",
+                "description": parsed.get("explanation") or parsed.get("diagnosis") or f"Installs {parsed.get('tool', tool_name)}",
+                "explanation": parsed.get("explanation", ""),
+                "command": final_cmd,
+                "steps": parsed.get("steps", []),
+                "verifyCommand": parsed.get("verificationCommand") or parsed.get("verify") or f"{parsed.get('executable', tool_name)} --version",
+                "source": final_source,
+                "needsConfirmation": True,
+                "currentOs": cur_os,
+                "retryAction": retry_act,
+                "filePath": file_path,
+                "languageId": clean_lang,
+                "isInstalled": False
+            }
+
+        elif recipe_cmd:
+            print(f"[SmartInstall] AI request failed: {ai_failure_reason or 'offline'}")
+            print(f"[SmartInstall] Resolution source: Built-in Recipe")
+            final_res_type = "single_command"
+            final_source = "built_in_recipe"
+            final_cmd = recipe_cmd
+
+            proposal = {
+                "toolName": tool_name,
+                "toolType": context.get("operationType", "tool"),
+                "dependencyType": context.get("operationType", "tool"),
+                "packageName": tool_name,
+                "executable": manifest_recipe.get("executable", tool_name),
+                "resolutionType": final_res_type,
+                "title": f"Install {tool_name}",
+                "diagnosis": f"Built-in recipe for {tool_name}",
+                "description": f"Installs {tool_name} from extension recipe.",
+                "explanation": f"Installs {tool_name} tool dependency.",
+                "command": final_cmd,
+                "steps": [],
+                "verifyCommand": f"{manifest_recipe.get('executable', tool_name)} --version",
+                "source": final_source,
+                "needsConfirmation": True,
+                "currentOs": cur_os,
+                "retryAction": retry_act,
+                "filePath": file_path,
+                "languageId": clean_lang,
+                "isInstalled": False
+            }
+        else:
+            print(f"[SmartInstall] AI request failed: {ai_failure_reason or 'offline'}")
+            print(f"[SmartInstall] Resolution source: AI Unavailable")
+            final_res_type = "cannot_resolve"
+            final_source = "ai_unavailable"
+            final_cmd = ""
+
+            proposal = {
+                "toolName": tool_name,
+                "toolType": context.get("operationType", "tool"),
+                "dependencyType": context.get("operationType", "tool"),
+                "packageName": tool_name,
+                "executable": tool_name,
+                "resolutionType": final_res_type,
+                "title": f"AI Unavailable for {tool_name}",
+                "diagnosis": "AI could not analyze this issue.",
+                "description": f"Smart Install could not generate a verified recommendation because AI is unavailable ({ai_failure_reason or 'provider unreachable'}).",
+                "explanation": f"AI could not analyze this issue: {ai_failure_reason or 'provider unreachable'}",
+                "command": "",
+                "steps": [],
+                "verifyCommand": f"{tool_name} --version",
+                "source": final_source,
+                "needsConfirmation": True,
+                "currentOs": cur_os,
+                "retryAction": retry_act,
+                "filePath": file_path,
+                "languageId": clean_lang,
+                "isInstalled": False
+            }
+
+        print(f"[SmartInstall] Final resolution type: {proposal.get('resolutionType', final_res_type)}")
+        print(f"[SmartInstall] Source: {proposal.get('source', final_source)}")
+        print(f"[SmartInstall] Command availability: {bool(proposal.get('command', ''))}")
+        print(f"[SmartInstall] ==================================================")
+        return proposal
+
+    @Slot("QVariantMap")
+    def start_smart_install_analysis(self, context: dict):
+        """Asynchronously runs AI resolution in a background thread."""
+        def _worker():
+            try:
+                proposal = self.resolve_smart_install_context(context)
+                self.smartInstallResolved.emit(proposal)
+            except Exception as e:
+                print(f"[SmartInstall] Async analysis error: {e}")
+                self.smartInstallAnalysisFailed.emit(str(context.get("toolName", "tool")), str(e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     @Slot(str, str, str, str, str, result="QVariantMap")
     def suggest_smart_install(self, tool_type: str, tool_name: str, lang_id: str, ext: str, file_path: str = "") -> dict:
         """
-        Suggests an exact Smart Install command proposal based on:
-        1. Known recipes / package managers (pip, npm, cargo, winget, etc.)
-        2. Installed extension tool dependencies
-        3. Configured AI suggestion fallback
+        Convenience resolution entry point (creates context and resolves).
         """
-        cur_os = get_current_os()
-        clean_lang = (lang_id or "").lower().strip()
-        clean_ext = (ext or "").lower().lstrip(".")
-        tool_lower = (tool_name or "").lower().strip()
+        ctx = self.create_smart_install_context(
+            operation=f"Install {tool_name}",
+            operation_type=tool_type,
+            language=lang_id,
+            file_path=file_path,
+            executable=tool_name,
+            detected_missing_dependency=tool_name
+        )
+        return self.resolve_smart_install_context(ctx)
 
-        # Check if already installed
-        exec_to_check = tool_name
-        if "qml" in clean_lang or clean_ext == "qml" or "qml" in tool_lower:
-            exec_to_check = "qmlformat"
-        elif "python" in clean_lang or clean_ext in ("py", "pyw") or "autopep8" in tool_lower:
-            exec_to_check = "autopep8"
-        elif "cpp" in clean_lang or "c++" in clean_lang or clean_ext in ("cpp", "cxx", "cc", "h") or "clang" in tool_lower:
-            exec_to_check = "clang-format"
-        elif "js" in clean_lang or "javascript" in clean_lang or clean_ext in ("js", "ts", "jsx", "tsx") or "prettier" in tool_lower:
-            exec_to_check = "prettier"
-        elif "rust" in clean_lang or clean_ext == "rs" or "rustfmt" in tool_lower:
-            exec_to_check = "rustfmt"
-        elif "go" in clean_lang or clean_ext == "go" or "gofmt" in tool_lower:
-            exec_to_check = "gofmt"
-
-        existing_p = locate_executable(exec_to_check)
-        if existing_p:
-            return {
-                "isInstalled": True,
-                "detectedPath": existing_p,
-                "toolName": tool_name or exec_to_check,
-                "executable": exec_to_check,
-                "message": f"{tool_name or exec_to_check} is already installed at {existing_p}."
-            }
-
-        # 1. Known Recipes
-        known_recipes = {
-            "qmlformat": {
-                "toolName": "QML Formatter (qmlformat)",
-                "toolType": "formatter",
-                "executable": "qmlformat",
-                "description": "Installs the official Qt QML code formatter (PySide6/qmlformat) for clean formatting.",
-                "command": f'"{sys.executable}" -m pip install --no-warn-script-location PySide6',
-                "source": "recipe",
-                "verification": "qmlformat"
-            },
-            "autopep8": {
-                "toolName": "Python Formatter (autopep8 / black)",
-                "toolType": "formatter",
-                "executable": "autopep8",
-                "description": "Installs PEP 8 Python formatters (autopep8 & black) via pip.",
-                "command": f'"{sys.executable}" -m pip install --no-warn-script-location autopep8 black',
-                "source": "recipe",
-                "verification": "autopep8"
-            },
-            "clang-format": {
-                "toolName": "C/C++ Formatter (clang-format)",
-                "toolType": "formatter",
-                "executable": "clang-format",
-                "description": "Installs official standalone LLVM clang-format binary (~3.5MB wheel) via pip.",
-                "command": f'"{sys.executable}" -m pip install --no-warn-script-location clang-format',
-                "source": "recipe",
-                "verification": "clang-format"
-            },
-            "prettier": {
-                "toolName": "Prettier Formatter (JS/TS/HTML/CSS)",
-                "toolType": "formatter",
-                "executable": "prettier",
-                "description": "Installs global Prettier code formatter via Node.js npm.",
-                "command": "npm install -g prettier",
-                "source": "recipe",
-                "verification": "prettier"
-            },
-            "rustfmt": {
-                "toolName": "Rust Formatter (rustfmt)",
-                "toolType": "formatter",
-                "executable": "rustfmt",
-                "description": "Adds the official rustfmt formatting component via rustup.",
-                "command": "rustup component add rustfmt",
-                "source": "recipe",
-                "verification": "rustfmt"
-            },
-            "gofmt": {
-                "toolName": "Go Formatter & Toolchain (gofmt)",
-                "toolType": "formatter",
-                "executable": "gofmt",
-                "description": "Installs the official Go language distribution via winget.",
-                "command": "winget install --id GoLang.Go -e --accept-source-agreements --accept-package-agreements" if cur_os == "windows" else "brew install go",
-                "source": "recipe",
-                "verification": "gofmt"
-            }
-        }
-
-        # Match known recipe
-        key = None
-        for k in known_recipes:
-            if k in exec_to_check.lower() or k in tool_lower:
-                key = k
-                break
-
-        if key:
-            prop = known_recipes[key]
-            return {
-                "isInstalled": False,
-                "toolName": prop["toolName"],
-                "toolType": tool_type or prop["toolType"],
-                "executable": prop["executable"],
-                "description": prop["description"],
-                "command": prop["command"],
-                "source": prop["source"],
-                "needsConfirmation": True,
-                "currentOs": cur_os,
-                "retryAction": "format" if tool_type == "formatter" else "run",
-                "filePath": file_path,
-                "languageId": clean_lang
-            }
-
-        # 2. Check Extension Tool Dependencies
-        if tool_name in self._contributed_tool_dependencies:
-            dep = self._contributed_tool_dependencies[tool_name]
-            guide = dep.get("installGuide", {})
-            inst_cmd = guide.get(cur_os, "") or guide.get("all", "")
-            if inst_cmd:
-                return {
-                    "isInstalled": False,
-                    "toolName": dep.get("name", tool_name),
-                    "toolType": tool_type or "tool",
-                    "executable": dep.get("executable", tool_name),
-                    "description": f"Installs {tool_name} tool dependency contributed by extension.",
-                    "command": inst_cmd,
-                    "source": "extension",
-                    "needsConfirmation": True,
-                    "currentOs": cur_os,
-                    "retryAction": "format" if tool_type == "formatter" else "run",
-                    "filePath": file_path,
-                    "languageId": clean_lang
-                }
-
-        # 3. Fallback AI / Smart suggestion
-        fallback_cmd = ""
-        if cur_os == "windows":
-            fallback_cmd = f"pip install {tool_name}" if "pip" in tool_lower or "py" in clean_lang else f"winget install {tool_name}"
-        else:
-            fallback_cmd = f"pip install {tool_name}" if "pip" in tool_lower else f"brew install {tool_name}"
-
-        return {
-            "isInstalled": False,
-            "toolName": tool_name or f"{clean_lang or clean_ext} tool",
-            "toolType": tool_type or "tool",
-            "executable": exec_to_check,
-            "description": f"Proposed installation command for {tool_name or clean_lang} on {cur_os.capitalize()}.",
-            "command": fallback_cmd,
-            "source": "ai",
-            "needsConfirmation": True,
-            "currentOs": cur_os,
-            "retryAction": "format" if tool_type == "formatter" else "run",
-            "filePath": file_path,
-            "languageId": clean_lang
-        }
-
-    @Slot(str, str, str, str, str, result=bool)
-    def execute_smart_install_command(self, tool_name: str, command: str, executable: str, retry_action: str = "", file_path: str = "") -> bool:
+    @Slot(str, str, int, str, str, str, str, result="QVariantMap")
+    def suggest_smart_install_for_failure(self, operation: str, error_output: str, exit_code: int, failed_command: str, lang_id: str = "", ext: str = "", file_path: str = "") -> dict:
         """
-        Executes an approved Smart Install command in the background,
-        captures output, verifies the resulting executable, updates tool paths, and notifies completion.
+        Convenience resolution entry point for command / runtime failures.
         """
+        ctx = self.create_smart_install_context(
+            operation=operation,
+            operation_type="failure",
+            language=lang_id,
+            file_path=file_path,
+            command_attempted=failed_command,
+            exit_code=exit_code,
+            stderr=error_output,
+            error_message=error_output
+        )
+        return self.resolve_smart_install_context(ctx)
+
+    def _classify_install_method(self, command: str, executable: str, package_name: str) -> str:
+        cmd_lower = (command or "").lower().strip()
+        if "dotnet tool install" in cmd_lower:
+            return "dotnet_global_tool"
+        if "pip install" in cmd_lower or "pip3 install" in cmd_lower or " -m pip " in cmd_lower:
+            return "python_package"
+        if "npm install -g" in cmd_lower or "pnpm add -g" in cmd_lower or "yarn global add" in cmd_lower:
+            return "npm_global"
+        if "cargo install" in cmd_lower or "rustup " in cmd_lower:
+            return "cargo"
+        if "winget install" in cmd_lower:
+            return "winget"
+        if any(pm in cmd_lower for pm in ("brew install", "apt-get install", "apt install", "pacman -s", "choco install")):
+            return "system_package"
+        return "direct_cli"
+
+    def _extract_package_from_command(self, command: str, fallback: str = "") -> str:
         if not command:
+            return fallback
+        parts = command.strip().split()
+        if "dotnet" in parts and "tool" in parts and "install" in parts:
+            for i, p in enumerate(parts):
+                if p == "install" and i + 1 < len(parts):
+                    rest = [x for x in parts[i+1:] if not x.startswith("-")]
+                    if rest:
+                        return rest[-1]
+        if "-m" in parts and "pip" in parts and "install" in parts:
+            try:
+                idx = parts.index("install")
+                pkgs = [p for p in parts[idx+1:] if not p.startswith("-")]
+                if pkgs:
+                    return pkgs[0]
+            except ValueError:
+                pass
+        if "npm" in parts and "install" in parts:
+            try:
+                idx = parts.index("install")
+                pkgs = [p for p in parts[idx+1:] if not p.startswith("-")]
+                if pkgs:
+                    return pkgs[0]
+            except ValueError:
+                pass
+        return fallback
+
+    def generate_post_install_prompt(
+        self,
+        tool_name: str,
+        command: str,
+        install_exit_code: int,
+        install_stdout: str,
+        install_stderr: str,
+        verify_cmd: str,
+        verify_exit_code: int,
+        verify_stdout: str,
+        verify_stderr: str,
+        executable: str = "",
+        package_name: str = "",
+        language: str = "",
+        os_name: str = "",
+        shell_name: str = "",
+        working_dir: str = "",
+        verified_path: str = "",
+        original_diagnosis: str = "",
+        fix_attempt_count: int = 0,
+        is_post_fix: bool = False
+    ) -> str:
+        """
+        Constructs the dedicated prompt sent to AI for post-install execution output analysis.
+        """
+        cur_os = os_name or get_current_os()
+        sh_name = shell_name or ("PowerShell" if cur_os == "windows" else os.environ.get("SHELL", "bash").split("/")[-1])
+        cwd_dir = working_dir or os.getcwd()
+        exec_str = executable or tool_name
+        pkg_str = package_name or exec_str
+
+        return (
+            "You are the post-install verification and recovery AI for DGX Studio.\n"
+            "A Smart Install command was already approved by the user and executed.\n"
+            "Your job is NOT to generate a new installation recommendation yet.\n"
+            "Your job is to inspect the REAL installation output and determine what actually happened.\n\n"
+            "You must distinguish:\n"
+            "- installation succeeded\n"
+            "- installation failed\n"
+            "- installation failed but can be fixed automatically with another safe command\n"
+            "- installation cannot be completed automatically and requires manual installation\n\n"
+            "The backend has already provided factual execution results.\n"
+            "Treat those facts as authoritative.\n"
+            "Do not invent success.\n"
+            "Do not claim success because the command exited with code 0 if verification shows that the required tool is still unavailable.\n"
+            "Do not claim failure if the tool is actually installed and verified.\n"
+            "Do not recommend reinstalling something that is already verified.\n"
+            "Analyze the actual stdout, stderr, exit code, and verification result.\n\n"
+            "EXECUTION FACTS:\n"
+            f"- Target Tool: {tool_name}\n"
+            f"- Executable: {exec_str}\n"
+            f"- Package: {pkg_str}\n"
+            f"- Language: {language or 'general'}\n"
+            f"- Operating System: {cur_os}\n"
+            f"- Shell: {sh_name}\n"
+            f"- Working Directory: {cwd_dir}\n"
+            f"- Command Executed: {command}\n"
+            f"- Installation Exit Code: {install_exit_code}\n"
+            f"- Installation Stdout:\n{install_stdout or '(empty)'}\n"
+            f"- Installation Stderr:\n{install_stderr or '(empty)'}\n\n"
+            "VERIFICATION FACTS:\n"
+            f"- Verification Command: {verify_cmd}\n"
+            f"- Verification Exit Code: {verify_exit_code}\n"
+            f"- Verification Stdout:\n{verify_stdout or '(empty)'}\n"
+            f"- Verification Stderr:\n{verify_stderr or '(empty)'}\n"
+            f"- Detected Executable Path: {verified_path or 'None'}\n\n"
+            "ADDITIONAL CONTEXT:\n"
+            f"- Original Diagnosis: {original_diagnosis or 'Tool was missing'}\n"
+            f"- Fix Attempt Count: {fix_attempt_count}\n"
+            f"- Execution Phase: {'Post-fix verification' if is_post_fix else 'Initial post-install verification'}\n\n"
+            "Return EXACTLY one of the following responses:\n"
+            "SUCCESS\n"
+            "FAILED\n"
+            "[FIX] <exact safe command>\n"
+            "MANUAL_INSTALLATION_REQUIRED\n"
+            "Do not return any other status format."
+        )
+
+    @staticmethod
+    def parse_post_install_ai_response(response_text: str) -> Tuple[str, str, str]:
+        """
+        Parses post-install AI diagnosis response into (status, fix_command, explanation).
+        status: 'SUCCESS' | 'FAILED' | 'FIX' | 'MANUAL_INSTALLATION_REQUIRED' | 'INVALID'
+        """
+        if not response_text:
+            return "INVALID", "", "Empty AI response"
+
+        text = response_text.strip()
+        if text.lower().startswith("chatgpt said:"):
+            text = text[13:].strip()
+
+        # Remove surrounding markdown fences if present
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 2:
+                text = "\n".join(lines[1:-1]).strip()
+
+        # Check for [FIX] command
+        fix_match = re.search(r'\[FIX\]\s*(.+)', text, re.IGNORECASE)
+        if fix_match:
+            full_fix = fix_match.group(1).strip()
+            fix_lines = full_fix.splitlines()
+            fix_cmd = fix_lines[0].strip("`").strip()
+            explanation = "\n".join(fix_lines[1:]).strip() if len(fix_lines) > 1 else text
+            return "FIX", fix_cmd, explanation
+
+        # Check for MANUAL_INSTALLATION_REQUIRED
+        if re.search(r'\bMANUAL_INSTALLATION_REQUIRED\b', text, re.IGNORECASE):
+            return "MANUAL_INSTALLATION_REQUIRED", "", text
+
+        # Check for SUCCESS
+        first_word = text.split()[0].upper() if text.split() else ""
+        if first_word == "SUCCESS" or re.search(r'^\s*SUCCESS\b', text, re.MULTILINE):
+            return "SUCCESS", "", text
+
+        # Check for FAILED
+        if first_word == "FAILED" or re.search(r'^\s*FAILED\b', text, re.MULTILINE):
+            return "FAILED", "", text
+
+        return "INVALID", "", text
+
+    def diagnose_post_install_result(
+        self,
+        tool_name: str,
+        command: str,
+        install_exit_code: int,
+        install_stdout: str,
+        install_stderr: str,
+        verify_cmd: str,
+        verify_exit_code: int,
+        verify_stdout: str,
+        verify_stderr: str,
+        executable: str = "",
+        package_name: str = "",
+        language: str = "",
+        retry_action: str = "",
+        file_path: str = "",
+        verified_path: str = "",
+        original_diagnosis: str = "",
+        fix_attempt_count: int = 0,
+        is_post_fix: bool = False
+    ) -> Tuple[str, str, str]:
+        """
+        Queries the real AI backend with full execution outputs to diagnose post-install state.
+        Returns (status, fix_command, explanation).
+        """
+        print("[SmartInstall] Post-install AI analysis started")
+        print(f"[SmartInstall] Installation exit code: {install_exit_code}")
+        print(f"[SmartInstall] Verification exit code: {verify_exit_code}")
+        print("[SmartInstall] Sending installation output to AI")
+
+        prompt = self.generate_post_install_prompt(
+            tool_name=tool_name,
+            command=command,
+            install_exit_code=install_exit_code,
+            install_stdout=install_stdout,
+            install_stderr=install_stderr,
+            verify_cmd=verify_cmd,
+            verify_exit_code=verify_exit_code,
+            verify_stdout=verify_stdout,
+            verify_stderr=verify_stderr,
+            executable=executable,
+            package_name=package_name,
+            language=language,
+            working_dir=os.path.dirname(os.path.abspath(file_path)) if file_path else os.getcwd(),
+            verified_path=verified_path,
+            original_diagnosis=original_diagnosis,
+            fix_attempt_count=fix_attempt_count,
+            is_post_fix=is_post_fix
+        )
+
+        ai_response_text = ""
+        try:
+            from AIBackend import AIBackend
+            ai_backend = self.ai_backend or AIBackend.get_instance()
+            ai_response_text = ai_backend.ask(prompt)
+        except Exception as e:
+            print(f"[SmartInstall] Post-install AI request exception: {e}")
+
+        if not ai_response_text:
+            print("[SmartInstall] AI unavailable for post-install analysis -> using factual exit codes")
+            if install_exit_code == 0 and verify_exit_code == 0:
+                print("[SmartInstall] Post-install AI result: SUCCESS")
+                return "SUCCESS", "", "Tool installed and verified successfully."
+            else:
+                err = install_stderr or install_stdout or verify_stderr or verify_stdout or f"Exit code {install_exit_code}"
+                print("[SmartInstall] Post-install AI result: FAILED")
+                return "FAILED", "", err
+
+        print("[SmartInstall] Post-install AI response received")
+        print(f"[SmartInstall] Post-install AI raw response: {ai_response_text}")
+
+        status, fix_cmd, explanation = self.parse_post_install_ai_response(ai_response_text)
+
+        # Corrective request if invalid format
+        if status == "INVALID":
+            print("[SmartInstall] Post-install AI response invalid format -> running corrective request")
+            reprompt = (
+                "The previous post-install response did not follow the required protocol.\n"
+                "Return exactly one of:\n"
+                "SUCCESS\n"
+                "FAILED\n"
+                "[FIX] <safe command>\n"
+                "MANUAL_INSTALLATION_REQUIRED\n\n"
+                + prompt
+            )
+            try:
+                from AIBackend import AIBackend
+                ai_backend = self.ai_backend or AIBackend.get_instance()
+                second_resp = ai_backend.ask(reprompt)
+                print(f"[SmartInstall] Post-install AI corrective response: {second_resp}")
+                status, fix_cmd, explanation = self.parse_post_install_ai_response(second_resp)
+                if status == "INVALID":
+                    status = "FAILED"
+                    explanation = second_resp or "Invalid AI format"
+            except Exception as e:
+                status = "FAILED"
+                explanation = str(e)
+
+        if status == "SUCCESS":
+            print("[SmartInstall] Post-install AI result: SUCCESS")
+        elif status == "FIX":
+            print("[SmartInstall] Post-install AI result: FIX")
+            print(f"[SmartInstall] AI suggested fix: {fix_cmd}")
+        elif status == "MANUAL_INSTALLATION_REQUIRED":
+            print("[SmartInstall] Post-install AI result: MANUAL_INSTALLATION_REQUIRED")
+        else:
+            print("[SmartInstall] Post-install AI result: FAILED")
+
+        return status, fix_cmd, explanation
+
+    @Slot(str, str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, result=bool)
+    @Slot(str, str, str, result=bool)
+    def execute_smart_install_command(self, tool_name: str, command: str, executable: str = "", retry_action: str = "", file_path: str = "", verify_command: str = "") -> bool:
+        """
+        Executes an approved Smart Install command only after explicit user approval:
+        1. Logs user approval and starts installation.
+        2. Validates command safety.
+        3. Executes approved command.
+        4. Verifies installation via verifyCommand or resolved executable.
+        5. Sends real execution outputs to AI for post-install verification diagnosis.
+        6. Handles SUCCESS, FIX, MANUAL_INSTALLATION_REQUIRED, or FAILED.
+        """
+        print(f"[SmartInstall] User approved install")
+        if not command:
+            print(f"[SmartInstall] Execution failed: empty command")
+            self.smartInstallCompleted.emit(tool_name, False, "Cannot execute: installation command is empty.", retry_action)
+            return False
+
+        # Command safety validation
+        is_safe, reason = self.validate_command_safety(command, tool_name)
+        if not is_safe:
+            print(f"[SmartInstall] Execution blocked: {reason}")
+            self.smartInstallCompleted.emit(tool_name, False, f"Execution halted: {reason}", retry_action)
             return False
 
         if tool_name in self._installing_tools:
             return False
 
         self._installing_tools.add(tool_name)
-        self.smartInstallProgress.emit(tool_name, "installing", f"Running: {command}")
+        print(f"[SmartInstall] Installation started: {command}")
+        self.smartInstallProgress.emit(tool_name, "installing", f"Running approved command: {command}")
 
         def _worker():
             try:
-                is_win = sys.platform.startswith("win")
                 use_shell = True
                 proc = subprocess.run(command, shell=use_shell, capture_output=True, text=True, timeout=300)
                 stdout = proc.stdout.strip()
                 stderr = proc.stderr.strip()
+                install_exit = proc.returncode
 
-                if proc.returncode == 0:
-                    self.smartInstallProgress.emit(tool_name, "installing", "Verifying installed executable...")
-                    time.sleep(0.5)
+                print(f"[SmartInstall] Installation exit code: {install_exit}")
+                self.smartInstallProgress.emit(tool_name, "installing", "Verifying installed executable and environment...")
+                time.sleep(0.3)
 
-                    verified_path = locate_executable(executable) or locate_executable(tool_name)
-                    if verified_path:
-                        self.smartInstallCompleted.emit(
-                            tool_name, True,
-                            f"{tool_name} installed successfully! ({verified_path})",
-                            retry_action
-                        )
-                        self.reload_extensions()
-                    else:
-                        # Success exit code but check if command was pip
-                        self.smartInstallCompleted.emit(
-                            tool_name, True,
-                            f"Installation completed (exit code 0): {stdout or stderr or 'Success'}",
-                            retry_action
-                        )
-                        self.reload_extensions()
+                pkg_ident = self._extract_package_from_command(command, executable or tool_name)
+                install_method = self._classify_install_method(command, executable, pkg_ident)
+
+                verified_path = ""
+                if install_method == "dotnet_global_tool":
+                    dotnet_info = resolve_dotnet_global_tool(pkg_ident, executable)
+                    verified_path = dotnet_info.get("executable") or locate_executable(executable) or locate_executable(tool_name)
+                elif install_method == "python_package":
+                    py_tool_info = resolve_python_tool(pkg_ident, executable, sys.executable)
+                    verified_path = py_tool_info.get("executable") or locate_executable(executable) or locate_executable(tool_name)
                 else:
-                    err_msg = stderr or stdout or f"Process returned exit code {proc.returncode}"
-                    self.smartInstallCompleted.emit(tool_name, False, f"Installation failed: {err_msg}", retry_action)
+                    verified_path = locate_executable(executable) or locate_executable(tool_name)
+
+                if verified_path:
+                    v_cmd = f'"{verified_path}" --version'
+                elif verify_command:
+                    v_cmd = verify_command
+                elif executable:
+                    v_cmd = f'"{executable}" --version'
+                else:
+                    v_cmd = f'"{tool_name}" --version'
+
+                print(f"[SmartInstall] Verification started: {v_cmd}")
+                v_proc = subprocess.run(v_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                v_exit = v_proc.returncode
+                v_stdout = v_proc.stdout.strip()
+                v_stderr = v_proc.stderr.strip()
+                print(f"[SmartInstall] Verification exit code: {v_exit}")
+
+                self.smartInstallProgress.emit(tool_name, "post_install_analyzing", "Running post-install AI verification...")
+
+                status, fix_cmd, explanation = self.diagnose_post_install_result(
+                    tool_name=tool_name,
+                    command=command,
+                    install_exit_code=install_exit,
+                    install_stdout=stdout,
+                    install_stderr=stderr,
+                    verify_cmd=v_cmd,
+                    verify_exit_code=v_exit,
+                    verify_stdout=v_stdout,
+                    verify_stderr=v_stderr,
+                    executable=executable,
+                    package_name=pkg_ident,
+                    language="",
+                    retry_action=retry_action,
+                    file_path=file_path,
+                    verified_path=verified_path,
+                    fix_attempt_count=0,
+                    is_post_fix=False
+                )
+
+                if status == "SUCCESS":
+                    ver_str = (v_stdout or v_stderr or "OK").splitlines()[0] if (v_stdout or v_stderr) else "OK"
+                    print(f"[SmartInstall] Verification result: success ({ver_str})")
+                    print(f"[SmartInstall] Cache invalidation")
+                    print(f"[SmartInstall] Environment refresh")
+                    print(f"[SmartInstall] Original operation retry: {retry_action or 'none'}")
+
+                    self.invalidate_cache()
+                    self.reload_extensions()
+
+                    msg = f"{tool_name} installed and verified successfully! ({ver_str})"
+                    if verified_path:
+                        msg += f"\nLocation: {verified_path}"
+
+                    print(f"[SmartInstall] Retry result: triggered")
+                    self.smartInstallPostInstallVerified.emit(tool_name, "success", msg, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, True, msg, retry_action)
+
+                elif status == "FIX":
+                    # Prompt user with proposed fix
+                    self.smartInstallFixProposed.emit(tool_name, fix_cmd, explanation, retry_action, file_path, v_cmd, 1)
+                    self.smartInstallPostInstallVerified.emit(tool_name, "fix_available", explanation, retry_action, file_path, "")
+
+                elif status == "MANUAL_INSTALLATION_REQUIRED":
+                    print(f"[SmartInstall] Manual installation required for {tool_name}")
+                    msg = explanation or "Manual installation is required."
+                    self.smartInstallPostInstallVerified.emit(tool_name, "manual_installation_required", msg, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, msg, retry_action)
+
+                else:
+                    err_msg = explanation or stderr or stdout or f"Process exited with code {install_exit}"
+                    print(f"[SmartInstall] Installation failed with exit code {install_exit}:\n{err_msg}")
+                    self.smartInstallPostInstallVerified.emit(tool_name, "failed", err_msg, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, err_msg, retry_action)
 
             except Exception as e:
+                print(f"[SmartInstall] Execution exception: {e}")
                 self.smartInstallCompleted.emit(tool_name, False, f"Execution error: {e}", retry_action)
             finally:
                 self._installing_tools.discard(tool_name)
 
         threading.Thread(target=_worker, daemon=True).start()
         return True
+
+    @Slot(str, str, str, str, str, str, int, result=bool)
+    @Slot(str, str, str, str, str, str, result=bool)
+    def execute_smart_install_fix(
+        self,
+        tool_name: str,
+        fix_command: str,
+        executable: str = "",
+        retry_action: str = "",
+        file_path: str = "",
+        verify_command: str = "",
+        fix_attempt_count: int = 1
+    ) -> bool:
+        """
+        Executes an AI-suggested fix command after explicit user approval,
+        re-verifies, and sends results back to GPT for post-fix diagnosis.
+        Enforces maximum 2 fix attempts per session to prevent infinite loops.
+        """
+        print("[SmartInstall] User approved AI fix")
+        if not fix_command:
+            self.smartInstallCompleted.emit(tool_name, False, "Cannot execute fix: fix command is empty.", retry_action)
+            return False
+
+        if fix_attempt_count > 2:
+            print("[SmartInstall] Maximum fix attempts (2) reached -> manual installation required")
+            self.smartInstallPostInstallVerified.emit(
+                tool_name, "manual_installation_required",
+                "Automated fix attempts reached the maximum limit (2). Manual installation is required.",
+                retry_action, file_path, ""
+            )
+            self.smartInstallCompleted.emit(tool_name, False, "Maximum fix attempts reached.", retry_action)
+            return False
+
+        # Validate command safety
+        is_safe, reason = self.validate_command_safety(fix_command, tool_name)
+        if not is_safe:
+            print(f"[SmartInstall] Execution blocked: {reason}")
+            self.smartInstallCompleted.emit(tool_name, False, f"Execution halted: {reason}", retry_action)
+            return False
+
+        print("[SmartInstall] AI fix execution started")
+        self.smartInstallProgress.emit(tool_name, "installing", f"Running AI suggested fix: {fix_command}")
+
+        def _fix_worker():
+            try:
+                proc = subprocess.run(fix_command, shell=True, capture_output=True, text=True, timeout=300)
+                fix_stdout = proc.stdout.strip()
+                fix_stderr = proc.stderr.strip()
+                fix_exit_code = proc.returncode
+
+                print(f"[SmartInstall] AI fix exit code: {fix_exit_code}")
+                print("[SmartInstall] Re-verification started")
+                self.smartInstallProgress.emit(tool_name, "installing", "Re-verifying tool after fix...")
+
+                pkg_ident = self._extract_package_from_command(fix_command, executable or tool_name)
+                install_method = self._classify_install_method(fix_command, executable, pkg_ident)
+                verified_path = ""
+                if install_method == "dotnet_global_tool":
+                    dotnet_info = resolve_dotnet_global_tool(pkg_ident, executable)
+                    verified_path = dotnet_info.get("executable") or locate_executable(executable) or locate_executable(tool_name)
+                elif install_method == "python_package":
+                    py_tool_info = resolve_python_tool(pkg_ident, executable, sys.executable)
+                    verified_path = py_tool_info.get("executable") or locate_executable(executable) or locate_executable(tool_name)
+                else:
+                    verified_path = locate_executable(executable) or locate_executable(tool_name)
+
+                if verified_path:
+                    v_cmd = f'"{verified_path}" --version'
+                elif verify_command:
+                    v_cmd = verify_command
+                elif executable:
+                    v_cmd = f'"{executable}" --version'
+                else:
+                    v_cmd = f'"{tool_name}" --version'
+
+                v_proc = subprocess.run(v_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                v_exit_code = v_proc.returncode
+                v_stdout = v_proc.stdout.strip()
+                v_stderr = v_proc.stderr.strip()
+
+                print("[SmartInstall] Post-fix AI analysis started")
+                status, next_fix_cmd, explanation = self.diagnose_post_install_result(
+                    tool_name=tool_name,
+                    command=fix_command,
+                    install_exit_code=fix_exit_code,
+                    install_stdout=fix_stdout,
+                    install_stderr=fix_stderr,
+                    verify_cmd=v_cmd,
+                    verify_exit_code=v_exit_code,
+                    verify_stdout=v_stdout,
+                    verify_stderr=v_stderr,
+                    executable=executable,
+                    package_name=pkg_ident,
+                    retry_action=retry_action,
+                    file_path=file_path,
+                    verified_path=verified_path,
+                    fix_attempt_count=fix_attempt_count,
+                    is_post_fix=True
+                )
+                print(f"[SmartInstall] Post-fix AI result: {status}")
+
+                if status == "SUCCESS":
+                    self.invalidate_cache()
+                    self.reload_extensions()
+                    ver_str = (v_stdout or v_stderr or "OK").splitlines()[0] if (v_stdout or v_stderr) else "OK"
+                    msg = f"{tool_name} installed and verified successfully after fix! ({ver_str})"
+                    self.smartInstallPostInstallVerified.emit(tool_name, "success", msg, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, True, msg, retry_action)
+                elif status == "FIX":
+                    if fix_attempt_count >= 2:
+                        print("[SmartInstall] Maximum fix attempts (2) reached -> manual installation required")
+                        msg = "Automated fix attempts reached the maximum limit (2). Manual installation is required."
+                        self.smartInstallPostInstallVerified.emit(tool_name, "manual_installation_required", msg, retry_action, file_path, "")
+                        self.smartInstallCompleted.emit(tool_name, False, msg, retry_action)
+                    else:
+                        self.smartInstallFixProposed.emit(tool_name, next_fix_cmd, explanation, retry_action, file_path, v_cmd, fix_attempt_count + 1)
+                        self.smartInstallPostInstallVerified.emit(tool_name, "fix_available", explanation, retry_action, file_path, "")
+                elif status == "MANUAL_INSTALLATION_REQUIRED":
+                    self.smartInstallPostInstallVerified.emit(tool_name, "manual_installation_required", explanation, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, explanation, retry_action)
+                else:
+                    err_msg = explanation or fix_stderr or f"Fix execution failed with code {fix_exit_code}"
+                    self.smartInstallPostInstallVerified.emit(tool_name, "failed", err_msg, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, err_msg, retry_action)
+
+            except Exception as e:
+                print(f"[SmartInstall] Fix execution exception: {e}")
+                self.smartInstallCompleted.emit(tool_name, False, f"Fix error: {e}", retry_action)
+            finally:
+                self._installing_tools.discard(tool_name)
+
+        threading.Thread(target=_fix_worker, daemon=True).start()
+        return True
+
+    @Slot(str, bool, str)
+    @Slot(str, bool)
+    def report_retry_result(self, tool_name: str, success: bool, error_message: str = ""):
+        """Reports whether the original operation succeeded or failed after post-install verification."""
+        print(f"[SmartInstall] Retry result: {'success' if success else 'failed'} ({error_message})")
+        self.originalOperationRetried.emit(tool_name, success, error_message)
 
     @Slot(str)
     def install_formatter(self, extension_id: str):
@@ -1154,8 +2572,34 @@ class ExtensionManager(QObject):
     def get_custom_formatter_path(self, extension_id: str) -> str:
         return self._custom_paths.get(extension_id, "")
 
-    def locate_executable(self, cmd: str, custom_path: Optional[str] = None) -> Optional[str]:
-        return locate_executable(cmd, custom_path)
+    @Slot(str, result=str)
+    @Slot(str, str, result=str)
+    def locate_executable(self, cmd: str, custom_path: Optional[str] = None) -> str:
+        res = locate_executable(cmd, custom_path)
+        return res if res else ""
+
+    @Slot(str, result=bool)
+    @Slot(str, str, result=bool)
+    def is_executable_installed(self, cmd: str, custom_path: Optional[str] = None) -> bool:
+        return bool(locate_executable(cmd, custom_path))
+
+    @Slot(str, str, str, result="QVariantMap")
+    @Slot(str, str, result="QVariantMap")
+    @Slot(str, result="QVariantMap")
+    def resolve_python_tool(self, package_name: str, executable_name: str = "", python_executable: str = "") -> dict:
+        return resolve_python_tool(package_name, executable_name, python_executable or sys.executable)
+
+    @Slot(str, str, str, result="QVariantMap")
+    @Slot(str, str, result="QVariantMap")
+    @Slot(str, result="QVariantMap")
+    def resolve_dotnet_global_tool(self, package_name: str, executable_name: str = "", dotnet_executable: str = "") -> dict:
+        return resolve_dotnet_global_tool(package_name, executable_name, dotnet_executable or "")
+
+    @Slot()
+    def invalidate_cache(self):
+        """Invalidates all cached executable paths and reloads extensions."""
+        self._custom_paths = self._load_custom_paths()
+        self.reload_extensions()
 
     @Slot(str)
     def copy_to_clipboard(self, text: str):

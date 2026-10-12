@@ -7,6 +7,7 @@
   "languages": ["rust"],
   "extensions": [".rs"],
   "formatter": {
+    "supportedLanguages": ["rust"],
     "provider": "rustfmt",
     "type": "cli",
     "executable": "rustfmt",

@@ -7,6 +7,7 @@
   "languages": ["python"],
   "extensions": [".py", ".pyw"],
   "formatter": {
+    "supportedLanguages": ["python"],
     "provider": "autopep8 / black / ruff",
     "type": "python",
     "executable": "autopep8",

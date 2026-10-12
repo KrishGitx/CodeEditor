@@ -2,6 +2,10 @@
 
 .pragma library
 
+if (typeof console === "undefined") {
+    var console = { log: function() {}, warn: function() {}, error: function() {} };
+}
+
 /**
  * Normalizes language names to a canonical identifier.
  */
@@ -34,6 +38,126 @@ function isLangMatch(lang1, lang2) {
 }
 
 /**
+ * Validates that an extracted replacement code covers the complete selected scope
+ * and is not a destructive partial fragment or unauthorized scope expansion (e.g. full-file rewrite on small selection).
+ *
+ * @param {string} extractedCode - The extracted replacement candidate
+ * @param {string} originalSelectedText - The original text selected by the user
+ * @param {object} context - Selection context metadata (optional: { isFullFile, selectionStart, selectionEnd, totalDocLength, surroundingContext })
+ * @returns {object} - { isValid: boolean, reason?: string }
+ */
+function validateReplacementScope(extractedCode, originalSelectedText, context) {
+    if (!originalSelectedText || typeof originalSelectedText !== "string" || !originalSelectedText.trim()) {
+        return { isValid: true, reason: "No original selection" };
+    }
+    if (!extractedCode || typeof extractedCode !== "string" || !extractedCode.trim()) {
+        return { isValid: false, reason: "Replacement code is empty." };
+    }
+
+    var ctx = context || {};
+    var isFullFile = (ctx.isFullFile === true) || (ctx.selectionStart === 0 && ctx.totalDocLength > 0 && ctx.selectionEnd >= ctx.totalDocLength);
+
+    if (isFullFile) {
+        return { isValid: true, reason: "Full file selection allows complete replacement." };
+    }
+
+    var origTrim = originalSelectedText.trim();
+    var replTrim = extractedCode.trim();
+
+    if (origTrim === replTrim) {
+        return { isValid: true, reason: "Code identical" };
+    }
+
+    var origLines = origTrim.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+    var replLines = replTrim.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+
+    var origLineCount = origLines.length;
+    var replLineCount = replLines.length;
+
+    // 1. Scope Expansion Hazard: Outer Enclosure Insertion (e.g. with sync_playwright(), def main(), class X)
+    var outerWrapperPatterns = [
+        { regex: /\bwith\s+sync_playwright\b/, name: "with sync_playwright block", allowRegex: /\b(?:playwright|wright)\b/i },
+        { regex: /\bdef\s+main\s*\(/, name: "def main() entrypoint", allowRegex: /\bmain\b/i },
+        { regex: /\bif\s+__name__\s*==\s*['"]__main__['"]/, name: "if __name__ == '__main__' block", allowRegex: /__main__/ },
+        { regex: /\bclass\s+\w+/, name: "class definition", allowRegex: /\bclass\b/ },
+        { regex: /\bint\s+main\s*\(/, name: "main() function", allowRegex: /\bmain\b/i },
+        { regex: /\bpublic\s+static\s+void\s+main\b/, name: "public static void main entrypoint", allowRegex: /\bmain\b/i }
+    ];
+
+    for (var i = 0; i < outerWrapperPatterns.length; i++) {
+        var pat = outerWrapperPatterns[i];
+        if (pat.regex.test(replTrim) && !pat.regex.test(origTrim)) {
+            if (pat.allowRegex && pat.allowRegex.test(origTrim)) {
+                continue;
+            }
+            if (origLineCount <= 6) {
+                return {
+                    isValid: false,
+                    reason: "Scope Hazard: Replacement introduced outer wrapper (" + pat.name + ") not present in selected code."
+                };
+            }
+        }
+    }
+
+    // 2. Scope Expansion Hazard: Small Statement expanded into full multi-statement application with top-level imports
+    var origHasImports = /\b(import\s+|#include\s+|package\s+|using\s+|from\s+\w+\s+import)/i.test(origTrim);
+    var replHasImports = /\b(import\s+|#include\s+|package\s+|using\s+|from\s+\w+\s+import)/i.test(replTrim);
+
+    if (!origHasImports && replHasImports && origLineCount <= 4 && replLineCount >= 8) {
+        return {
+            isValid: false,
+            reason: "Scope Hazard: Replacement expanded small statement into full multi-statement application with imports."
+        };
+    }
+
+    // 3. Scope Expansion Hazard: Surrounding Context Duplication
+    var surrounding = ctx.surroundingContext || "";
+    if (surrounding && surrounding.trim().length > 0 && replTrim.indexOf(origTrim) !== -1) {
+        if (replLineCount >= origLineCount + 6) {
+            return {
+                isValid: false,
+                reason: "Scope Hazard: Replacement contains unselected surrounding context code."
+            };
+        }
+    }
+
+    // 4. Under-Scope Hazard: Significant line-count mismatch (e.g. original >= 8 lines, replacement <= 3 lines)
+    if (origLineCount >= 8 && replLineCount <= 3) {
+        return {
+            isValid: false,
+            reason: "Scope Hazard: Selection has " + origLineCount + " lines, but replacement contains only " + replLineCount + " lines. The replacement must preserve the entire selected scope."
+        };
+    }
+
+    if (origLineCount >= 15 && (replLineCount / origLineCount) < 0.35) {
+        return {
+            isValid: false,
+            reason: "Scope Hazard: Replacement line count (" + replLineCount + ") is less than 35% of selected scope (" + origLineCount + " lines)."
+        };
+    }
+
+    // 5. Structural checks for whole-file/class selections (>= 10 lines)
+    var origHasClass = /\b(class\s+|interface\s+|struct\s+|enum\s+)\w+/i.test(origTrim);
+    var replHasClass = /\b(class\s+|interface\s+|struct\s+|enum\s+)\w+/i.test(replTrim);
+
+    if (origHasClass && !replHasClass && origLineCount >= 10 && replLineCount < origLineCount * 0.6) {
+        return {
+            isValid: false,
+            reason: "Scope Hazard: Selected scope contains class definitions which are missing from the replacement."
+        };
+    }
+
+    if (origHasImports && !replHasImports && origLineCount >= 10 && replLineCount < origLineCount * 0.6) {
+        return {
+            isValid: false,
+            reason: "Scope Hazard: Selected scope contains import/package statements which are missing from the replacement."
+        };
+    }
+
+    return { isValid: true, reason: "Valid replacement scope" };
+}
+
+/**
  * Strictly parses an AI response according to the 3-State Protocol:
  * Case 1: [REPLACEMENT_CODE] -> { status: "replacement", code: "..." }
  * Case 2: [NO_CHANGE]        -> { status: "no_change", code: null }
@@ -42,11 +166,32 @@ function isLangMatch(lang1, lang2) {
  *
  * @param {string} response - The raw response from the AI
  * @param {string} preferredLang - The active editor language identifier (optional)
- * @returns {object} - { status: string, code: string | null }
+ * @param {string} originalSelectedText - The original selected scope to validate complete replacement (optional)
+ * @param {object} context - Selection context metadata (optional)
+ * @returns {object} - { status: string, code: string | null, state: string, error?: string }
  */
-function parseReplacementResponse(response, preferredLang) {
+function parseReplacementResponse(response, preferredLang, originalSelectedText, context) {
+    var ctx = context || {};
+    var selStart = ctx.selectionStart !== undefined ? ctx.selectionStart : -1;
+    var selEnd = ctx.selectionEnd !== undefined ? ctx.selectionEnd : -1;
+    var origText = originalSelectedText || ctx.originalSelectedText || "";
+    var origLines = origText.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+    var selLineCount = origLines.length > 0 ? origLines.length : 1;
+    var selChars = origText.length;
+
+    console.log("[AIReplacement] Selection start: " + selStart);
+    console.log("[AIReplacement] Selection end: " + selEnd);
+    console.log("[AIReplacement] Selection lines: " + selLineCount);
+    console.log("[AIReplacement] Selection chars: " + selChars);
+    console.log("[AIReplacement] Raw CustomApi response: " + (response || ""));
+
     if (!response || typeof response !== "string") {
-        return { status: "invalid", code: null };
+        console.log("[AIReplacement] Parsed state: INVALID");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: FAIL");
+        console.log("[AIReplacement] Replacement applied: false");
+        return { status: "invalid", code: null, state: "INVALID" };
     }
 
     var text = response;
@@ -68,24 +213,68 @@ function parseReplacementResponse(response, preferredLang) {
         var match = textAfterMarker.match(fenceRegex);
         if (match && match[2] !== undefined && match[2].trim().length > 0) {
             var extracted = sanitizeExtractedCode(match[2]);
+            var replLines = extracted.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+            var replLineCount = replLines.length;
+            var replChars = extracted.length;
+
+            console.log("[AIReplacement] Parsed state: REPLACEMENT_CODE");
+            console.log("[AIReplacement] Replacement lines: " + replLineCount);
+            console.log("[AIReplacement] Replacement chars: " + replChars);
+
+            // Validate scope preservation against original selection
+            var scopeCheck = validateReplacementScope(extracted, origText, ctx);
+            if (!scopeCheck.isValid) {
+                console.log("[AIReplacement] Scope validation: FAIL");
+                console.log("[AIReplacement] Replacement applied: false");
+                return {
+                    status: "scope_mismatch",
+                    code: null,
+                    state: "REPLACEMENT_CODE",
+                    error: scopeCheck.reason
+                };
+            }
+
+            console.log("[AIReplacement] Scope validation: PASS");
             return {
                 status: "replacement",
-                code: extracted
+                code: extracted,
+                state: "REPLACEMENT_CODE"
             };
         }
-        return { status: "invalid", code: null };
+
+        console.log("[AIReplacement] Parsed state: INVALID");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: FAIL");
+        console.log("[AIReplacement] Replacement applied: false");
+        return { status: "invalid", code: null, state: "INVALID" };
     }
 
     if (noChangeIdx !== -1) {
-        return { status: "no_change", code: null };
+        console.log("[AIReplacement] Parsed state: NO_CHANGE");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: PASS");
+        console.log("[AIReplacement] Replacement applied: false");
+        return { status: "no_change", code: null, state: "NO_CHANGE" };
     }
 
     if (insuffIdx !== -1) {
-        return { status: "insufficient_context", code: null };
+        console.log("[AIReplacement] Parsed state: INSUFFICIENT_CONTEXT");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: PASS");
+        console.log("[AIReplacement] Replacement applied: false");
+        return { status: "insufficient_context", code: null, state: "INSUFFICIENT_CONTEXT" };
     }
 
     // If none of the required markers exist, treat the response as invalid for automatic replacement
-    return { status: "invalid", code: null };
+    console.log("[AIReplacement] Parsed state: INVALID");
+    console.log("[AIReplacement] Replacement lines: 0");
+    console.log("[AIReplacement] Replacement chars: 0");
+    console.log("[AIReplacement] Scope validation: FAIL");
+    console.log("[AIReplacement] Replacement applied: false");
+    return { status: "invalid", code: null, state: "INVALID" };
 }
 
 /**
@@ -93,10 +282,11 @@ function parseReplacementResponse(response, preferredLang) {
  *
  * @param {string} response - The markdown response from the AI
  * @param {string} preferredLang - The active editor language identifier (optional)
+ * @param {string} originalSelectedText - The original selected scope to validate complete replacement (optional)
  * @returns {string} - The clean extracted replacement code, or "" if invalid/missing
  */
-function extractReplacementCode(response, preferredLang) {
-    var result = parseReplacementResponse(response, preferredLang);
+function extractReplacementCode(response, preferredLang, originalSelectedText) {
+    var result = parseReplacementResponse(response, preferredLang, originalSelectedText);
     if (result.status === "replacement" && result.code && result.code.trim().length > 0) {
         return result.code;
     }

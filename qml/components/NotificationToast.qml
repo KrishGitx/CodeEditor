@@ -19,8 +19,10 @@ Rectangle {
     visible: opacity > 0.01
     opacity: 0.0
     width: 360
-    implicitHeight: mainLayout.implicitHeight + 20
+    height: implicitHeight
+    implicitHeight: Math.max(64, mainLayout.implicitHeight + 20)
     radius: 4
+    z: 99999
     color: (typeof theme !== "undefined" && theme) ? theme.bgPanel : "#252526"
     border.color: (typeof theme !== "undefined" && theme) ? theme.borderSubtle : "#3c3c3c"
     border.width: 1
@@ -171,8 +173,10 @@ Rectangle {
             // Secondary Action (e.g. Close)
             Rectangle {
                 visible: toastRoot.secondaryActionText !== ""
-                width: secText.implicitWidth + 16
-                height: 24
+                implicitWidth: secText.implicitWidth + 18
+                implicitHeight: 26
+                Layout.preferredWidth: implicitWidth
+                Layout.preferredHeight: implicitHeight
                 radius: 3
                 color: secMa.containsMouse ? (typeof theme !== "undefined" && theme ? theme.bgHover : "#3c3c3c") : (typeof theme !== "undefined" && theme ? theme.bgSurface : "#2d2d2d")
                 border.color: typeof theme !== "undefined" && theme ? theme.borderSubtle : "#444444"
@@ -203,8 +207,10 @@ Rectangle {
             // Primary Action (e.g. Smart Install)
             Rectangle {
                 visible: toastRoot.actionButtonText !== ""
-                width: actRow.implicitWidth + 18
-                height: 24
+                implicitWidth: actRow.implicitWidth + 20
+                implicitHeight: 26
+                Layout.preferredWidth: implicitWidth
+                Layout.preferredHeight: implicitHeight
                 radius: 3
                 color: actMa.containsMouse ? (typeof theme !== "undefined" && theme ? theme.accentHover : "#006cbd") : (typeof theme !== "undefined" && theme ? theme.accent : "#0078d4")
 

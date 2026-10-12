@@ -5,7 +5,7 @@ import json
 import shutil
 import subprocess
 from typing import Optional, Dict, Any
-from ExtensionManager import ExtensionManager, Extension
+from ExtensionManager import ExtensionManager, Extension, resolve_python_tool, resolve_dotnet_global_tool, locate_executable
 
 
 LANG_TO_EXT = {
@@ -17,11 +17,13 @@ LANG_TO_EXT = {
     "css": ".css", "scss": ".scss", "less": ".less",
     "json": ".json", "yaml": ".yaml", "yml": ".yaml",
     "markdown": ".md", "md": ".md",
-    "python": ".py", "py": ".py",
+    "python": ".py", "py": ".py", "pyw": ".pyw",
     "c": ".c", "cpp": ".cpp", "c++": ".cpp", "cxx": ".cpp", "h": ".h", "hpp": ".hpp",
     "csharp": ".cs", "cs": ".cs", "java": ".java",
     "go": ".go", "golang": ".go",
     "rust": ".rs", "rs": ".rs",
+    "qml": ".qml",
+    "sql": ".sql",
 }
 
 
@@ -29,17 +31,18 @@ class FormatterManager:
     def __init__(self, extension_manager: ExtensionManager):
         self.extension_manager = extension_manager
 
+    def invalidate_cache(self):
+        """Invalidates all cached formatter availability states."""
+        pass
+
     def format_code(self, lang_id: str, file_path: str, source_code: str, tab_size: int = 4) -> Dict[str, Any]:
         """
-        Formats source code using the registered extension for the target language.
-        Returns a dictionary:
-            {
-                "success": bool,
-                "formatted": str,
-                "message": str,
-                "available": bool,
-                "extension_id": str (optional)
-            }
+        Strict language-specific code formatting:
+        1. Resolves language ID and extension.
+        2. Looks up formatter provider that EXPLICITLY supports the language.
+        3. Never allows cross-language fallbacks (e.g. clang-format for C# or Java).
+        4. Verifies actual executable availability in the environment before executing.
+        5. If unavailable, returns available: False to trigger Smart Install.
         """
         if not source_code or not source_code.strip():
             return {
@@ -52,39 +55,52 @@ class FormatterManager:
         lang = (lang_id or "").lower().strip()
         ext_dot = os.path.splitext(file_path)[1].lower() if file_path else ""
 
-        # Locate extension
-        extension = self.extension_manager.get_extension_for_language(lang, file_path)
+        # Normalize language aliases
+        lang_map = {
+            "py": "python", "pyw": "python",
+            "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascriptreact",
+            "ts": "typescript", "tsx": "typescriptreact",
+            "c++": "cpp", "cxx": "cpp", "cc": "cpp",
+            "cs": "csharp",
+            "rs": "rust",
+            "golang": "go",
+            "htm": "html",
+            "yml": "yaml"
+        }
+        clean_lang = lang_map.get(lang, lang)
 
-        if not extension or not extension.formatter:
-            display_name = lang or ext_dot or "this language"
-            return {
-                "success": False,
-                "formatted": source_code,
-                "message": f"No formatter installed for {display_name}.",
-                "available": False
-            }
+        # 1. Locate extension specifically registered for formatting this exact language
+        extension = self.extension_manager.get_extension_for_language(clean_lang, file_path, for_formatting=True)
 
-        formatter_spec = extension.formatter
-        fmt_type = formatter_spec.get("type", "cli")
+        if extension and extension.formatter and extension.supports_language_for_formatting(clean_lang, file_path):
+            formatter_spec = extension.formatter
+            fmt_type = formatter_spec.get("type", "cli") if isinstance(formatter_spec, dict) else "cli"
 
-        # 1. Built-in Python Formatter
-        if fmt_type == "python":
-            return self._format_python(source_code, tab_size, extension)
+            # Built-in Python Formatter
+            if fmt_type == "python":
+                return self._format_python(source_code, tab_size, extension)
 
-        # 2. Built-in JSON Formatter
-        if fmt_type == "json":
-            return self._format_json(source_code, tab_size, extension)
+            # Built-in JSON Formatter
+            if fmt_type == "json":
+                return self._format_json(source_code, tab_size, extension)
 
-        # 3. External CLI Formatter (clang-format, prettier, rustfmt, gofmt, etc.)
-        if fmt_type == "cli":
-            return self._format_cli(source_code, tab_size, file_path, lang, extension, formatter_spec)
+            # External CLI Formatter (clang-format, prettier, rustfmt, gofmt, qmlformat, etc.)
+            if fmt_type == "cli":
+                return self._format_cli(source_code, tab_size, file_path, clean_lang, extension, formatter_spec)
 
+        # 2. Dynamic environment resolution for languages with standard tools (e.g. SQL -> SQLFluff, C# -> CSharpier)
+        if clean_lang == "sql" or ext_dot == ".sql":
+            return self._format_sqlfluff(source_code, tab_size, file_path)
+
+        if clean_lang == "csharp" or ext_dot == ".cs":
+            return self._format_csharpier(source_code, tab_size, file_path)
+
+        display_name = clean_lang or ext_dot.lstrip(".") or "this language"
         return {
             "success": False,
             "formatted": source_code,
-            "message": f"Unsupported formatter provider type: {fmt_type}",
-            "available": False,
-            "extension_id": extension.id
+            "message": f"No formatter installed for {display_name}.",
+            "available": False
         }
 
     def _format_python(self, source_code: str, tab_size: int, extension: Extension) -> Dict[str, Any]:
@@ -115,8 +131,9 @@ class FormatterManager:
         is_win = sys.platform.startswith("win")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if is_win else 0
 
-        for tool in ["black", "ruff", "autopep8"]:
-            tool_path = extension.get_executable_path() or shutil.which(tool)
+        for tool in ["autopep8", "black", "ruff"]:
+            tool_info = resolve_python_tool(tool, tool, sys.executable)
+            tool_path = extension.get_executable_path() or tool_info.get("executable") or locate_executable(tool)
             if tool_path and os.path.exists(tool_path):
                 try:
                     if tool == "black":
@@ -159,6 +176,190 @@ class FormatterManager:
             "installCommand": "pip install autopep8",
             "docsUrl": "https://pypi.org/project/autopep8/"
         }
+
+    def _format_sqlfluff(self, source_code: str, tab_size: int, file_path: str) -> Dict[str, Any]:
+        """
+        Dynamically formats SQL using SQLFluff resolved from the active Python environment or system.
+        """
+        tool_info = resolve_python_tool("sqlfluff", "sqlfluff", sys.executable)
+        tool_path = tool_info.get("executable") or locate_executable("sqlfluff")
+
+        if not tool_path and not tool_info.get("package_installed"):
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": "No formatter installed for SQL.",
+                "available": False,
+                "dependency": "sqlfluff",
+                "installCommand": f'"{sys.executable}" -m pip install --no-warn-script-location sqlfluff'
+            }
+
+        # Build execution command (either direct executable or python -m sqlfluff)
+        cmd_prefix = [tool_path] if tool_path else [sys.executable, "-m", "sqlfluff"]
+
+        is_win = sys.platform.startswith("win")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if is_win else 0
+
+        import tempfile
+        temp_file = None
+        try:
+            tf = tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False, encoding="utf-8")
+            tf.write(source_code)
+            tf.close()
+            temp_file = tf.name
+
+            cmd = cmd_prefix + ["format", "--dialect", "ansi", temp_file]
+
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=12,
+                creationflags=creationflags
+            )
+
+            if os.path.exists(temp_file):
+                with open(temp_file, "r", encoding="utf-8", errors="replace") as f:
+                    formatted_content = f.read()
+
+                if formatted_content is not None and proc.returncode in (0, 1):
+                    clean_formatted = formatted_content.replace("\r\n", "\n")
+                    if clean_formatted.strip() == source_code.strip():
+                        return {
+                            "success": True,
+                            "formatted": source_code,
+                            "message": "Document is already formatted",
+                            "available": True
+                        }
+                    return {
+                        "success": True,
+                        "formatted": clean_formatted,
+                        "message": "SQL formatted with SQLFluff",
+                        "available": True
+                    }
+
+            err = (proc.stderr or proc.stdout or f"Exit code {proc.returncode}").strip()
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"SQLFluff format error: {err}",
+                "available": True
+            }
+
+        except Exception as ex:
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"SQLFluff execution error: {ex}",
+                "available": True
+            }
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except Exception:
+                    pass
+
+    def _format_csharpier(self, source_code: str, tab_size: int, file_path: str = "") -> Dict[str, Any]:
+        """
+        Formats C# source code using CSharpier .NET global tool.
+        """
+        dotnet_info = resolve_dotnet_global_tool("csharpier", "csharpier")
+        csharpier_bin = dotnet_info.get("executable") or locate_executable("csharpier") or locate_executable("dotnet-csharpier")
+
+        if not csharpier_bin or not os.path.isfile(csharpier_bin):
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": "No formatter installed for C#.",
+                "available": False,
+                "dependency": "csharpier",
+                "installCommand": "dotnet tool install -g csharpier"
+            }
+
+        is_win = sys.platform.startswith("win")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if is_win else 0
+
+        import tempfile
+        temp_file = None
+        try:
+            tf = tempfile.NamedTemporaryFile(mode="w", suffix=".cs", delete=False, encoding="utf-8")
+            tf.write(source_code)
+            tf.close()
+            temp_file = tf.name
+
+            cmd = [csharpier_bin, "format", temp_file]
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                creationflags=creationflags
+            )
+
+            # Fallback for legacy CSharpier versions where "format" subcommand wasn't present
+            if proc.returncode != 0 and "Unrecognized command" in (proc.stderr or proc.stdout):
+                cmd_legacy = [csharpier_bin, temp_file]
+                proc = subprocess.run(
+                    cmd_legacy,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                    creationflags=creationflags
+                )
+
+            if os.path.exists(temp_file):
+                with open(temp_file, "r", encoding="utf-8", errors="replace") as f:
+                    formatted_content = f.read()
+
+                if formatted_content is not None and proc.returncode == 0:
+                    clean_formatted = formatted_content.replace("\r\n", "\n")
+                    if clean_formatted.strip() == source_code.strip():
+                        return {
+                            "success": True,
+                            "formatted": source_code,
+                            "message": "Document is already formatted",
+                            "available": True
+                        }
+                    return {
+                        "success": True,
+                        "formatted": clean_formatted,
+                        "message": "C# formatted with CSharpier",
+                        "available": True
+                    }
+
+            err = (proc.stderr or proc.stdout or f"Exit code {proc.returncode}").strip()
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"CSharpier format error: {err}",
+                "available": True
+            }
+
+        except Exception as ex:
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"CSharpier execution error: {ex}",
+                "available": True
+            }
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except Exception:
+                    pass
 
     def _format_json(self, source_code: str, tab_size: int, extension: Extension) -> Dict[str, Any]:
         try:
@@ -226,14 +427,32 @@ class FormatterManager:
             }
 
         effective_file_path = self._resolve_effective_filepath(file_path, lang_id, extension)
+        temp_file_created = None
+        cmd_file_path = effective_file_path
+
+        # If tool requires a real file on disk (like qmlformat), write source_code to a temporary file
+        if "qmlformat" in command_name.lower() or "qmlformat" in tool_path.lower():
+            try:
+                import tempfile
+                tf = tempfile.NamedTemporaryFile(mode="w", suffix=".qml", delete=False, encoding="utf-8")
+                tf.write(source_code)
+                tf.close()
+                temp_file_created = tf.name
+                cmd_file_path = tf.name
+            except Exception as tf_ex:
+                print("[FormatterManager] Temp file creation error:", tf_ex)
 
         # Substitute arguments
         raw_args = spec.get("args", [])
         resolved_args = []
         for arg in raw_args:
             replaced = str(arg).replace("${tabSize}", str(tab_size))
-            replaced = replaced.replace("${filePath}", effective_file_path)
+            replaced = replaced.replace("${filePath}", cmd_file_path)
             resolved_args.append(replaced)
+
+        # Normalize qmlformat flags (ensure no invalid options like --tab-size or -i)
+        if "qmlformat" in command_name.lower() or "qmlformat" in tool_path.lower():
+            resolved_args = ["-w", str(tab_size), cmd_file_path]
 
         cmd = [tool_path] + resolved_args
 
@@ -316,3 +535,9 @@ class FormatterManager:
                 "available": True,
                 "extension_id": extension.id
             }
+        finally:
+            if temp_file_created and os.path.exists(temp_file_created):
+                try:
+                    os.unlink(temp_file_created)
+                except Exception:
+                    pass

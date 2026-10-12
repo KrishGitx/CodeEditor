@@ -1,5 +1,5 @@
 """
-AIBackend.py - Asynchronous AI engine for QML AI Workspace
+AIBackend.py - Asynchronous & Synchronous AI engine for QML AI Workspace & Smart Install
 Uses CustomApi.py (Playwright ChatGPT client) with intelligent local developer fallback.
 """
 
@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import re
+from typing import Optional, Callable
 from PySide6.QtCore import QObject, Signal, Slot
 
 # Attempt to import CustomApi
@@ -39,7 +40,23 @@ class AIWorkerThread(threading.Thread):
 
     def run(self):
         try:
-            # 1. Live CustomApi.py ChatGPT client (Production path)
+            # 1. Custom mock resolver hook (For test environments)
+            if AIBackend._custom_resolver and callable(AIBackend._custom_resolver):
+                try:
+                    res = AIBackend._custom_resolver(self.prompt)
+                    if self.cancelled:
+                        return
+                    if res:
+                        self.callback_done(clean_ai_text(str(res)))
+                        return
+                    else:
+                        raise RuntimeError("AI provider returned empty response.")
+                except Exception as mock_err:
+                    if not self.cancelled:
+                        self.callback_error(f"AI mock provider error: {mock_err}")
+                        return
+
+            # 2. Live CustomApi.py ChatGPT client (Production path)
             if custom_api_available:
                 try:
                     client = ChatGPTClient(headless=True)
@@ -61,7 +78,7 @@ class AIWorkerThread(threading.Thread):
             if self.cancelled:
                 return
 
-            # 2. Developer Offline Mock Engine (ONLY behind explicit developer flag DGX_DEV_MOCK_AI=1)
+            # 3. Developer Offline Mock Engine (ONLY behind explicit developer flag DGX_DEV_MOCK_AI=1)
             if os.environ.get("DGX_DEV_MOCK_AI") == "1":
                 mock_response = (
                     "### DGX Dev Mock Assistant\n\n"
@@ -99,10 +116,76 @@ class AIBackend(QObject):
     statusChanged = Signal(str)             # 'idle', 'thinking', 'streaming', 'error'
     errorOccurred = Signal(str)
 
+    _instance: Optional["AIBackend"] = None
+    _custom_resolver: Optional[Callable[[str], str]] = None
+
+    @classmethod
+    def get_instance(cls) -> "AIBackend":
+        if cls._instance is None:
+            cls._instance = AIBackend()
+        return cls._instance
+
+    @classmethod
+    def set_ai_provider(cls, provider_fn: Optional[Callable[[str], str]]):
+        cls._custom_resolver = provider_fn
+
     def __init__(self):
         super().__init__()
+        AIBackend._instance = self
         self.active_worker = None
         self.current_msg_id = 0
+
+    @property
+    def is_connected(self) -> bool:
+        if AIBackend._custom_resolver is not None:
+            return True
+        if custom_api_available:
+            try:
+                client = ChatGPTClient(headless=True)
+                return getattr(client, "is_connected", False)
+            except Exception:
+                return False
+        return False
+
+    def ask(self, prompt: str) -> str:
+        """
+        Synchronously queries the centralized CustomApi / ChatGPT pipeline.
+        Used by Smart Install and backend subsystems.
+        """
+        if not prompt or not prompt.strip():
+            raise ValueError("Prompt cannot be empty.")
+
+        # 1. Custom mock resolver hook (For test environments)
+        if AIBackend._custom_resolver and callable(AIBackend._custom_resolver):
+            print("[SmartInstall] CustomApi request sent")
+            try:
+                res = AIBackend._custom_resolver(prompt)
+                if not res or not str(res).strip():
+                    raise RuntimeError("Empty response returned from AI service.")
+                print("[SmartInstall] CustomApi response received")
+                return clean_ai_text(str(res).strip())
+            except Exception as ex:
+                print(f"[SmartInstall] CustomApi request failed: {ex}")
+                raise
+
+        # 2. Live CustomApi.py ChatGPTClient (Production path)
+        if custom_api_available:
+            print("[SmartInstall] CustomApi request sent")
+            try:
+                client = ChatGPTClient(headless=True)
+                response = client.ask(prompt)
+                if not response or not str(response).strip():
+                    raise RuntimeError("No response returned from ChatGPT service.")
+                print("[SmartInstall] CustomApi response received")
+                return clean_ai_text(response)
+            except Exception as ex:
+                print(f"[SmartInstall] CustomApi request failed: {ex}")
+                raise
+
+        # 3. CustomApi unavailable (e.g. missing Playwright)
+        err_msg = "CustomApi dependency unavailable (Playwright not installed or failed to import)."
+        print(f"[SmartInstall] CustomApi request failed: {err_msg}")
+        raise RuntimeError(err_msg)
 
     @Slot(str)
     @Slot(str, str)

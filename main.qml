@@ -350,13 +350,13 @@ Window {
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
 
-                        onAskAi: function(code, startPos, endPos, langId) {
+                        onAskAi: function(code, startPos, endPos, langId, surroundingContext, totalDocLength) {
                             if (!mainWindow.rightPanelVisible) {
                                 mainWindow.rightPanelVisible = true;
                             }
                             mainWindow.aiVisible = true;
                             if (startPos !== undefined && endPos !== undefined && startPos >= 0 && endPos >= startPos) {
-                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage);
+                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage, "", surroundingContext, totalDocLength);
                             } else {
                                 aiWorkspace.askAboutCode(code);
                             }

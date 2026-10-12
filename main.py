@@ -333,6 +333,22 @@ class EditorBackend(QObject):
             parsed = urlparse(clean_path)
             clean_path = url2pathname(parsed.path)
         self.current_file = os.path.normpath(clean_path) if clean_path else ""
+        if hasattr(self, "highlighter") and self.highlighter:
+            self.highlighter.set_language_for_file(self.current_file, explicit_lang=lang, force_rehighlight=True)
+            self.currentLanguageChanged.emit(self.highlighter.language)
+
+    @Slot(str)
+    @Slot(str, str)
+    def set_language(self, lang, file_path=""):
+        if file_path:
+            clean_path = file_path
+            if clean_path.startswith("file:///"):
+                parsed = urlparse(clean_path)
+                clean_path = url2pathname(parsed.path)
+            self.current_file = os.path.normpath(clean_path)
+        if hasattr(self, "highlighter") and self.highlighter:
+            self.highlighter.set_language_for_file(self.current_file, explicit_lang=lang, force_rehighlight=True)
+            self.currentLanguageChanged.emit(self.highlighter.language)
 
     @Slot(QObject)
     @Slot(QObject, str)
@@ -358,13 +374,12 @@ class EditorBackend(QObject):
 
             if doc_id not in self.tab_highlighters:
                 hl = MultiLanguageHighlighter(None)
-                initial_path = self.current_file or "main.py"
+                initial_path = self.current_file or file_path or "main.py"
                 hl.attach_document_incremental(doc, initial_path, explicit_lang=lang)
                 self.tab_highlighters[doc_id] = hl
 
             self.highlighter = self.tab_highlighters[doc_id]
-            if lang and self.highlighter.language != lang:
-                self.highlighter.set_language_for_file(self.current_file, explicit_lang=lang, force_rehighlight=True)
+            self.highlighter.set_language_for_file(self.current_file or file_path, explicit_lang=lang, force_rehighlight=True)
             self.currentLanguageChanged.emit(self.highlighter.language)
             if file_path and doc:
                 doc.setModified(False)
@@ -547,6 +562,14 @@ class EditorBackend(QObject):
                 })
         except Exception as e:
             print("LSP could not be started:", e)
+
+    def stop_lsp_server(self):
+        if self.lsp_process:
+            try:
+                self.lsp_process.terminate()
+                self.lsp_process.kill()
+            except Exception:
+                pass
 
     def send_lsp_request(self, method, dic):
         if not self.lsp_process or self.lsp_process.poll() is not None:
@@ -1951,6 +1974,7 @@ if __name__ == "__main__":
     terminalBackend = TerminalBackend()
     settingsBackend = SettingsBackend()
     backend.settings_backend = settingsBackend
+    backend.extension_manager.ai_backend = aiBackend
 
     # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)

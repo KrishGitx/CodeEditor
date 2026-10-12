@@ -1,0 +1,25 @@
+{
+  "id": "dgx.qml",
+  "name": "QML Language Extension",
+  "version": "1.0.0",
+  "description": "Qt QML language support with qmlformat provider",
+  "author": "DGX Studio",
+  "languages": ["qml"],
+  "extensions": [".qml"],
+  "formatter": {
+    "supportedLanguages": ["qml"],
+    "provider": "qmlformat",
+    "type": "cli",
+    "executable": "qmlformat",
+    "command": "qmlformat",
+    "args": ["-w", "${tabSize}", "${filePath}"],
+    "installGuide": {
+      "lightweight": "pip install PySide6",
+      "windows": "pip install PySide6",
+      "macos": "pip install PySide6",
+      "linux": "pip install PySide6",
+      "docsUrl": "https://doc.qt.io/qt-6/qmlformat.html",
+      "instructions": "Official Qt QML code formatter from the PySide6 package."
+    }
+  }
+}

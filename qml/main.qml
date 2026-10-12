@@ -388,13 +388,13 @@ Window {
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
 
-                        onAskAi: function(code, startPos, endPos, langId) {
+                        onAskAi: function(code, startPos, endPos, langId, surroundingContext, totalDocLength) {
                             if (!mainWindow.rightPanelVisible) {
                                 mainWindow.rightPanelVisible = true;
                             }
                             mainWindow.aiVisible = true;
                             if (startPos !== undefined && endPos !== undefined && startPos >= 0 && endPos >= startPos) {
-                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage);
+                                aiWorkspace.askAboutSelection(code, startPos, endPos, langId || statusBar.currentLanguage, "", surroundingContext, totalDocLength);
                             } else {
                                 aiWorkspace.askAboutCode(code);
                             }
@@ -649,7 +649,7 @@ Window {
         anchors.bottom: parent.bottom
         anchors.rightMargin: 16
         anchors.bottomMargin: (statusBar && statusBar.visible ? statusBar.height : 0) + 12
-        z: 999
+        z: 99999
     }
 
     function showNotification(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb) {
@@ -698,32 +698,59 @@ Window {
         var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
         var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
         var cmd = "";
+        var requiredDep = "";
+        var depType = "runtime";
 
         // 1. Check extension-contributed runners
         var extRunner = (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_runner_for_extension) ? extensionManager.get_runner_for_extension(ext) : null;
         if (extRunner && extRunner.command) {
             cmd = extRunner.command.replace(/\$\{filePath\}/g, rawPath);
+            var tokens = extRunner.command.trim().split(/\s+/);
+            if (tokens.length > 0 && !tokens[0].includes("${")) {
+                requiredDep = tokens[0].replace(/^["']|["']$/g, '');
+            }
+            depType = "runner";
         } else if (ext === "py" || ext === "pyw") {
+            requiredDep = "python";
+            depType = "interpreter";
             cmd = 'python "' + rawPath + '"';
         } else if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") {
+            requiredDep = "g++";
+            depType = "compiler";
             cmd = 'g++ -std=c++17 "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "c") {
+            requiredDep = "gcc";
+            depType = "compiler";
             cmd = 'gcc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "js" || ext === "mjs" || ext === "cjs") {
+            requiredDep = "node";
+            depType = "runtime";
             cmd = 'node "' + rawPath + '"';
         } else if (ext === "ts" || ext === "tsx") {
+            requiredDep = "npx";
+            depType = "cli";
             cmd = 'npx tsx "' + rawPath + '"';
         } else if (ext === "java") {
+            requiredDep = "java";
+            depType = "runtime";
             cmd = 'java "' + rawPath + '"';
         } else if (ext === "rs") {
+            requiredDep = "rustc";
+            depType = "compiler";
             cmd = 'rustc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "go") {
+            requiredDep = "go";
+            depType = "sdk";
             cmd = 'go run "' + rawPath + '"';
         } else if (ext === "cs") {
+            requiredDep = "dotnet";
+            depType = "sdk";
             cmd = 'dotnet run';
         } else if (ext === "ps1") {
             cmd = 'powershell -ExecutionPolicy Bypass -File "' + rawPath + '"';
         } else if (ext === "sh" || ext === "bash") {
+            requiredDep = "bash";
+            depType = "cli";
             cmd = 'bash "' + rawPath + '"';
         } else if (ext === "html" || ext === "htm") {
             var target = (theme && theme.htmlRunTarget) ? theme.htmlRunTarget : "built_in";
@@ -736,32 +763,83 @@ Window {
                 return;
             }
         } else {
-            // Clean application-level unsupported runner error (no raw Write-Host command)
+            // Clean application-level unsupported runner error
             var cleanErr = "No runner configured for ." + ext + " files.";
             terminalPanel.addOutputLog("Build/Run", cleanErr);
 
-            // Offer Smart Install if a known recipe/tool exists
-            var proposal = null;
-            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.suggest_smart_install) {
-                proposal = extensionManager.suggest_smart_install("runner", ext + " runner", editorArea.currentLanguageId, ext, rawPath);
-            }
-            if (proposal && !proposal.isInstalled && proposal.command) {
-                mainWindow.showNotification(
+            var runnerCtx = null;
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                runnerCtx = extensionManager.create_smart_install_context(
+                    "Run ." + ext + " file",
+                    "runner",
+                    editorArea.currentLanguageId,
+                    rawPath,
+                    "",
+                    ext + " runner",
+                    0,
+                    "",
                     cleanErr,
+                    cleanErr,
+                    "No runner configured",
+                    ext + " runner",
+                    "run"
+                );
+            }
+
+            mainWindow.showNotification(
+                cleanErr,
+                "warning",
+                "Run",
+                9000,
+                "Smart Install",
+                function() {
+                    console.log("[SmartInstall] Smart Install clicked");
+                    if (runnerCtx) {
+                        smartInstallDialog.openContext(runnerCtx);
+                    } else if (extensionManager && extensionManager.suggest_smart_install) {
+                        smartInstallDialog.openProposal(extensionManager.suggest_smart_install("runner", ext + " runner", editorArea.currentLanguageId, ext, rawPath));
+                    }
+                },
+                "Close",
+                function() {}
+            );
+            return;
+        }
+
+        // Check if required dependency executable is installed before executing
+        if (requiredDep && typeof extensionManager !== "undefined" && extensionManager) {
+            var execFound = extensionManager.locate_executable ? extensionManager.locate_executable(requiredDep, "") : "";
+            if (!execFound) {
+                var depCtx = extensionManager.create_smart_install_context(
+                    "Run " + (editorArea.activeFileName || "program"),
+                    depType,
+                    editorArea.currentLanguageId,
+                    rawPath,
+                    cmd,
+                    requiredDep,
+                    0,
+                    "",
+                    "Required dependency '" + requiredDep + "' is not installed.",
+                    "Required dependency '" + requiredDep + "' is not installed.",
+                    "Missing runtime / executable",
+                    requiredDep,
+                    "run"
+                );
+                mainWindow.showNotification(
+                    "Required dependency '" + requiredDep + "' is not installed.",
                     "warning",
                     "Run",
                     9000,
                     "Smart Install",
                     function() {
-                        smartInstallDialog.openProposal(proposal);
+                        console.log("[SmartInstall] Smart Install clicked");
+                        smartInstallDialog.openContext(depCtx);
                     },
                     "Close",
                     function() {}
                 );
-            } else {
-                mainWindow.showNotification(cleanErr, "warning", "Run");
+                return;
             }
-            return;
         }
 
         mainWindow.terminalVisible = true;

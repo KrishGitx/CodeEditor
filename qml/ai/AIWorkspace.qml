@@ -121,7 +121,7 @@ Rectangle {
                         chatHistoryModel.setProperty(i, "originalSelectedText", ctx.originalSelectedText || "");
                         chatHistoryModel.setProperty(i, "languageId", ctx.languageId || "");
                         if (ctx.isSelectionRequest) {
-                            var parseRes = CodeExtractor.parseReplacementResponse(content, ctx.languageId);
+                            var parseRes = CodeExtractor.parseReplacementResponse(content, ctx.languageId, ctx.originalSelectedText);
                             if (parseRes.status === "replacement" && parseRes.code && parseRes.code.trim().length > 0) {
                                 root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes.code, ctx.originalSelectedText);
                             } else {
@@ -143,7 +143,7 @@ Rectangle {
                 languageId: (role === "assistant" && ctx) ? (ctx.languageId || "") : ""
             });
             if (role === "assistant" && ctx && ctx.isSelectionRequest) {
-                var parseRes2 = CodeExtractor.parseReplacementResponse(content, ctx.languageId);
+                var parseRes2 = CodeExtractor.parseReplacementResponse(content, ctx.languageId, ctx.originalSelectedText);
                 if (parseRes2.status === "replacement" && parseRes2.code && parseRes2.code.trim().length > 0) {
                     root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes2.code, ctx.originalSelectedText);
                 } else {
@@ -401,20 +401,47 @@ Rectangle {
         }
     }
 
-    function askAboutSelection(code, startPos, endPos, langId, customPrompt) {
+    function askAboutSelection(code, startPos, endPos, langId, customPrompt, surroundingContext, totalDocLength) {
         var langTag = (langId || "").toLowerCase().trim();
+        var docLen = (totalDocLength !== undefined && totalDocLength > 0) ? totalDocLength : (code ? code.length : -1);
+        var isFullFile = (startPos === 0 && docLen > 0 && endPos >= docLen) || (code && docLen > 0 && code.length >= docLen);
+
         var basePrompt = (customPrompt && customPrompt.trim().length > 0) ? customPrompt.trim() : ("Please review and improve the selected " + (langTag ? langTag + " " : "") + "code:");
         var userMsg = basePrompt + "\n\n```" + (langTag || "") + "\n" + code + "\n```";
 
-        var internalInstruction = "You are Pod Studio AI analyzing a user's selected code snippet.\n" +
-            "You MUST classify your review into one of the following 3 STRICT PROTOCOL STATES and include the exact state marker in your response:\n\n" +
-            "1. [REPLACEMENT_CODE]\n" +
-            "Include `[REPLACEMENT_CODE]` followed by a single fenced code block containing ONLY the corrected replacement for the selected range whenever a safe, unambiguous local fix exists inside the selected text (e.g. missing semicolon, operator fix, logic fix, typo, closure binding, or fragment fix like `++count;`). The replacement must match the exact selection scope.\n\n" +
-            "2. [NO_CHANGE]\n" +
-            "Include `[NO_CHANGE]` and explain why no changes are needed whenever the selected code has no bug and is already correct.\n\n" +
-            "3. [INSUFFICIENT_CONTEXT]\n" +
-            "Include `[INSUFFICIENT_CONTEXT]` and explain what external context is needed whenever the real bug or fix depends on code outside the selected range (e.g. surrounding loop boundary, missing variable declaration/type).\n\n" +
-            "Always explain your reasoning in clear text. Always include exactly one of the markers: [REPLACEMENT_CODE], [NO_CHANGE], or [INSUFFICIENT_CONTEXT].";
+        if (surroundingContext && surroundingContext.trim().length > 0 && surroundingContext.trim() !== code.trim()) {
+            userMsg += "\n\nSurrounding file context (FOR REASONING ONLY - DO NOT INCLUDE IN REPLACEMENT):\n```" + (langTag || "") + "\n" + surroundingContext.trim() + "\n```";
+        }
+
+        var internalInstruction = "SELECTION REPLACEMENT MODE\n" +
+            "The user has selected a specific region of an existing source file" + (isFullFile ? " (which spans the entire file)." : ".") + "\n" +
+            "Your response is NOT a request to rewrite or regenerate the entire file or block.\n" +
+            "You MUST reason about the selected region and surrounding context, but your replacement output MUST remain limited to the exact selected scope.\n\n" +
+            "CORE PRINCIPLE:\n" +
+            "THE PROVIDED CODE IS THE SOURCE OF TRUTH.\n" +
+            "Only modify the minimum text required to fix the requested problem.\n\n" +
+            "Strict Code Preservation Rules:\n" +
+            "1. Preserve all provided code EXACTLY unless a specific change is required to solve the user's request.\n" +
+            "2. MINIMAL EDIT PRINCIPLE: Think of the task as a surgical edit. Only fix the broken part (e.g. changing an incomplete or broken statement) and preserve every other line, variable name, string literal, comment, URL, browser setting, import, indentation, and formatting verbatim as supplied.\n" +
+            "3. Do NOT rewrite the whole block, do NOT regenerate unchanged code, and do NOT replace equivalent code with an alternative implementation.\n" +
+            "4. Do NOT rename variables, reorder lines, change quotes/formatting, 'clean up', or modernize code that was not requested.\n" +
+            "5. Do NOT create a complete example, new application, or boilerplate when only a fragment was selected.\n" +
+            "6. Never return the full source file unless the user's selected scope itself is the full file.\n" +
+            "7. Never return unrelated surrounding code or duplicate unselected code.\n" +
+            "8. If the selected fragment can be fixed independently, return ONLY its complete corrected replacement preserving all unchanged lines.\n" +
+            "9. If the correct fix requires code outside the selection, return:\n" +
+            "   [INSUFFICIENT_CONTEXT]\n" +
+            "10. If no useful modification is necessary or the code is already correct, return:\n" +
+            "   [NO_CHANGE]\n" +
+            "11. If a replacement is possible, return exactly:\n" +
+            "   [REPLACEMENT_CODE]\n" +
+            "   ```" + (langTag || "") + "\n" +
+            "   complete replacement for ONLY the selected region\n" +
+            "   ```\n" +
+            "12. The fenced block must contain ONLY replacement source code.\n" +
+            "13. Keep explanations, diagnostics, and reasoning OUTSIDE the code block.\n" +
+            "14. Do not include phrases like 'here is the complete code' or conversational text inside the code block.\n\n" +
+            "Always explain your reasoning in clear text outside the code block. Always include exactly one of the markers: [REPLACEMENT_CODE], [NO_CHANGE], or [INSUFFICIENT_CONTEXT].";
 
         root.pendingSelectionContext = {
             isSelectionRequest: true,
@@ -422,6 +449,9 @@ Rectangle {
             selectionEnd: (endPos !== undefined ? endPos : -1),
             originalSelectedText: code,
             languageId: langTag,
+            surroundingContext: surroundingContext || "",
+            totalDocLength: docLen,
+            isFullFile: isFullFile,
             internalInstruction: internalInstruction
         };
 
@@ -497,7 +527,7 @@ Rectangle {
                 languageId: ctx ? (ctx.languageId || "") : ""
             });
             if (ctx && ctx.isSelectionRequest) {
-                var parseResSim = CodeExtractor.parseReplacementResponse(responseContent, ctx.languageId);
+                var parseResSim = CodeExtractor.parseReplacementResponse(responseContent, ctx.languageId, ctx.originalSelectedText);
                 if (parseResSim.status === "replacement" && parseResSim.code && parseResSim.code.trim().length > 0) {
                     root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseResSim.code, ctx.originalSelectedText);
                 } else {

@@ -4,9 +4,10 @@
   "version": "1.0.0",
   "description": "C and C++ language support with clang-format provider",
   "author": "DGX Studio",
-  "languages": ["c", "cpp", "c++", "cuda", "csharp", "java"],
-  "extensions": [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cu", ".cs", ".java"],
+  "languages": ["c", "cpp", "c++", "cuda"],
+  "extensions": [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cu"],
   "formatter": {
+    "supportedLanguages": ["c", "cpp", "c++", "cuda"],
     "provider": "clang-format",
     "type": "cli",
     "executable": "clang-format",
