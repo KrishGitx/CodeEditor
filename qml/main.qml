@@ -810,6 +810,13 @@ Window {
         if (requiredDep && typeof extensionManager !== "undefined" && extensionManager) {
             var execFound = extensionManager.locate_executable ? extensionManager.locate_executable(requiredDep, "") : "";
             if (!execFound) {
+                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                    if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                        smartInstallDialog.reportRetryResult(false, "Required dependency '" + requiredDep + "' is not installed.");
+                        return;
+                    }
+                }
+
                 var depCtx = extensionManager.create_smart_install_context(
                     "Run " + (editorArea.activeFileName || "program"),
                     depType,
@@ -839,6 +846,12 @@ Window {
                     function() {}
                 );
                 return;
+            }
+        }
+
+        if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+            if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                smartInstallDialog.reportRetryResult(true, "Execution started.");
             }
         }
 

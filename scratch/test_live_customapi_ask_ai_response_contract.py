@@ -243,12 +243,9 @@ class TestLiveCustomApiAskAiResponseContract(unittest.TestCase):
 
         self.assertIn("Fix null context bug", user_prompt)
         self.assertIn("browser = context.new_page()", user_prompt)
-        self.assertIn("FOR REASONING ONLY - DO NOT INCLUDE IN REPLACEMENT", user_prompt)
-        self.assertIn("SELECTION REPLACEMENT MODE", internal_instr)
-        self.assertIn("[REPLACEMENT_CODE]", internal_instr)
-        self.assertIn("[NO_CHANGE]", internal_instr)
-        self.assertIn("[INSUFFICIENT_CONTEXT]", internal_instr)
-        self.assertIn("Never return the full source file unless the user's selected scope itself is the full file", internal_instr)
+        # Payload isolation: surrounding context must NOT be included in prompt
+        self.assertNotIn("FOR REASONING ONLY", user_prompt)
+        self.assertNotIn("with sync_playwright() as p:", user_prompt)
 
     def test_06_js_code_extractor_matches_python_engine_behavior(self):
         """TEST 6: CodeExtractor.js in QJSEngine behaves identically to Python AIReplacementEngine."""

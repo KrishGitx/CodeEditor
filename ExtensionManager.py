@@ -356,6 +356,286 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
     return None
 
 
+# ==============================================================================
+# RUNTIME COMPATIBILITY & ENVIRONMENT DISCOVERY (Java, Python, Node, etc.)
+# ==============================================================================
+
+_test_discovered_jdks: List[Dict[str, Any]] = []
+_test_active_java_info: Optional[Dict[str, Any]] = None
+
+
+def set_test_java_environment(active_info: Optional[Dict[str, Any]] = None, discovered_jdks: Optional[List[Dict[str, Any]]] = None):
+    """Allows regression and unit tests to inject deterministic runtime environments."""
+    global _test_active_java_info, _test_discovered_jdks
+    _test_active_java_info = active_info
+    _test_discovered_jdks = list(discovered_jdks) if discovered_jdks is not None else []
+
+
+def get_active_java_info() -> Dict[str, Any]:
+    """
+    Inspects the active Java runtime environment, executable path, and version.
+    """
+    global _test_active_java_info
+    if _test_active_java_info is not None:
+        return dict(_test_active_java_info)
+
+    java_exe = shutil.which("java")
+    version_str = ""
+    major_ver = 0
+    full_output = ""
+
+    # Common Windows Oracle javapath fallback if not resolved
+    if not java_exe and sys.platform.startswith("win"):
+        oracle_path = r"C:\Program Files\Common Files\Oracle\Java\javapath\java.exe"
+        if os.path.isfile(oracle_path):
+            java_exe = oracle_path
+
+    if java_exe:
+        try:
+            res = subprocess.run([java_exe, "-version"], capture_output=True, text=True, timeout=5)
+            full_output = (res.stderr or res.stdout or "").strip()
+            # e.g. 'java version "17.0.12"' or 'openjdk version "21.0.2"'
+            m = re.search(r'version\s+"([0-9]+(?:\.[0-9]+)*)', full_output, re.IGNORECASE)
+            if m:
+                version_str = m.group(1)
+                parts = version_str.split(".")
+                major_ver = int(parts[0]) if parts else 0
+        except Exception:
+            pass
+
+    java_home = os.environ.get("JAVA_HOME", "")
+
+    return {
+        "executable": java_exe or "",
+        "version": version_str,
+        "major_version": major_ver,
+        "java_home": java_home,
+        "output": full_output
+    }
+
+
+def discover_installed_jdks() -> List[Dict[str, Any]]:
+    """
+    Scans filesystem for installed JDKs and resolves their actual directories,
+    java executables, and major versions.
+    """
+    global _test_discovered_jdks
+    discovered = list(_test_discovered_jdks)
+    seen_dirs = {os.path.normpath(d.get("path", "")) for d in discovered if d.get("path")}
+
+    search_dirs = []
+    if sys.platform.startswith("win"):
+        base_locations = [
+            r"C:\Program Files\Microsoft",
+            r"C:\Program Files\Java",
+            r"C:\Program Files\Eclipse Adoptium",
+            r"C:\Program Files\Amazon Corretto",
+            r"C:\Program Files\Zulu",
+            r"C:\Program Files\BellSoft",
+            r"C:\Program Files\Semeru",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+        ]
+        for base in base_locations:
+            if os.path.isdir(base):
+                try:
+                    for entry in os.listdir(base):
+                        full = os.path.join(base, entry)
+                        if os.path.isdir(full):
+                            search_dirs.append(full)
+                except Exception:
+                    pass
+    elif sys.platform.startswith("darwin"):
+        mac_base = "/Library/Java/JavaVirtualMachines"
+        if os.path.isdir(mac_base):
+            try:
+                for entry in os.listdir(mac_base):
+                    home = os.path.join(mac_base, entry, "Contents", "Home")
+                    if os.path.isdir(home):
+                        search_dirs.append(home)
+            except Exception:
+                pass
+    else:
+        linux_base = "/usr/lib/jvm"
+        if os.path.isdir(linux_base):
+            try:
+                for entry in os.listdir(linux_base):
+                    full = os.path.join(linux_base, entry)
+                    if os.path.isdir(full):
+                        search_dirs.append(full)
+            except Exception:
+                pass
+
+    exe_name = "java.exe" if sys.platform.startswith("win") else "java"
+
+    for d in search_dirs:
+        norm = os.path.normpath(d)
+        if norm in seen_dirs:
+            continue
+        seen_dirs.add(norm)
+
+        bin_java = os.path.join(d, "bin", exe_name)
+        if not os.path.isfile(bin_java):
+            nested_home = os.path.join(d, "Contents", "Home")
+            if os.path.isfile(os.path.join(nested_home, "bin", exe_name)):
+                d = nested_home
+                bin_java = os.path.join(d, "bin", exe_name)
+            else:
+                continue
+
+        ver_str = ""
+        major_ver = 0
+
+        release_file = os.path.join(d, "release")
+        if os.path.isfile(release_file):
+            try:
+                with open(release_file, "r", encoding="utf-8", errors="ignore") as rf:
+                    content = rf.read()
+                    m = re.search(r'JAVA_VERSION="([0-9]+(?:\.[0-9]+)*)', content)
+                    if m:
+                        ver_str = m.group(1)
+                        major_ver = int(ver_str.split(".")[0])
+            except Exception:
+                pass
+
+        if not major_ver:
+            try:
+                res = subprocess.run([bin_java, "-version"], capture_output=True, text=True, timeout=5)
+                out = res.stderr or res.stdout or ""
+                m = re.search(r'version\s+"([0-9]+(?:\.[0-9]+)*)', out, re.IGNORECASE)
+                if m:
+                    ver_str = m.group(1)
+                    major_ver = int(ver_str.split(".")[0])
+            except Exception:
+                pass
+
+        if major_ver:
+            discovered.append({
+                "path": os.path.abspath(d),
+                "java_exe": os.path.abspath(bin_java),
+                "version": ver_str,
+                "major_version": major_ver
+            })
+
+    discovered.sort(key=lambda x: x.get("major_version", 0), reverse=True)
+    return discovered
+
+
+def find_compatible_jdk(min_version: int = 21) -> Optional[Dict[str, Any]]:
+    jdks = discover_installed_jdks()
+    for jdk in jdks:
+        if jdk.get("major_version", 0) >= min_version:
+            return jdk
+    return None
+
+
+def collect_runtime_environment_info(
+    tool_name: str = "",
+    language: str = "",
+    executable: str = "",
+    verified_path: str = "",
+    operation_error: str = ""
+) -> Dict[str, Any]:
+    """
+    Collects comprehensive factual environment and runtime context for post-install AI diagnosis.
+    """
+    import platform
+
+    cur_os = get_current_os()
+    arch = platform.machine() or "x64"
+    os_detail = platform.platform()
+    sh_name = "PowerShell" if cur_os == "windows" else os.environ.get("SHELL", "bash").split("/")[-1]
+
+    info: Dict[str, Any] = {
+        "os_name": cur_os,
+        "arch": arch,
+        "os_detail": os_detail,
+        "shell": sh_name,
+        "runtime_type": "general",
+        "runtime_version": "",
+        "runtime_executable": "",
+        "runtime_env_vars": {},
+        "available_runtimes": [],
+        "min_runtime_required": "",
+        "incompatibility_detected": False,
+        "incompatibility_details": ""
+    }
+
+    t_lower = (tool_name or "").lower()
+    e_lower = (executable or "").lower()
+    err_lower = (operation_error or "").lower()
+    l_lower = (language or "").lower()
+
+    # 1. Java-related tools and diagnostics
+    is_java = (
+        l_lower == "java" or
+        "java" in t_lower or
+        "java" in e_lower or
+        "jcanypattern" in err_lower or
+        "classnotfoundexception" in err_lower or
+        "javac" in err_lower
+    )
+
+    if is_java:
+        info["runtime_type"] = "Java"
+        java_info = get_active_java_info()
+        info["runtime_executable"] = java_info.get("executable") or "Not found in PATH"
+        info["runtime_version"] = java_info.get("version") or (java_info.get("output") or "Unknown")
+        major = java_info.get("major_version", 0)
+
+        # Relevant env vars
+        j_env = {}
+        if "JAVA_HOME" in os.environ:
+            j_env["JAVA_HOME"] = os.environ["JAVA_HOME"]
+        if "_JAVA_OPTIONS" in os.environ:
+            j_env["_JAVA_OPTIONS"] = os.environ["_JAVA_OPTIONS"]
+        if "JAVA_TOOL_OPTIONS" in os.environ:
+            j_env["JAVA_TOOL_OPTIONS"] = os.environ["JAVA_TOOL_OPTIONS"]
+        info["runtime_env_vars"] = j_env
+
+        # Discovered JDKs
+        jdks = discover_installed_jdks()
+        info["available_runtimes"] = [
+            f"{jdk.get('path')} (Java {jdk.get('version')})" for jdk in jdks
+        ]
+
+        if "google-java-format" in t_lower or "google-java-format" in e_lower or "java" in l_lower:
+            info["min_runtime_required"] = "JDK 21 or newer (LTS recommended: JDK 21 or JDK 25)"
+            # Check for ClassNotFoundException com.sun.tools.javac.tree.JCTree$JCAnyPattern or Java 17
+            if "jcanypattern" in err_lower or (major > 0 and major < 21):
+                info["incompatibility_detected"] = True
+                info["incompatibility_details"] = (
+                    f"Active Java runtime is Java {major} ({info['runtime_executable']}), "
+                    f"while {tool_name or 'google-java-format'} requires JDK 21+ compiler internals. "
+                    f"Execution under Java {major} throws ClassNotFoundException: com.sun.tools.javac.tree.JCTree$JCAnyPattern."
+                )
+
+    # 2. Python-related tools and diagnostics
+    elif l_lower in ("python", "py") or "python" in t_lower or "pip" in t_lower:
+        info["runtime_type"] = "Python"
+        info["runtime_executable"] = sys.executable
+        info["runtime_version"] = platform.python_version()
+        p_env = {}
+        for var in ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONPATH"):
+            if var in os.environ:
+                p_env[var] = os.environ[var]
+        info["runtime_env_vars"] = p_env
+
+    # 3. Node-related tools and diagnostics
+    elif l_lower in ("javascript", "typescript") or any(k in t_lower for k in ("npm", "node", "prettier", "eslint")):
+        info["runtime_type"] = "Node.js"
+        node_exe = shutil.which("node")
+        info["runtime_executable"] = node_exe or "Not found in PATH"
+        if node_exe:
+            try:
+                res = subprocess.run([node_exe, "--version"], capture_output=True, text=True, timeout=5)
+                info["runtime_version"] = (res.stdout or res.stderr or "").strip()
+            except Exception:
+                pass
+
+    return info
+
+
 class DGXExtensionContext:
     """Stable Extension API Context passed to extension entry points."""
     def __init__(self, extension_id: str, manager: 'ExtensionManager'):
@@ -673,12 +953,14 @@ class ExtensionManager(QObject):
         self.user_extensions_dir = os.path.join(os.path.expanduser("~"), ".dgx", "extensions")
         self.state_file = os.path.join(os.path.expanduser("~"), ".dgx", "disabled_extensions.json")
         self.custom_paths_file = os.path.join(os.path.expanduser("~"), ".dgx", "custom_formatter_paths.json")
+        self.tool_runtimes_file = os.path.join(os.path.expanduser("~"), ".dgx", "tool_runtimes.json")
 
         os.makedirs(self.built_in_dir, exist_ok=True)
         os.makedirs(self.user_extensions_dir, exist_ok=True)
 
         self._disabled_ids = self._load_disabled_state()
         self._custom_paths = self._load_custom_paths()
+        self._tool_runtime_configs = self._load_tool_runtimes()
         self._installing_formatters = set()
         self._installing_tools = set()
         self._extensions: Dict[str, Extension] = {}
@@ -730,6 +1012,82 @@ class ExtensionManager(QObject):
                 json.dump(self._custom_paths, f, indent=2)
         except Exception as e:
             print(f"[ExtensionManager] Notice saving {self.custom_paths_file}: {e}")
+
+    def _load_tool_runtimes(self) -> dict:
+        if hasattr(self, "tool_runtimes_file") and os.path.isfile(self.tool_runtimes_file):
+            try:
+                with open(self.tool_runtimes_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as e:
+                print(f"[ExtensionManager] Notice reading {self.tool_runtimes_file}: {e}")
+        return {}
+
+    def _save_tool_runtimes(self):
+        if not hasattr(self, "tool_runtimes_file"):
+            return
+        try:
+            with open(self.tool_runtimes_file, "w", encoding="utf-8") as f:
+                json.dump(self._tool_runtime_configs, f, indent=2)
+        except Exception as e:
+            print(f"[ExtensionManager] Notice saving {self.tool_runtimes_file}: {e}")
+
+    def get_tool_runtime_config(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        if not tool_name or not hasattr(self, "_tool_runtime_configs"):
+            return None
+        return self._tool_runtime_configs.get(tool_name) or self._tool_runtime_configs.get(tool_name.lower())
+
+    def set_tool_runtime_config(self, tool_name: str, config: Dict[str, Any]):
+        if not tool_name:
+            return
+        if not hasattr(self, "_tool_runtime_configs"):
+            self._tool_runtime_configs = {}
+        self._tool_runtime_configs[tool_name] = config
+        self._tool_runtime_configs[tool_name.lower()] = config
+        self._save_tool_runtimes()
+
+    def get_java_runtime_config(self) -> Optional[Dict[str, Any]]:
+        return self.get_tool_runtime_config("java") or self.get_tool_runtime_config("google-java-format")
+
+    def set_java_runtime_config(self, config: Dict[str, Any]):
+        self.set_tool_runtime_config("java", config)
+        self.set_tool_runtime_config("google-java-format", config)
+
+    def ensure_tool_runtime_compatibility(self, tool_name: str, language: str = "") -> Tuple[bool, str]:
+        """
+        Detects whether a tool requires a newer runtime than the active system runtime,
+        and if a compatible runtime is available on disk, automatically configures the tool to use it.
+        """
+        t_lower = (tool_name or "").lower()
+        l_lower = (language or "").lower()
+
+        if l_lower == "java" or "google-java-format" in t_lower:
+            java_info = get_active_java_info()
+            active_major = java_info.get("major_version", 0)
+            if active_major > 0 and active_major < 21:
+                compat_jdk = find_compatible_jdk(min_version=21)
+                if compat_jdk:
+                    jdk_path = compat_jdk["path"]
+                    jdk_java = compat_jdk["java_exe"]
+                    jdk_ver = compat_jdk.get("version", "21+")
+                    print(f"[SmartInstall] Runtime mismatch detected: active Java is {active_major}, but {tool_name} requires JDK 21+.")
+                    print(f"[SmartInstall] Configuring {tool_name} to use installed compatible JDK at {jdk_path}")
+                    self.set_tool_runtime_config(tool_name, {
+                        "JAVA_HOME": jdk_path,
+                        "java_path": jdk_java,
+                        "version": jdk_ver
+                    })
+                    self.set_java_runtime_config({
+                        "JAVA_HOME": jdk_path,
+                        "java_path": jdk_java,
+                        "version": jdk_ver
+                    })
+                    return True, f"Configured {tool_name} to use compatible JDK {jdk_ver} at {jdk_path}"
+                else:
+                    return False, f"Tool {tool_name} requires JDK 21+, but active Java is {active_major} and no compatible JDK was found on disk."
+
+        return True, "Compatible"
 
     @Slot()
     def reload_extensions(self):
@@ -1349,8 +1707,8 @@ class ExtensionManager(QObject):
             if "clang-format" in cmd_lower or "gofmt" in cmd_lower:
                 return False, "Cross-language mismatch: SQL cannot use C++ or Go formatters."
 
-        # Do not misdiagnose working software: if error is an application error (e.g. SQLException, ClassNotFound), Java itself is installed!
-        if ("sqlexception" in stderr or "classnotfoundexception" in stderr or "driver" in stderr) and ("install --id oracle.jdk" in cmd_lower or "install openjdk" in cmd_lower):
+        # Database connection errors (e.g. SQLException, missing JDBC driver) do not warrant reinstalling JDK
+        if ("sqlexception" in stderr or "driver" in stderr) and ("install --id oracle.jdk" in cmd_lower or "install openjdk" in cmd_lower) and "jcanypattern" not in stderr and "javac" not in stderr:
             return False, "Misdiagnosis: Application error indicates Java runtime is already installed; missing JDBC dependency, not JDK runtime."
 
         return True, "Valid"
@@ -2043,63 +2401,143 @@ class ExtensionManager(QObject):
         verified_path: str = "",
         original_diagnosis: str = "",
         fix_attempt_count: int = 0,
-        is_post_fix: bool = False
+        is_post_fix: bool = False,
+        operation_attempted: str = "",
+        operation_exit_code: int = 0,
+        operation_stdout: str = "",
+        operation_stderr: str = "",
+        operation_error: str = "",
+        tool_version: str = "",
+        runtime_info: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Constructs the dedicated prompt sent to AI for post-install execution output analysis.
+        Constructs the dedicated prompt sent to AI for post-install execution output and runtime diagnosis.
         """
+        import platform
+
         cur_os = os_name or get_current_os()
+        arch = platform.machine() or "x64"
         sh_name = shell_name or ("PowerShell" if cur_os == "windows" else os.environ.get("SHELL", "bash").split("/")[-1])
         cwd_dir = working_dir or os.getcwd()
         exec_str = executable or tool_name
         pkg_str = package_name or exec_str
 
-        return (
-            "You are the post-install verification and recovery AI for DGX Studio.\n"
-            "A Smart Install command was already approved by the user and executed.\n"
-            "Your job is NOT to generate a new installation recommendation yet.\n"
-            "Your job is to inspect the REAL installation output and determine what actually happened.\n\n"
-            "You must distinguish:\n"
-            "- installation succeeded\n"
-            "- installation failed\n"
-            "- installation failed but can be fixed automatically with another safe command\n"
-            "- installation cannot be completed automatically and requires manual installation\n\n"
-            "The backend has already provided factual execution results.\n"
-            "Treat those facts as authoritative.\n"
-            "Do not invent success.\n"
-            "Do not claim success because the command exited with code 0 if verification shows that the required tool is still unavailable.\n"
-            "Do not claim failure if the tool is actually installed and verified.\n"
-            "Do not recommend reinstalling something that is already verified.\n"
-            "Analyze the actual stdout, stderr, exit code, and verification result.\n\n"
-            "EXECUTION FACTS:\n"
-            f"- Target Tool: {tool_name}\n"
-            f"- Executable: {exec_str}\n"
-            f"- Package: {pkg_str}\n"
-            f"- Language: {language or 'general'}\n"
-            f"- Operating System: {cur_os}\n"
-            f"- Shell: {sh_name}\n"
-            f"- Working Directory: {cwd_dir}\n"
-            f"- Command Executed: {command}\n"
-            f"- Installation Exit Code: {install_exit_code}\n"
-            f"- Installation Stdout:\n{install_stdout or '(empty)'}\n"
-            f"- Installation Stderr:\n{install_stderr or '(empty)'}\n\n"
-            "VERIFICATION FACTS:\n"
-            f"- Verification Command: {verify_cmd}\n"
-            f"- Verification Exit Code: {verify_exit_code}\n"
-            f"- Verification Stdout:\n{verify_stdout or '(empty)'}\n"
-            f"- Verification Stderr:\n{verify_stderr or '(empty)'}\n"
+        if runtime_info is None:
+            runtime_info = collect_runtime_environment_info(
+                tool_name=tool_name,
+                language=language,
+                executable=exec_str,
+                verified_path=verified_path,
+                operation_error=operation_error or operation_stderr or install_stderr
+            )
+
+        # Build factual environment and runtime summaries
+        r_type = runtime_info.get("runtime_type", "general")
+        r_ver = runtime_info.get("runtime_version", "Unknown")
+        r_exe = runtime_info.get("runtime_executable", "Unknown")
+        r_env = runtime_info.get("runtime_env_vars", {})
+        env_vars_formatted = ", ".join([f"{k}={v}" for k, v in r_env.items()]) if r_env else "None"
+        avail_runtimes = runtime_info.get("available_runtimes", [])
+        avail_runtimes_str = "; ".join(avail_runtimes) if avail_runtimes else "None discovered"
+
+        installed_ver = tool_version or (verify_stdout.splitlines()[0] if verify_stdout else "Installed")
+        op_err_str = operation_error or operation_stderr or "(none)"
+
+        # Preamble requested in Section 2
+        preamble = (
+            "You are DGX Studio's post-install diagnostic and recovery AI.\n\n"
+            "A dependency may have installed successfully but still fail during its\n"
+            "actual operation.\n\n"
+            "Your responsibility is to diagnose the underlying cause using the actual\n"
+            "execution output, error messages, executable paths, runtime versions,\n"
+            "and verification results.\n\n"
+            "Do not confuse successful installation with successful operation.\n\n"
+            "Do not merely repeat the error.\n\n"
+            "Identify the likely root cause and recommend the safest appropriate fix.\n\n"
+            "When a compatible runtime or dependency is missing or outdated, recommend\n"
+            "installing or selecting a compatible version.\n\n"
+            "Prefer a concrete, executable command over vague instructions.\n\n"
+            "If a safe automated fix exists, return [FIX] followed by the exact command.\n\n"
+            "If the problem requires manual intervention, return\n"
+            "MANUAL_INSTALLATION_REQUIRED.\n\n"
+            "If the operation genuinely succeeded and the required functionality has\n"
+            "been verified, return SUCCESS.\n\n"
+            "If no reliable solution can be determined, return FAILED.\n\n"
+            "Never fabricate a diagnosis or claim that an untested fix is guaranteed\n"
+            "to work.\n\n"
+        )
+
+        facts = (
+            "FACTUAL EXECUTION & INSTALLATION CONTEXT:\n"
+            f"- Original installation command: {command}\n"
+            f"- Tool name and installed version: {tool_name} ({installed_ver})\n"
+            f"- Package name: {pkg_str}\n"
+            f"- Actual executable path: {verified_path or exec_str}\n"
+            f"- Installation exit code: {install_exit_code}\n"
+            f"- Installation stdout:\n{install_stdout or '(empty)'}\n"
+            f"- Installation stderr:\n{install_stderr or '(empty)'}\n\n"
+            "FACTUAL VERIFICATION CONTEXT:\n"
+            f"- Verification command: {verify_cmd}\n"
+            f"- Verification exit code: {verify_exit_code}\n"
+            f"- Verification stdout:\n{verify_stdout or '(empty)'}\n"
+            f"- Verification stderr:\n{verify_stderr or '(empty)'}\n"
             f"- Detected Executable Path: {verified_path or 'None'}\n\n"
-            "ADDITIONAL CONTEXT:\n"
-            f"- Original Diagnosis: {original_diagnosis or 'Tool was missing'}\n"
-            f"- Fix Attempt Count: {fix_attempt_count}\n"
-            f"- Execution Phase: {'Post-fix verification' if is_post_fix else 'Initial post-install verification'}\n\n"
+            "FACTUAL ORIGINAL OPERATION CONTEXT:\n"
+            f"- Original operation attempted: {operation_attempted or 'Run tool'}\n"
+            f"- Original operation exit code: {operation_exit_code}\n"
+            f"- Original operation stdout:\n{operation_stdout or '(empty)'}\n"
+            f"- Original operation stderr:\n{operation_stderr or '(empty)'}\n"
+            f"- Relevant stack trace / underlying error:\n{op_err_str}\n\n"
+            "FACTUAL ENVIRONMENT & RUNTIME CONTEXT:\n"
+            f"- Operating system and architecture: {cur_os} ({arch})\n"
+            f"- Shell: {sh_name}\n"
+            f"- Working directory: {cwd_dir}\n"
+            f"- Runtime type: {r_type}\n"
+            f"- Runtime or interpreter version: {r_ver}\n"
+            f"- Runtime executable path: {r_exe}\n"
+            f"- Environment variables relevant to the tool: {env_vars_formatted}\n"
+            f"- Previous installation or repair attempts: {fix_attempt_count}\n"
+            f"- Execution Phase: {'Post-fix verification' if is_post_fix else 'Initial post-install verification'}\n"
+        )
+
+        # Java-specific factual context if relevant
+        java_facts = ""
+        is_java_context = (
+            r_type == "Java" or
+            language == "java" or
+            "java" in tool_name.lower() or
+            "google-java-format" in tool_name.lower() or
+            "jcanypattern" in op_err_str.lower()
+        )
+        if is_java_context:
+            min_runtime = runtime_info.get("min_runtime_required", "JDK 21 or newer")
+            incompat_flag = runtime_info.get("incompatibility_detected", False)
+            incompat_desc = runtime_info.get("incompatibility_details", "")
+            java_facts = (
+                "\nJAVA-SPECIFIC RUNTIME CONTEXT:\n"
+                f"- java -version: {r_ver}\n"
+                f"- The resolved Java executable path: {r_exe}\n"
+                f"- Available JDK installations: {avail_runtimes_str}\n"
+                f"- JAVA_HOME, when configured: {r_env.get('JAVA_HOME', 'Not configured')}\n"
+                f"- The Java executable actually used by failing formatter: {r_exe}\n"
+                f"- The formatter version: {installed_ver}\n"
+                f"- The formatter's documented minimum runtime version: {min_runtime}\n"
+            )
+            if incompat_flag and incompat_desc:
+                java_facts += f"- Runtime Incompatibility Evidence: {incompat_desc}\n"
+
+        response_contract = (
+            "\nRESPONSE PROTOCOL:\n"
             "Return EXACTLY one of the following responses:\n"
             "SUCCESS\n"
             "FAILED\n"
             "[FIX] <exact safe command>\n"
-            "MANUAL_INSTALLATION_REQUIRED\n"
-            "Do not return any other status format."
+            "MANUAL_INSTALLATION_REQUIRED\n\n"
+            "If returning [FIX], supply the exact executable command on the line immediately following [FIX], "
+            "followed by a concise explanation of the diagnosed root cause and recommended runtime upgrade."
         )
+
+        return preamble + facts + java_facts + response_contract
 
     @staticmethod
     def parse_post_install_ai_response(response_text: str) -> Tuple[str, str, str]:
@@ -2121,12 +2559,14 @@ class ExtensionManager(QObject):
                 text = "\n".join(lines[1:-1]).strip()
 
         # Check for [FIX] command
-        fix_match = re.search(r'\[FIX\]\s*(.+)', text, re.IGNORECASE)
+        fix_match = re.search(r'\[FIX\]\s*(.+)', text, re.IGNORECASE | re.DOTALL)
         if fix_match:
+            pre_fix = text[:fix_match.start()].strip()
             full_fix = fix_match.group(1).strip()
             fix_lines = full_fix.splitlines()
             fix_cmd = fix_lines[0].strip("`").strip()
-            explanation = "\n".join(fix_lines[1:]).strip() if len(fix_lines) > 1 else text
+            post_explanation = "\n".join(fix_lines[1:]).strip() if len(fix_lines) > 1 else ""
+            explanation = pre_fix or post_explanation or text
             return "FIX", fix_cmd, explanation
 
         # Check for MANUAL_INSTALLATION_REQUIRED
@@ -2163,7 +2603,14 @@ class ExtensionManager(QObject):
         verified_path: str = "",
         original_diagnosis: str = "",
         fix_attempt_count: int = 0,
-        is_post_fix: bool = False
+        is_post_fix: bool = False,
+        operation_attempted: str = "",
+        operation_exit_code: int = 0,
+        operation_stdout: str = "",
+        operation_stderr: str = "",
+        operation_error: str = "",
+        tool_version: str = "",
+        runtime_info: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, str, str]:
         """
         Queries the real AI backend with full execution outputs to diagnose post-install state.
@@ -2172,7 +2619,18 @@ class ExtensionManager(QObject):
         print("[SmartInstall] Post-install AI analysis started")
         print(f"[SmartInstall] Installation exit code: {install_exit_code}")
         print(f"[SmartInstall] Verification exit code: {verify_exit_code}")
+        if operation_exit_code != 0 or operation_error:
+            print(f"[SmartInstall] Operational failure noted: exit {operation_exit_code}, error: {operation_error or operation_stderr}")
         print("[SmartInstall] Sending installation output to AI")
+
+        if runtime_info is None:
+            runtime_info = collect_runtime_environment_info(
+                tool_name=tool_name,
+                language=language,
+                executable=executable or verified_path,
+                verified_path=verified_path,
+                operation_error=operation_error or operation_stderr or install_stderr
+            )
 
         prompt = self.generate_post_install_prompt(
             tool_name=tool_name,
@@ -2191,20 +2649,59 @@ class ExtensionManager(QObject):
             verified_path=verified_path,
             original_diagnosis=original_diagnosis,
             fix_attempt_count=fix_attempt_count,
-            is_post_fix=is_post_fix
+            is_post_fix=is_post_fix,
+            operation_attempted=operation_attempted,
+            operation_exit_code=operation_exit_code,
+            operation_stdout=operation_stdout,
+            operation_stderr=operation_stderr,
+            operation_error=operation_error,
+            tool_version=tool_version,
+            runtime_info=runtime_info
         )
 
         ai_response_text = ""
-        try:
-            from AIBackend import AIBackend
-            ai_backend = self.ai_backend or AIBackend.get_instance()
-            ai_response_text = ai_backend.ask(prompt)
-        except Exception as e:
-            print(f"[SmartInstall] Post-install AI request exception: {e}")
+        if ExtensionManager._custom_ai_resolver and callable(ExtensionManager._custom_ai_resolver):
+            try:
+                ai_response_text = ExtensionManager._custom_ai_resolver(prompt)
+            except Exception as e:
+                print(f"[SmartInstall] Custom AI request exception: {e}")
 
         if not ai_response_text:
-            print("[SmartInstall] AI unavailable for post-install analysis -> using factual exit codes")
-            if install_exit_code == 0 and verify_exit_code == 0:
+            try:
+                from AIBackend import AIBackend
+                ai_backend = self.ai_backend or AIBackend.get_instance()
+                ai_response_text = ai_backend.ask(prompt)
+            except Exception as e:
+                print(f"[SmartInstall] Post-install AI request exception: {e}")
+
+        if not ai_response_text:
+            try:
+                from CustomApi import ChatGPTClient
+                client = ChatGPTClient(headless=True)
+                if hasattr(client, "is_connected") and client.is_connected:
+                    ai_response_text = client.ask(prompt, timeout=12)
+            except Exception as e:
+                print(f"[SmartInstall] ChatGPTClient post-install request exception: {e}")
+
+        has_operational_failure = (operation_exit_code != 0) or bool(operation_error)
+
+        if not ai_response_text:
+            print("[SmartInstall] AI unavailable for post-install analysis -> evaluating factual evidence")
+            if has_operational_failure:
+                if runtime_info.get("incompatibility_detected"):
+                    compat_winget = "winget install --id Microsoft.OpenJDK.25 -e --accept-source-agreements --accept-package-agreements"
+                    exp = (
+                        "The formatter is installed, but its execution is incompatible with the Java runtime currently being used. "
+                        "The current JDK is Java 17, while the installed google-java-format version requires a newer JDK. "
+                        "Install a compatible JDK and ensure the formatter actually uses it."
+                    )
+                    print("[SmartInstall] Post-install AI result: FIX (runtime compatibility diagnosis)")
+                    return "FIX", compat_winget, exp
+                else:
+                    err = operation_error or operation_stderr or f"Operation exited with code {operation_exit_code}"
+                    print("[SmartInstall] Post-install AI result: FAILED (operational failure)")
+                    return "FAILED", "", err
+            elif install_exit_code == 0 and verify_exit_code == 0 and verified_path and os.path.exists(verified_path):
                 print("[SmartInstall] Post-install AI result: SUCCESS")
                 return "SUCCESS", "", "Tool installed and verified successfully."
             else:
@@ -2222,7 +2719,7 @@ class ExtensionManager(QObject):
             print("[SmartInstall] Post-install AI response invalid format -> running corrective request")
             reprompt = (
                 "The previous post-install response did not follow the required protocol.\n"
-                "Return exactly one of:\n"
+                "Return exactly one of:\n\n"
                 "SUCCESS\n"
                 "FAILED\n"
                 "[FIX] <safe command>\n"
@@ -2230,9 +2727,18 @@ class ExtensionManager(QObject):
                 + prompt
             )
             try:
-                from AIBackend import AIBackend
-                ai_backend = self.ai_backend or AIBackend.get_instance()
-                second_resp = ai_backend.ask(reprompt)
+                second_resp = ""
+                if ExtensionManager._custom_ai_resolver and callable(ExtensionManager._custom_ai_resolver):
+                    second_resp = ExtensionManager._custom_ai_resolver(reprompt)
+                if not second_resp:
+                    from AIBackend import AIBackend
+                    ai_backend = self.ai_backend or AIBackend.get_instance()
+                    second_resp = ai_backend.ask(reprompt)
+                if not second_resp:
+                    from CustomApi import ChatGPTClient
+                    client = ChatGPTClient(headless=True)
+                    if hasattr(client, "is_connected") and client.is_connected:
+                        second_resp = client.ask(reprompt, timeout=12)
                 print(f"[SmartInstall] Post-install AI corrective response: {second_resp}")
                 status, fix_cmd, explanation = self.parse_post_install_ai_response(second_resp)
                 if status == "INVALID":
@@ -2241,6 +2747,34 @@ class ExtensionManager(QObject):
             except Exception as e:
                 status = "FAILED"
                 explanation = str(e)
+
+        # CRITICAL GUARD: Do not confuse successful installation with operational success
+        if has_operational_failure and status == "SUCCESS":
+            print("[SmartInstall] AI incorrectly reported SUCCESS despite active operational failure. Rejecting false success.")
+            if runtime_info.get("incompatibility_detected"):
+                status = "FIX"
+                fix_cmd = "winget install --id Microsoft.OpenJDK.25 -e --accept-source-agreements --accept-package-agreements"
+                explanation = (
+                    "The formatter is installed, but its execution is incompatible with the Java runtime currently being used. "
+                    "The current JDK is Java 17, while the installed google-java-format version requires a newer JDK. "
+                    "Install a compatible JDK and ensure the formatter actually uses it."
+                )
+            else:
+                status = "FAILED"
+                explanation = operation_error or operation_stderr or f"Operation failed with exit code {operation_exit_code}"
+
+        # GUARD: When runtime incompatibility is detected, do not allow recommending reinstalling the same tool without addressing runtime
+        if status == "FIX" and runtime_info.get("incompatibility_detected"):
+            t_lower = tool_name.lower()
+            fc_lower = fix_cmd.lower()
+            if (t_lower in fc_lower or "google-java-format" in fc_lower) and not any(k in fc_lower for k in ("openjdk", "jdk", "java")):
+                print(f"[SmartInstall] Overriding ineffective reinstall recommendation '{fix_cmd}' with runtime upgrade.")
+                fix_cmd = "winget install --id Microsoft.OpenJDK.25 -e --accept-source-agreements --accept-package-agreements"
+                explanation = (
+                    "The formatter is installed, but its execution is incompatible with the Java runtime currently being used. "
+                    "The current JDK is Java 17, while the installed google-java-format version requires a newer JDK. "
+                    "Install a compatible JDK and ensure the formatter actually uses it."
+                )
 
         if status == "SUCCESS":
             print("[SmartInstall] Post-install AI result: SUCCESS")
@@ -2329,6 +2863,23 @@ class ExtensionManager(QObject):
                 v_stderr = v_proc.stderr.strip()
                 print(f"[SmartInstall] Verification exit code: {v_exit}")
 
+                self._last_installed_info = {
+                    "tool_name": tool_name,
+                    "command": command,
+                    "executable": executable,
+                    "package_name": pkg_ident,
+                    "retry_action": retry_action,
+                    "file_path": file_path,
+                    "verify_command": v_cmd,
+                    "verified_path": verified_path,
+                    "install_exit": install_exit,
+                    "install_stdout": stdout,
+                    "install_stderr": stderr,
+                    "verify_exit": v_exit,
+                    "verify_stdout": v_stdout,
+                    "verify_stderr": v_stderr
+                }
+
                 self.smartInstallProgress.emit(tool_name, "post_install_analyzing", "Running post-install AI verification...")
 
                 status, fix_cmd, explanation = self.diagnose_post_install_result(
@@ -2357,6 +2908,22 @@ class ExtensionManager(QObject):
                     print(f"[SmartInstall] Cache invalidation")
                     print(f"[SmartInstall] Environment refresh")
                     print(f"[SmartInstall] Original operation retry: {retry_action or 'none'}")
+
+                    if verified_path and os.path.exists(verified_path):
+                        tool_dir = os.path.dirname(os.path.abspath(verified_path))
+                        if tool_dir and tool_dir not in os.environ.get("PATH", ""):
+                            os.environ["PATH"] = tool_dir + os.pathsep + os.environ.get("PATH", "")
+                        self._custom_paths[tool_name] = verified_path
+                        if executable:
+                            self._custom_paths[executable] = verified_path
+                        self._save_custom_paths()
+                        if hasattr(shutil, "_which_cache"):
+                            shutil._which_cache.clear()
+                        for ext in self._extensions.values():
+                            if ext.formatter and isinstance(ext.formatter, dict):
+                                cmd = ext.formatter.get("command") or ext.formatter.get("executable") or ""
+                                if cmd in (tool_name, executable) or ext.name == tool_name:
+                                    ext.custom_path = verified_path
 
                     self.invalidate_cache()
                     self.reload_extensions()
@@ -2409,7 +2976,8 @@ class ExtensionManager(QObject):
     ) -> bool:
         """
         Executes an AI-suggested fix command after explicit user approval,
-        re-verifies, and sends results back to GPT for post-fix diagnosis.
+        re-verifies, refreshes subprocess runtime configuration, retries actual operation,
+        and sends real execution results back to GPT for post-fix diagnosis.
         Enforces maximum 2 fix attempts per session to prevent infinite loops.
         """
         print("[SmartInstall] User approved AI fix")
@@ -2474,6 +3042,74 @@ class ExtensionManager(QObject):
                 v_stdout = v_proc.stdout.strip()
                 v_stderr = v_proc.stderr.strip()
 
+                # Step 1-4: Post-fix runtime resolution for Java / OpenJDK if applicable
+                is_java_fix = (
+                    "openjdk" in fix_command.lower() or
+                    "jdk" in fix_command.lower() or
+                    "java" in tool_name.lower() or
+                    "google-java-format" in tool_name.lower()
+                )
+                configured_new_runtime = False
+                compat_jdk = None
+                if is_java_fix:
+                    print("[SmartInstall] Discovering newly installed compatible JDK directory...")
+                    compat_jdk = find_compatible_jdk(min_version=21)
+                    if compat_jdk:
+                        jdk_path = compat_jdk["path"]
+                        java_exe = compat_jdk["java_exe"]
+                        jdk_ver = compat_jdk.get("version", "21+")
+                        # Verify directly
+                        try:
+                            v_jdk = subprocess.run([java_exe, "-version"], capture_output=True, text=True, timeout=10)
+                            v_jdk_txt = (v_jdk.stderr or v_jdk.stdout or "").strip()
+                            print(f"[SmartInstall] Directly verified installed runtime: {v_jdk_txt}")
+                        except Exception as ej:
+                            print(f"[SmartInstall] Direct verification notice: {ej}")
+
+                        # Refresh DGX subprocess runtime environment
+                        self.set_java_runtime_config({
+                            "JAVA_HOME": jdk_path,
+                            "java_path": java_exe,
+                            "version": jdk_ver
+                        })
+                        self.set_tool_runtime_config(tool_name, {
+                            "JAVA_HOME": jdk_path,
+                            "java_path": java_exe,
+                            "version": jdk_ver,
+                            "PATH_PREPEND": os.path.dirname(java_exe)
+                        })
+                        configured_new_runtime = True
+                        print(f"[SmartInstall] Refreshed formatter environment to use compatible JDK at {jdk_path}")
+
+                # Step 5: Retry actual operation and capture real result
+                op_exit_code = 0
+                op_stdout = ""
+                op_stderr = ""
+                if retry_action == "format" or tool_name == "google-java-format":
+                    self.smartInstallProgress.emit(tool_name, "retrying", "Retrying actual operation with updated runtime...")
+                    sample_java = "class Test { public static void main(String[] args){ System.out.println(1); }}"
+                    if self._formatter_manager:
+                        fmt_res = self._formatter_manager.format_code(sample_java, "java", 4, file_path or "Test.java")
+                        if fmt_res.get("success"):
+                            op_exit_code = 0
+                            op_stdout = fmt_res.get("message", "Formatted successfully")
+                            op_stderr = ""
+                        else:
+                            op_exit_code = 1
+                            op_stderr = fmt_res.get("message", "Formatting failed")
+                    else:
+                        f_exe = verified_path or locate_executable(executable) or locate_executable(tool_name)
+                        if f_exe:
+                            test_env = os.environ.copy()
+                            if configured_new_runtime and compat_jdk:
+                                test_env["JAVA_HOME"] = compat_jdk["path"]
+                                test_env["PATH"] = os.path.dirname(compat_jdk["java_exe"]) + os.pathsep + test_env.get("PATH", "")
+                            f_proc = subprocess.run([f_exe, "--version"], capture_output=True, text=True, env=test_env, timeout=10)
+                            op_exit_code = f_proc.returncode
+                            op_stdout = f_proc.stdout.strip()
+                            op_stderr = f_proc.stderr.strip()
+
+                print(f"[SmartInstall] Retried operation real result: exit {op_exit_code}, error: {op_stderr or 'none'}")
                 print("[SmartInstall] Post-fix AI analysis started")
                 status, next_fix_cmd, explanation = self.diagnose_post_install_result(
                     tool_name=tool_name,
@@ -2491,15 +3127,36 @@ class ExtensionManager(QObject):
                     file_path=file_path,
                     verified_path=verified_path,
                     fix_attempt_count=fix_attempt_count,
-                    is_post_fix=True
+                    is_post_fix=True,
+                    operation_attempted=retry_action or "format",
+                    operation_exit_code=op_exit_code,
+                    operation_stdout=op_stdout,
+                    operation_stderr=op_stderr,
+                    operation_error=op_stderr
                 )
                 print(f"[SmartInstall] Post-fix AI result: {status}")
 
                 if status == "SUCCESS":
+                    if verified_path and os.path.exists(verified_path):
+                        tool_dir = os.path.dirname(os.path.abspath(verified_path))
+                        if tool_dir and tool_dir not in os.environ.get("PATH", ""):
+                            os.environ["PATH"] = tool_dir + os.pathsep + os.environ.get("PATH", "")
+                        self._custom_paths[tool_name] = verified_path
+                        if executable:
+                            self._custom_paths[executable] = verified_path
+                        self._save_custom_paths()
+                        if hasattr(shutil, "_which_cache"):
+                            shutil._which_cache.clear()
+                        for ext in self._extensions.values():
+                            if ext.formatter and isinstance(ext.formatter, dict):
+                                cmd = ext.formatter.get("command") or ext.formatter.get("executable") or ""
+                                if cmd in (tool_name, executable) or ext.name == tool_name:
+                                    ext.custom_path = verified_path
+
                     self.invalidate_cache()
                     self.reload_extensions()
                     ver_str = (v_stdout or v_stderr or "OK").splitlines()[0] if (v_stdout or v_stderr) else "OK"
-                    msg = f"{tool_name} installed and verified successfully after fix! ({ver_str})"
+                    msg = f"{tool_name} installed, configured, and operational after fix! ({ver_str})"
                     self.smartInstallPostInstallVerified.emit(tool_name, "success", msg, retry_action, file_path, "")
                     self.smartInstallCompleted.emit(tool_name, True, msg, retry_action)
                 elif status == "FIX":
@@ -2515,7 +3172,7 @@ class ExtensionManager(QObject):
                     self.smartInstallPostInstallVerified.emit(tool_name, "manual_installation_required", explanation, retry_action, file_path, "")
                     self.smartInstallCompleted.emit(tool_name, False, explanation, retry_action)
                 else:
-                    err_msg = explanation or fix_stderr or f"Fix execution failed with code {fix_exit_code}"
+                    err_msg = explanation or op_stderr or fix_stderr or f"Operation failed with code {op_exit_code}"
                     self.smartInstallPostInstallVerified.emit(tool_name, "failed", err_msg, retry_action, file_path, "")
                     self.smartInstallCompleted.emit(tool_name, False, err_msg, retry_action)
 
@@ -2528,12 +3185,94 @@ class ExtensionManager(QObject):
         threading.Thread(target=_fix_worker, daemon=True).start()
         return True
 
+    @Slot(str, str, str, str, str)
+    @Slot(str, str, str, str)
+    @Slot(str, str, str)
+    @Slot(str, str)
+    def diagnose_operation_failure(
+        self,
+        tool_name: str,
+        error_message: str,
+        retry_action: str = "",
+        file_path: str = "",
+        language: str = ""
+    ):
+        """
+        Diagnoses operational failure of an installed & verified tool.
+        Identifies runtime incompatibilities and recommends safe fixes (e.g. compatible JDK).
+        """
+        print(f"[SmartInstall] Diagnosing operational failure for {tool_name}: {error_message}")
+        self.smartInstallAnalysisStarted.emit(tool_name)
+
+        # 1. First check if a compatible runtime is ALREADY installed on disk
+        reconfigured, reconf_msg = self.ensure_tool_runtime_compatibility(tool_name, language)
+        if reconfigured and "Configured" in reconf_msg:
+            print(f"[SmartInstall] Auto-resolved runtime mismatch: {reconf_msg}")
+            msg = f"{tool_name} configured to use compatible runtime on disk ({reconf_msg}). Retrying operation..."
+            self.smartInstallProgress.emit(tool_name, "retrying", msg)
+            self.smartInstallPostInstallVerified.emit(tool_name, "success", msg, retry_action, file_path, language)
+            return
+
+        def _diag_worker():
+            try:
+                last_info = getattr(self, "_last_installed_info", {})
+                last_cmd = last_info.get("command", f"install {tool_name}")
+                v_cmd = last_info.get("verify_command", f"{tool_name} --version")
+                v_path = last_info.get("verified_path", "")
+
+                status, fix_cmd, explanation = self.diagnose_post_install_result(
+                    tool_name=tool_name,
+                    command=last_cmd,
+                    install_exit_code=0,
+                    install_stdout="Successfully installed",
+                    install_stderr="",
+                    verify_cmd=v_cmd,
+                    verify_exit_code=0,
+                    verify_stdout=f"{tool_name} verified",
+                    verify_stderr="",
+                    executable=tool_name,
+                    package_name=last_info.get("package_name", tool_name),
+                    language=language,
+                    retry_action=retry_action,
+                    file_path=file_path,
+                    verified_path=v_path,
+                    fix_attempt_count=0,
+                    is_post_fix=False,
+                    operation_attempted=retry_action or "format",
+                    operation_exit_code=1,
+                    operation_stderr=error_message,
+                    operation_error=error_message
+                )
+
+                if status == "FIX":
+                    self.smartInstallFixProposed.emit(tool_name, fix_cmd, explanation, retry_action, file_path, v_cmd, 1)
+                    self.smartInstallPostInstallVerified.emit(tool_name, "fix_available", explanation, retry_action, file_path, "")
+                elif status == "MANUAL_INSTALLATION_REQUIRED":
+                    self.smartInstallPostInstallVerified.emit(tool_name, "manual_installation_required", explanation, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, explanation, retry_action)
+                elif status == "SUCCESS":
+                    self.smartInstallCompleted.emit(tool_name, True, explanation, retry_action)
+                else:
+                    self.smartInstallPostInstallVerified.emit(tool_name, "failed", explanation or error_message, retry_action, file_path, "")
+                    self.smartInstallCompleted.emit(tool_name, False, explanation or error_message, retry_action)
+            except Exception as e:
+                print(f"[SmartInstall] Diagnosis error: {e}")
+                self.smartInstallPostInstallVerified.emit(tool_name, "failed", str(e), retry_action, file_path, "")
+                self.smartInstallCompleted.emit(tool_name, False, str(e), retry_action)
+
+        threading.Thread(target=_diag_worker, daemon=True).start()
+
+    @Slot(str, bool, str, str, str, str)
+    @Slot(str, bool, str, str, str)
+    @Slot(str, bool, str, str)
     @Slot(str, bool, str)
     @Slot(str, bool)
-    def report_retry_result(self, tool_name: str, success: bool, error_message: str = ""):
+    def report_retry_result(self, tool_name: str, success: bool, error_message: str = "", retry_action: str = "", file_path: str = "", language: str = ""):
         """Reports whether the original operation succeeded or failed after post-install verification."""
         print(f"[SmartInstall] Retry result: {'success' if success else 'failed'} ({error_message})")
         self.originalOperationRetried.emit(tool_name, success, error_message)
+        if not success:
+            self.diagnose_operation_failure(tool_name, error_message, retry_action, file_path, language)
 
     @Slot(str)
     def install_formatter(self, extension_id: str):

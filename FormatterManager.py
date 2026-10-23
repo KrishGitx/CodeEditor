@@ -95,6 +95,9 @@ class FormatterManager:
         if clean_lang == "csharp" or ext_dot == ".cs":
             return self._format_csharpier(source_code, tab_size, file_path)
 
+        if clean_lang == "java" or ext_dot == ".java":
+            return self._format_java(source_code, tab_size, file_path)
+
         display_name = clean_lang or ext_dot.lstrip(".") or "this language"
         return {
             "success": False,
@@ -361,6 +364,110 @@ class FormatterManager:
                 except Exception:
                     pass
 
+    def _format_java(self, source_code: str, tab_size: int, file_path: str) -> Dict[str, Any]:
+        """
+        Formats Java source code using google-java-format if available.
+        """
+        tool_path = locate_executable("google-java-format")
+        if not tool_path:
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": "No formatter installed for Java.",
+                "available": False,
+                "dependency": "google-java-format",
+                "installCommand": "npm install -g google-java-format"
+            }
+
+        is_win = sys.platform.startswith("win")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if is_win else 0
+
+        import tempfile
+        temp_file = None
+        try:
+            tf = tempfile.NamedTemporaryFile(mode="w", suffix=".java", delete=False, encoding="utf-8")
+            tf.write(source_code)
+            tf.close()
+            temp_file = tf.name
+
+            env = os.environ.copy()
+            tool_runtime = None
+            if hasattr(self.extension_manager, "get_tool_runtime_config"):
+                tool_runtime = (
+                    self.extension_manager.get_tool_runtime_config("google-java-format") or
+                    self.extension_manager.get_tool_runtime_config("java")
+                )
+            if not tool_runtime and hasattr(self.extension_manager, "get_java_runtime_config"):
+                tool_runtime = self.extension_manager.get_java_runtime_config()
+
+            java_exe_to_use = "java"
+            if tool_runtime:
+                if "JAVA_HOME" in tool_runtime and tool_runtime["JAVA_HOME"]:
+                    env["JAVA_HOME"] = tool_runtime["JAVA_HOME"]
+                    bin_dir = os.path.join(tool_runtime["JAVA_HOME"], "bin")
+                    env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+                    candidate_java = os.path.join(bin_dir, "java.exe" if is_win else "java")
+                    if os.path.exists(candidate_java):
+                        java_exe_to_use = candidate_java
+                if "java_path" in tool_runtime and tool_runtime["java_path"] and os.path.exists(tool_runtime["java_path"]):
+                    java_exe_to_use = tool_runtime["java_path"]
+                if "PATH_PREPEND" in tool_runtime and tool_runtime["PATH_PREPEND"]:
+                    env["PATH"] = tool_runtime["PATH_PREPEND"] + os.pathsep + env.get("PATH", "")
+
+            cmd = [tool_path, "--replace", temp_file] if not tool_path.lower().endswith(".jar") else [java_exe_to_use, "-jar", tool_path, "--replace", temp_file]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                shell=is_win and tool_path.lower().endswith((".cmd", ".bat")),
+                timeout=15,
+                creationflags=creationflags
+            )
+
+            if os.path.exists(temp_file):
+                with open(temp_file, "r", encoding="utf-8", errors="replace") as f:
+                    formatted_content = f.read()
+
+                if formatted_content is not None and proc.returncode == 0:
+                    clean_formatted = formatted_content.replace("\r\n", "\n")
+                    if clean_formatted.strip() == source_code.strip():
+                        return {
+                            "success": True,
+                            "formatted": source_code,
+                            "message": "Document is already formatted",
+                            "available": True
+                        }
+                    return {
+                        "success": True,
+                        "formatted": clean_formatted,
+                        "message": "Java formatted with google-java-format",
+                        "available": True
+                    }
+
+            err = (proc.stderr or proc.stdout or f"Exit code {proc.returncode}").strip()
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"google-java-format error: {err}",
+                "available": True
+            }
+        except Exception as ex:
+            return {
+                "success": False,
+                "formatted": source_code,
+                "message": f"google-java-format execution error: {ex}",
+                "available": True
+            }
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except Exception:
+                    pass
+
     def _format_json(self, source_code: str, tab_size: int, extension: Extension) -> Dict[str, Any]:
         try:
             parsed = json.loads(source_code)
@@ -406,7 +513,7 @@ class FormatterManager:
                 "extension_id": extension.id
             }
 
-        tool_path = extension.get_executable_path() or shutil.which(command_name)
+        tool_path = extension.get_executable_path() or locate_executable(command_name) or shutil.which(command_name)
         if not tool_path:
             cur_os = sys.platform.lower()
             os_key = "windows" if cur_os.startswith("win") else ("macos" if cur_os.startswith("darwin") else "linux")
@@ -462,6 +569,24 @@ class FormatterManager:
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+
+        # Check tool-specific runtime configuration (e.g. compatible JDK for google-java-format)
+        tool_runtime = None
+        if hasattr(self.extension_manager, "get_tool_runtime_config"):
+            tool_runtime = (
+                self.extension_manager.get_tool_runtime_config(command_name) or
+                self.extension_manager.get_tool_runtime_config(extension.name)
+            )
+        if not tool_runtime and lang_id == "java" and hasattr(self.extension_manager, "get_java_runtime_config"):
+            tool_runtime = self.extension_manager.get_java_runtime_config()
+
+        if tool_runtime:
+            if "JAVA_HOME" in tool_runtime and tool_runtime["JAVA_HOME"]:
+                env["JAVA_HOME"] = tool_runtime["JAVA_HOME"]
+                bin_dir = os.path.join(tool_runtime["JAVA_HOME"], "bin")
+                env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+            if "PATH_PREPEND" in tool_runtime and tool_runtime["PATH_PREPEND"]:
+                env["PATH"] = tool_runtime["PATH_PREPEND"] + os.pathsep + env.get("PATH", "")
 
         try:
             proc = subprocess.Popen(

@@ -30,6 +30,16 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
     def tearDown(self):
         ExtensionManager.set_ai_provider(None)
 
+    def wait_for(self, condition, timeout=3.0, interval=0.05):
+        start = time.time()
+        while time.time() - start < timeout:
+            self.app.processEvents()
+            if condition():
+                return True
+            time.sleep(interval)
+        self.app.processEvents()
+        return condition()
+
     def test_01_install_succeeds_gpt_returns_success(self):
         """TEST 1: Install succeeds -> GPT returns SUCCESS -> proceed to retry."""
         mock_ai = MagicMock()
@@ -103,13 +113,12 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
 
         # Execute install that fails and proposes fix
         with patch("subprocess.run") as mock_run:
-            # Install command fails
             mock_run.side_effect = [
                 MagicMock(returncode=1, stdout="", stderr="npm ERR! cache corrupt"),
                 MagicMock(returncode=1, stdout="", stderr="not found")
             ]
             self.ext_mgr.execute_smart_install_command("prettier", "npm install -g prettier")
-            time.sleep(0.5)
+            self.wait_for(lambda: len(emitted_signals) > 0)
 
         self.assertTrue(len(emitted_signals) > 0)
         self.assertEqual(emitted_signals[0][1], "npm cache clean --force")
@@ -131,9 +140,9 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
             mock_run.side_effect = side_effect
 
             self.ext_mgr.execute_smart_install_fix("prettier", "npm cache clean --force", verify_command="prettier --version")
-            time.sleep(0.5)
+            self.wait_for(lambda: any("prettier" in str(c) and "--version" in str(c) for c in verified_calls))
 
-        self.assertIn("prettier --version", verified_calls)
+        self.assertTrue(any("prettier" in str(c) and "--version" in str(c) for c in verified_calls))
 
     def test_06_fix_result_is_sent_back_to_gpt(self):
         """TEST 6: Fix result is sent back to GPT with is_post_fix=True."""
@@ -147,7 +156,7 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
                 MagicMock(returncode=0, stdout="3.0.0", stderr="")
             ]
             self.ext_mgr.execute_smart_install_fix("prettier", "npm cache clean --force", verify_command="prettier --version")
-            time.sleep(0.5)
+            self.wait_for(lambda: mock_ai.ask.called)
 
         self.assertTrue(mock_ai.ask.called)
         last_prompt = mock_ai.ask.call_args[0][0]
@@ -169,7 +178,7 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
                 MagicMock(returncode=0, stdout="3.2.5", stderr="")
             ]
             self.ext_mgr.execute_smart_install_fix("prettier", "npm install -g prettier")
-            time.sleep(0.5)
+            self.wait_for(lambda: any(ev[1] == "success" for ev in verified_events))
 
         self.assertTrue(any(ev[1] == "success" for ev in verified_events))
 
@@ -189,7 +198,7 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
                 MagicMock(returncode=1, stdout="", stderr="not found")
             ]
             self.ext_mgr.execute_smart_install_fix("prettier", "npm install -g prettier")
-            time.sleep(0.5)
+            self.wait_for(lambda: any(ev[1] == "failed" for ev in verified_events))
 
         self.assertTrue(any(ev[1] == "failed" for ev in verified_events))
 
@@ -209,14 +218,13 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
                 MagicMock(returncode=1, stdout="", stderr="")
             ]
             self.ext_mgr.execute_smart_install_fix("prettier", "npm install -g prettier")
-            time.sleep(0.5)
+            self.wait_for(lambda: any(ev[1] == "manual_installation_required" for ev in verified_events))
 
         self.assertTrue(any(ev[1] == "manual_installation_required" for ev in verified_events))
 
     def test_10_invalid_gpt_response_triggers_one_corrective_request(self):
         """TEST 10: Invalid GPT response -> triggers ONE corrective AI request."""
         mock_ai = MagicMock()
-        # First call is invalid conversational text, second call is valid protocol
         mock_ai.ask.side_effect = [
             "Sure! It looks like prettier is now installed successfully on your machine.",
             "SUCCESS"
@@ -247,7 +255,6 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
         mock_ai.ask.return_value = "[FIX] npm install -g prettier"
         self.ext_mgr.ai_backend = mock_ai
 
-        # Attempting fix #3 (beyond max 2)
         res = self.ext_mgr.execute_smart_install_fix(
             "prettier", "npm install -g prettier", fix_attempt_count=3
         )
@@ -261,18 +268,16 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
             lambda name, status, msg, act, fp, lang: verified_events.append((name, status))
         )
         mock_ai = MagicMock()
-        mock_ai.ask.return_value = "[FIX] fix-command-again"
+        mock_ai.ask.return_value = "[FIX] npm install -g tool"
         self.ext_mgr.ai_backend = mock_ai
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="err")
-            # Execution of fix attempt 2 which proposes fix again
             self.ext_mgr.execute_smart_install_fix(
-                "tool", "fix-command", fix_attempt_count=2
+                "tool", "npm install -g tool", fix_attempt_count=2
             )
-            time.sleep(0.5)
+            self.wait_for(lambda: any(ev[1] == "manual_installation_required" for ev in verified_events))
 
-        # After attempt 2 proposing another fix, it must terminate as manual_installation_required
         self.assertTrue(any(ev[1] == "manual_installation_required" for ev in verified_events))
 
     def test_13_install_succeeds_but_original_operation_fails_becomes_retry_failed(self):
@@ -299,21 +304,23 @@ class TestSmartInstallPostInstallVerification(unittest.TestCase):
 
     def test_15_zero_exit_code_plus_failed_verification_does_not_become_success(self):
         """TEST 15: Zero exit code + failed verification does NOT become SUCCESS in AI fallback."""
-        self.ext_mgr.ai_backend = None # Fallback factual evaluation
+        with patch("CustomApi.ChatGPTClient") as mock_client:
+            mock_client.return_value.is_connected = False
+            self.ext_mgr.ai_backend = None
 
-        status, fix_cmd, exp = self.ext_mgr.diagnose_post_install_result(
-            tool_name="prettier",
-            command="echo 'fake install'",
-            install_exit_code=0,
-            install_stdout="Done",
-            install_stderr="",
-            verify_cmd="prettier --version",
-            verify_exit_code=127,
-            verify_stdout="",
-            verify_stderr="prettier: command not found"
-        )
-        self.assertNotEqual(status, "SUCCESS")
-        self.assertEqual(status, "FAILED")
+            status, fix_cmd, exp = self.ext_mgr.diagnose_post_install_result(
+                tool_name="prettier",
+                command="echo 'fake install'",
+                install_exit_code=0,
+                install_stdout="Done",
+                install_stderr="",
+                verify_cmd="prettier --version",
+                verify_exit_code=127,
+                verify_stdout="",
+                verify_stderr="prettier: command not found"
+            )
+            self.assertNotEqual(status, "SUCCESS")
+            self.assertEqual(status, "FAILED")
 
     def test_16_verification_succeeds_but_original_operation_fails_is_not_overall_success(self):
         """TEST 16: Verification succeeds but original operation fails -> NOT overall success."""

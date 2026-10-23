@@ -64,11 +64,27 @@ Rectangle {
             root.originalRetrySucceeded = true;
             root.setDialogState("success");
             root.statusMessage = (root.toolName || "Tool") + " installed, verified, and operation completed successfully.";
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.report_retry_result) {
+                extensionManager.report_retry_result(root.toolName, true, "");
+            }
         } else {
             root.originalRetrySucceeded = false;
             root.originalRetryError = errorMessage || "Original operation failed.";
-            root.setDialogState("retry_failed");
-            root.statusMessage = root.originalRetryError;
+            root.statusMessage = "Operation failed: " + root.originalRetryError + "\nDiagnosing runtime compatibility...";
+            root.setDialogState("analyzing");
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.diagnose_operation_failure) {
+                extensionManager.diagnose_operation_failure(
+                    root.toolName,
+                    root.originalRetryError,
+                    root.retryAction,
+                    root.targetFilePath,
+                    root.targetLanguageId
+                );
+            } else if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.report_retry_result) {
+                extensionManager.report_retry_result(root.toolName, false, root.originalRetryError, root.retryAction, root.targetFilePath, root.targetLanguageId);
+            } else {
+                root.setDialogState("retry_failed");
+            }
         }
     }
 

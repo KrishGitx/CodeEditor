@@ -289,6 +289,10 @@ class TestSmartInstallCompleteRebuild(unittest.TestCase):
         def capturing_print(*args, **kwargs):
             logs.append(" ".join(str(a) for a in args))
 
+        mock_ai = MagicMock()
+        mock_ai.ask.return_value = "SUCCESS\nTool verified."
+        self.ext_mgr.ai_backend = mock_ai
+
         with patch("builtins.print", side_effect=capturing_print):
             ret = self.ext_mgr.execute_smart_install_command(
                 tool_name="test-helper-tool",
@@ -299,8 +303,11 @@ class TestSmartInstallCompleteRebuild(unittest.TestCase):
                 verify_command=f'"{sys.executable}" --version'
             )
             self.assertTrue(ret)
-            # Wait briefly for background worker thread to finish while patch is active
-            time.sleep(1.5)
+            start_t = time.time()
+            while time.time() - start_t < 6.0 and len(completed_results) == 0:
+                if self.app:
+                    self.app.processEvents()
+                time.sleep(0.05)
             if self.app:
                 self.app.processEvents()
 

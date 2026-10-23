@@ -9,46 +9,37 @@ from typing import Optional, Dict, Any, Tuple
 
 
 REPL_MARKER = "[REPLACEMENT_CODE]"
+FIXED_CODE_MARKER = "[Fixed Code]"
 NO_CHANGE_MARKER = "[NO_CHANGE]"
+SUCCESS_MARKER = "SUCCESS"
 INSUFF_MARKER = "[INSUFFICIENT_CONTEXT]"
+
+SELECTION_BUG_FIX_PROMPT = (
+    "Review the provided code selection and fix any bugs that exist.\n\n"
+    "If there are no bugs, return only:\n"
+    "SUCCESS\n\n"
+    "If a bug exists:\n"
+    "1. Give a brief explanation of approximately 50 words describing the bug.\n"
+    "2. Write [Fixed Code] on a separate line.\n"
+    "3. Below [Fixed Code], provide the corrected code.\n\n"
+    "IMPORTANT:\n"
+    "- Fix only actual bugs or errors.\n"
+    "- Return the exact same selection of code with only the necessary bug fixes applied.\n"
+    "- Do not rewrite correct code.\n"
+    "- Do not refactor, optimize, or change formatting unnecessarily.\n"
+    "- Do not autocomplete incomplete code or fragments.\n"
+    "- Do not add missing code that was not part of the selection.\n"
+    "- Preserve all other supplied code exactly as it was.\n"
+    "- The selected code defines the maximum replacement scope.\n"
+    "- If no bug exists, return only SUCCESS without explanation or code."
+)
 
 
 def build_selection_internal_instruction(is_full_file: bool = False, lang_tag: str = "") -> str:
     """
-    Constructs the strict system instruction sent to CustomApi/ChatGPT for selection replacement mode.
+    Constructs the system instruction for selection replacement mode.
     """
-    scope_note = " (which spans the entire file)." if is_full_file else "."
-    lang_str = f"```{lang_tag}\ncomplete replacement for ONLY the selected region\n```" if lang_tag else "```\ncomplete replacement for ONLY the selected region\n```"
-
-    return (
-        "SELECTION REPLACEMENT MODE\n"
-        f"The user has selected a specific region of an existing source file{scope_note}\n"
-        "Your response is NOT a request to rewrite or regenerate the entire file or block.\n"
-        "You MUST reason about the selected region and surrounding context, but your replacement output MUST remain limited to the exact selected scope.\n\n"
-        "CORE PRINCIPLE:\n"
-        "THE PROVIDED CODE IS THE SOURCE OF TRUTH.\n"
-        "Only modify the minimum text required to fix the requested problem.\n\n"
-        "Strict Code Preservation Rules:\n"
-        "1. Preserve all provided code EXACTLY unless a specific change is required to solve the user's request.\n"
-        "2. MINIMAL EDIT PRINCIPLE: Think of the task as a surgical edit. Only fix the broken part (e.g. changing an incomplete or broken statement) and preserve every other line, variable name, string literal, comment, URL, browser setting, import, indentation, and formatting verbatim as supplied.\n"
-        "3. Do NOT rewrite the whole block, do NOT regenerate unchanged code, and do NOT replace equivalent code with an alternative implementation.\n"
-        "4. Do NOT rename variables, reorder lines, change quotes/formatting, 'clean up', or modernize code that was not requested.\n"
-        "5. Do NOT create a complete example, new application, or boilerplate when only a fragment was selected.\n"
-        "6. Never return the full source file unless the user's selected scope itself is the full file.\n"
-        "7. Never return unrelated surrounding code or duplicate unselected code.\n"
-        "8. If the selected fragment can be fixed independently, return ONLY its complete corrected replacement preserving all unchanged lines.\n"
-        "9. If the correct fix requires code outside the selection, return:\n"
-        "   [INSUFFICIENT_CONTEXT]\n"
-        "10. If no useful modification is necessary or the code is already correct, return:\n"
-        "   [NO_CHANGE]\n"
-        "11. If a replacement is possible, return exactly:\n"
-        "   [REPLACEMENT_CODE]\n"
-        f"   {lang_str}\n"
-        "12. The fenced block must contain ONLY replacement source code.\n"
-        "13. Keep explanations, diagnostics, and reasoning OUTSIDE the code block.\n"
-        "14. Do not include phrases like 'here is the complete code' or conversational text inside the code block.\n\n"
-        "Always explain your reasoning in clear text outside the code block. Always include exactly one of the markers: [REPLACEMENT_CODE], [NO_CHANGE], or [INSUFFICIENT_CONTEXT]."
-    )
+    return SELECTION_BUG_FIX_PROMPT
 
 
 def build_selection_prompt(
@@ -59,25 +50,27 @@ def build_selection_prompt(
     is_full_file: bool = False
 ) -> Tuple[str, str]:
     """
-    Builds the user-visible prompt and the backend internal instruction.
+    Builds the user-visible prompt and backend internal instruction for selection bug fixing.
+    Sends ONLY the selected code as the source-code payload (no full file or surrounding context).
     Returns (user_prompt, internal_instruction).
     """
     lang_tag = (lang_id or "").lower().strip()
-    base_prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else f"Please review and improve the selected {lang_tag + ' ' if lang_tag else ''}code:"
+    base_prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else SELECTION_BUG_FIX_PROMPT
     user_prompt = f"{base_prompt}\n\n```{lang_tag}\n{code}\n```"
-
-    if surrounding_context and surrounding_context.strip() and surrounding_context.strip() != code.strip():
-        user_prompt += f"\n\nSurrounding file context (FOR REASONING ONLY - DO NOT INCLUDE IN REPLACEMENT):\n```{lang_tag}\n{surrounding_context.strip()}\n```"
-
-    internal_instr = build_selection_internal_instruction(is_full_file=is_full_file, lang_tag=lang_tag)
-    return user_prompt, internal_instr
+    return user_prompt, ""
 
 
 def sanitize_extracted_code(code: str) -> str:
     """Cleans marker artifacts or unescaped control tags from code blocks."""
     if not code:
         return ""
-    cleaned = code.replace(REPL_MARKER, "").replace(NO_CHANGE_MARKER, "").replace(INSUFF_MARKER, "")
+    cleaned = (
+        code.replace(FIXED_CODE_MARKER, "")
+        .replace(REPL_MARKER, "")
+        .replace(NO_CHANGE_MARKER, "")
+        .replace(INSUFF_MARKER, "")
+    )
+    return cleaned.strip("\r\n")
     return cleaned.strip("\r\n")
 
 
@@ -201,11 +194,79 @@ def parse_replacement_response(
         print(f"[AIReplacement] Replacement applied: false")
         return {"status": "invalid", "code": None, "state": "INVALID"}
 
-    has_repl = REPL_MARKER in response
-    has_no_change = NO_CHANGE_MARKER in response
-    has_insuff = INSUFF_MARKER in response
+    # 1. FIXED_CODE ([Fixed Code])
+    fixed_code_match = re.search(r'\[Fixed\s+Code\]:?', response, re.IGNORECASE)
+    if fixed_code_match:
+        split_idx = fixed_code_match.start()
+        explanation = response[:split_idx].strip()
+        after_marker = response[fixed_code_match.end():].strip()
 
-    # 1. REPLACEMENT_CODE
+        # Check for fenced code block below [Fixed Code]
+        fence_regex = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|\Z)")
+        fence_match = fence_regex.search(after_marker)
+        if fence_match and fence_match.group(2) and fence_match.group(2).strip():
+            extracted = sanitize_extracted_code(fence_match.group(2))
+        else:
+            extracted = sanitize_extracted_code(after_marker)
+
+        if extracted and extracted.strip():
+            repl_lines = [l for l in extracted.splitlines() if l.strip()]
+            repl_line_count = len(repl_lines)
+            repl_chars = len(extracted)
+
+            print("[AIReplacement] Parsed state: FIXED_CODE")
+            print(f"[AIReplacement] Replacement lines: {repl_line_count}")
+            print(f"[AIReplacement] Replacement chars: {repl_chars}")
+
+            is_valid, reason = validate_replacement_scope(extracted, original_selected_text, ctx)
+            if is_valid:
+                print("[AIReplacement] Scope validation: PASS")
+                return {
+                    "status": "replacement",
+                    "code": extracted,
+                    "state": "FIXED_CODE",
+                    "explanation": explanation,
+                    "reason": reason
+                }
+            else:
+                print("[AIReplacement] Scope validation: FAIL")
+                print("[AIReplacement] Replacement applied: false")
+                return {
+                    "status": "scope_mismatch",
+                    "code": None,
+                    "state": "FIXED_CODE",
+                    "error": reason
+                }
+
+        print("[AIReplacement] Parsed state: INVALID")
+        print("[AIReplacement] Replacement lines: 0")
+        print("[AIReplacement] Replacement chars: 0")
+        print("[AIReplacement] Scope validation: FAIL")
+        print("[AIReplacement] Replacement applied: false")
+        return {"status": "invalid", "code": None, "state": "INVALID"}
+
+    # 2. SUCCESS (No bugs found)
+    trim_resp = response.strip()
+    is_success = bool(re.search(r'^\s*SUCCESS\b', trim_resp, re.IGNORECASE) or (trim_resp == "SUCCESS"))
+    if not is_success and "[Fixed Code]" not in response:
+        if re.search(r'\bSUCCESS\b', response) and len(trim_resp.split()) <= 10:
+            is_success = True
+
+    if is_success:
+        print("[AIReplacement] Parsed state: SUCCESS")
+        print("[AIReplacement] Replacement lines: 0")
+        print("[AIReplacement] Replacement chars: 0")
+        print("[AIReplacement] Scope validation: PASS")
+        print("[AIReplacement] Replacement applied: false")
+        return {
+            "status": "success",
+            "code": None,
+            "state": "SUCCESS",
+            "message": "SUCCESS: No bugs found in the provided code selection."
+        }
+
+    # 3. Legacy REPLACEMENT_CODE
+    has_repl = REPL_MARKER in response
     if has_repl:
         text_after_marker = response.split(REPL_MARKER, 1)[1]
         fence_regex = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|\Z)")
@@ -247,7 +308,8 @@ def parse_replacement_response(
         print(f"[AIReplacement] Replacement applied: false")
         return {"status": "invalid", "code": None, "state": "INVALID"}
 
-    # 2. NO_CHANGE
+    # 4. Legacy NO_CHANGE
+    has_no_change = NO_CHANGE_MARKER in response
     if has_no_change:
         print(f"[AIReplacement] Parsed state: NO_CHANGE")
         print(f"[AIReplacement] Replacement lines: 0")
@@ -256,7 +318,8 @@ def parse_replacement_response(
         print(f"[AIReplacement] Replacement applied: false")
         return {"status": "no_change", "code": None, "state": "NO_CHANGE"}
 
-    # 3. INSUFFICIENT_CONTEXT
+    # 5. Legacy INSUFFICIENT_CONTEXT
+    has_insuff = INSUFF_MARKER in response
     if has_insuff:
         print(f"[AIReplacement] Parsed state: INSUFFICIENT_CONTEXT")
         print(f"[AIReplacement] Replacement lines: 0")
@@ -265,7 +328,7 @@ def parse_replacement_response(
         print(f"[AIReplacement] Replacement applied: false")
         return {"status": "insufficient_context", "code": None, "state": "INSUFFICIENT_CONTEXT"}
 
-    # 4. INVALID / UNSTRUCTURED
+    # 6. INVALID / UNSTRUCTURED
     print(f"[AIReplacement] Parsed state: INVALID")
     print(f"[AIReplacement] Replacement lines: 0")
     print(f"[AIReplacement] Replacement chars: 0")

@@ -26,7 +26,11 @@ Item {
 
     function getCleanCode() {
         if (root.isSelectionRequest) {
-            return CodeExtractor.extractReplacementCode(root.contentText, root.languageId, root.originalSelectedText);
+            return CodeExtractor.extractReplacementCode(root.contentText, root.languageId, root.originalSelectedText, {
+                selectionStart: root.selectionStart,
+                selectionEnd: root.selectionEnd,
+                originalSelectedText: root.originalSelectedText
+            });
         }
         return CodeExtractor.extractCodeFromMarkdown(root.contentText, root.languageId);
     }

@@ -196,32 +196,32 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
 
     var text = response;
 
-    var replMarker = "[REPLACEMENT_CODE]";
-    var noChangeMarker = "[NO_CHANGE]";
-    var insuffMarker = "[INSUFFICIENT_CONTEXT]";
+    // 1. FIXED_CODE ([Fixed Code])
+    var fixedCodeMatch = text.match(/\[Fixed\s+Code\]:?/i);
+    if (fixedCodeMatch) {
+        var splitIdx = fixedCodeMatch.index;
+        var explanation = text.substring(0, splitIdx).trim();
+        var afterMarker = text.substring(splitIdx + fixedCodeMatch[0].length).trim();
 
-    var replIdx = text.indexOf(replMarker);
-    var noChangeIdx = text.indexOf(noChangeMarker);
-    var insuffIdx = text.indexOf(insuffMarker);
-
-    // Step 1: Look for one of [REPLACEMENT_CODE], [NO_CHANGE], [INSUFFICIENT_CONTEXT]
-    // If [REPLACEMENT_CODE] exists:
-    if (replIdx !== -1) {
-        var textAfterMarker = text.substring(replIdx + replMarker.length);
-        // Find the FIRST fenced code block AFTER that marker:
+        // Check for fenced code block below [Fixed Code]
         var fenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|$)/;
-        var match = textAfterMarker.match(fenceRegex);
+        var match = afterMarker.match(fenceRegex);
+        var extracted = "";
         if (match && match[2] !== undefined && match[2].trim().length > 0) {
-            var extracted = sanitizeExtractedCode(match[2]);
+            extracted = sanitizeExtractedCode(match[2]);
+        } else {
+            extracted = sanitizeExtractedCode(afterMarker);
+        }
+
+        if (extracted && extracted.length > 0) {
             var replLines = extracted.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
             var replLineCount = replLines.length;
             var replChars = extracted.length;
 
-            console.log("[AIReplacement] Parsed state: REPLACEMENT_CODE");
+            console.log("[AIReplacement] Parsed state: FIXED_CODE");
             console.log("[AIReplacement] Replacement lines: " + replLineCount);
             console.log("[AIReplacement] Replacement chars: " + replChars);
 
-            // Validate scope preservation against original selection
             var scopeCheck = validateReplacementScope(extracted, origText, ctx);
             if (!scopeCheck.isValid) {
                 console.log("[AIReplacement] Scope validation: FAIL");
@@ -229,7 +229,7 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
                 return {
                     status: "scope_mismatch",
                     code: null,
-                    state: "REPLACEMENT_CODE",
+                    state: "FIXED_CODE",
                     error: scopeCheck.reason
                 };
             }
@@ -238,6 +238,81 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
             return {
                 status: "replacement",
                 code: extracted,
+                state: "FIXED_CODE",
+                explanation: explanation
+            };
+        }
+
+        console.log("[AIReplacement] Parsed state: INVALID");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: FAIL");
+        console.log("[AIReplacement] Replacement applied: false");
+        return { status: "invalid", code: null, state: "INVALID" };
+    }
+
+    // 2. SUCCESS (No bugs found)
+    var trimResp = text.trim();
+    var isSuccess = (/^\s*SUCCESS\b/i.test(trimResp) || trimResp === "SUCCESS");
+    if (!isSuccess && text.indexOf("[Fixed Code]") === -1) {
+        if (/\bSUCCESS\b/i.test(text) && trimResp.split(/\s+/).length <= 10) {
+            isSuccess = true;
+        }
+    }
+
+    if (isSuccess) {
+        console.log("[AIReplacement] Parsed state: SUCCESS");
+        console.log("[AIReplacement] Replacement lines: 0");
+        console.log("[AIReplacement] Replacement chars: 0");
+        console.log("[AIReplacement] Scope validation: PASS");
+        console.log("[AIReplacement] Replacement applied: false");
+        return {
+            status: "success",
+            code: null,
+            state: "SUCCESS",
+            message: "SUCCESS: No bugs found in the provided code selection."
+        };
+    }
+
+    // 3. Legacy REPLACEMENT_CODE
+    var replMarker = "[REPLACEMENT_CODE]";
+    var noChangeMarker = "[NO_CHANGE]";
+    var insuffMarker = "[INSUFFICIENT_CONTEXT]";
+
+    var replIdx = text.indexOf(replMarker);
+    var noChangeIdx = text.indexOf(noChangeMarker);
+    var insuffIdx = text.indexOf(insuffMarker);
+
+    if (replIdx !== -1) {
+        var textAfterMarker = text.substring(replIdx + replMarker.length);
+        var fenceRegexLegacy = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|$)/;
+        var matchLegacy = textAfterMarker.match(fenceRegexLegacy);
+        if (matchLegacy && matchLegacy[2] !== undefined && matchLegacy[2].trim().length > 0) {
+            var extractedLegacy = sanitizeExtractedCode(matchLegacy[2]);
+            var replLinesLegacy = extractedLegacy.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+            var replLineCountLegacy = replLinesLegacy.length;
+            var replCharsLegacy = extractedLegacy.length;
+
+            console.log("[AIReplacement] Parsed state: REPLACEMENT_CODE");
+            console.log("[AIReplacement] Replacement lines: " + replLineCountLegacy);
+            console.log("[AIReplacement] Replacement chars: " + replCharsLegacy);
+
+            var scopeCheckLegacy = validateReplacementScope(extractedLegacy, origText, ctx);
+            if (!scopeCheckLegacy.isValid) {
+                console.log("[AIReplacement] Scope validation: FAIL");
+                console.log("[AIReplacement] Replacement applied: false");
+                return {
+                    status: "scope_mismatch",
+                    code: null,
+                    state: "REPLACEMENT_CODE",
+                    error: scopeCheckLegacy.reason
+                };
+            }
+
+            console.log("[AIReplacement] Scope validation: PASS");
+            return {
+                status: "replacement",
+                code: extractedLegacy,
                 state: "REPLACEMENT_CODE"
             };
         }
@@ -250,6 +325,7 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         return { status: "invalid", code: null, state: "INVALID" };
     }
 
+    // 4. Legacy NO_CHANGE
     if (noChangeIdx !== -1) {
         console.log("[AIReplacement] Parsed state: NO_CHANGE");
         console.log("[AIReplacement] Replacement lines: 0");
@@ -259,6 +335,7 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         return { status: "no_change", code: null, state: "NO_CHANGE" };
     }
 
+    // 5. Legacy INSUFFICIENT_CONTEXT
     if (insuffIdx !== -1) {
         console.log("[AIReplacement] Parsed state: INSUFFICIENT_CONTEXT");
         console.log("[AIReplacement] Replacement lines: 0");
@@ -268,7 +345,7 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         return { status: "insufficient_context", code: null, state: "INSUFFICIENT_CONTEXT" };
     }
 
-    // If none of the required markers exist, treat the response as invalid for automatic replacement
+    // 6. INVALID / UNSTRUCTURED
     console.log("[AIReplacement] Parsed state: INVALID");
     console.log("[AIReplacement] Replacement lines: 0");
     console.log("[AIReplacement] Replacement chars: 0");
@@ -285,8 +362,8 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
  * @param {string} originalSelectedText - The original selected scope to validate complete replacement (optional)
  * @returns {string} - The clean extracted replacement code, or "" if invalid/missing
  */
-function extractReplacementCode(response, preferredLang, originalSelectedText) {
-    var result = parseReplacementResponse(response, preferredLang, originalSelectedText);
+function extractReplacementCode(response, preferredLang, originalSelectedText, context) {
+    var result = parseReplacementResponse(response, preferredLang, originalSelectedText, context);
     if (result.status === "replacement" && result.code && result.code.trim().length > 0) {
         return result.code;
     }
@@ -487,20 +564,60 @@ function parseMarkdownSegments(response) {
     }
 
     var text = response;
-    var segments = [];
-    var closedFenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,})/g;
-    var lastIdx = 0;
-    var match;
+    var trimText = text.trim();
+    if (/^\s*SUCCESS\s*$/i.test(trimText)) {
+        return [{
+            type: "text",
+            text: "SUCCESS: No bugs found in the provided code selection.",
+            code: "",
+            lang: ""
+        }];
+    }
 
     function cleanTextChunk(t) {
         if (!t) return "";
+        var trimT = t.trim();
+        if (/^\s*SUCCESS\s*$/i.test(trimT)) {
+            return "SUCCESS: No bugs found in the provided code selection.";
+        }
         // Clean protocol control markers from user-facing text display
-        var cleaned = t.replace(/\[REPLACEMENT_CODE\]/g, "")
+        var cleaned = t.replace(/\[Fixed\s+Code\]:?/gi, "")
+                       .replace(/\[REPLACEMENT_CODE\]/g, "")
                        .replace(/\[NO_CHANGE\]/g, "")
                        .replace(/\[INSUFFICIENT_CONTEXT\]/g, "");
         // Clean leading/trailing blank lines resulting from marker removal
         return cleaned.replace(/^\r?\n\r?\n/, "\n").trim();
     }
+
+    var segments = [];
+
+    // Special case: unfenced [Fixed Code] response
+    if (!/(?:`{3,}|~{3,})/.test(text) && /\[Fixed\s+Code\]:?/i.test(text)) {
+        var fcMatch = text.match(/\[Fixed\s+Code\]:?/i);
+        var expText = cleanTextChunk(text.substring(0, fcMatch.index));
+        var codeText = sanitizeExtractedCode(text.substring(fcMatch.index + fcMatch[0].length));
+        if (expText.length > 0) {
+            segments.push({
+                type: "text",
+                text: expText,
+                code: "",
+                lang: ""
+            });
+        }
+        if (codeText.length > 0) {
+            segments.push({
+                type: "code",
+                text: "",
+                code: codeText,
+                lang: "code"
+            });
+        }
+        return segments;
+    }
+
+    var closedFenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,})/g;
+    var lastIdx = 0;
+    var match;
 
     while ((match = closedFenceRegex.exec(text)) !== null) {
         if (match.index > lastIdx) {
@@ -567,36 +684,66 @@ function parseMarkdownSegments(response) {
     }
 
     if (segments.length === 0) {
-        var onlyCleaned = cleanTextChunk(text);
-        if (onlyCleaned.length > 0) {
+        var trimText = text.trim();
+        if (/^\s*SUCCESS\b/i.test(trimText) || trimText === "SUCCESS") {
             segments.push({
                 type: "text",
-                text: onlyCleaned,
+                text: "SUCCESS: No bugs found in the provided code selection.",
                 code: "",
                 lang: ""
             });
+        } else if (/\[Fixed\s+Code\]:?/i.test(text)) {
+            var fcMatch = text.match(/\[Fixed\s+Code\]:?/i);
+            var expText = cleanTextChunk(text.substring(0, fcMatch.index));
+            var codeText = sanitizeExtractedCode(text.substring(fcMatch.index + fcMatch[0].length));
+            if (expText.length > 0) {
+                segments.push({
+                    type: "text",
+                    text: expText,
+                    code: "",
+                    lang: ""
+                });
+            }
+            if (codeText.length > 0) {
+                segments.push({
+                    type: "code",
+                    text: "",
+                    code: codeText,
+                    lang: "code"
+                });
+            }
         } else {
-            if (text.indexOf("[NO_CHANGE]") !== -1) {
+            var onlyCleaned = cleanTextChunk(text);
+            if (onlyCleaned.length > 0) {
                 segments.push({
                     type: "text",
-                    text: "No changes needed. The selected code has no issues.",
+                    text: onlyCleaned,
                     code: "",
                     lang: ""
                 });
-            } else if (text.indexOf("[INSUFFICIENT_CONTEXT]") !== -1) {
-                segments.push({
-                    type: "text",
-                    text: "Insufficient context to determine a safe modification. The fix requires information outside the selected code range.",
-                    code: "",
-                    lang: ""
-                });
-            } else if (text.trim().length > 0) {
-                segments.push({
-                    type: "text",
-                    text: text.trim(),
-                    code: "",
-                    lang: ""
-                });
+            } else {
+                if (text.indexOf("[NO_CHANGE]") !== -1) {
+                    segments.push({
+                        type: "text",
+                        text: "No changes needed. The selected code has no issues.",
+                        code: "",
+                        lang: ""
+                    });
+                } else if (text.indexOf("[INSUFFICIENT_CONTEXT]") !== -1) {
+                    segments.push({
+                        type: "text",
+                        text: "Insufficient context to determine a safe modification. The fix requires information outside the selected code range.",
+                        code: "",
+                        lang: ""
+                    });
+                } else if (text.trim().length > 0) {
+                    segments.push({
+                        type: "text",
+                        text: text.trim(),
+                        code: "",
+                        lang: ""
+                    });
+                }
             }
         }
     }

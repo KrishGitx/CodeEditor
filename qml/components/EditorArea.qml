@@ -131,6 +131,13 @@ Item {
             var currentText = codeTextArea.text;
 
             if (available === false) {
+                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                    if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                        smartInstallDialog.reportRetryResult(false, message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."));
+                        return;
+                    }
+                }
+
                 var langName = root.currentLanguageId || "this language";
                 var extStr = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
                 var installCtx = null;
@@ -180,6 +187,7 @@ Item {
                 if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
                     if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
                         smartInstallDialog.reportRetryResult(false, message || "Formatting failed.");
+                        return;
                     }
                 }
                 if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.report_retry_result) {
@@ -3430,6 +3438,13 @@ Item {
             }
             if (formatResult) {
                 if (formatResult.available === false) {
+                    if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                        if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                            smartInstallDialog.reportRetryResult(false, formatResult.message || ("No formatter installed for " + (root.currentLanguageId || "this language") + "."));
+                            return;
+                        }
+                    }
+
                     var langNameSync = root.currentLanguageId || "this language";
                     var extStrSync = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
                     var syncCtx = null;
@@ -3475,6 +3490,13 @@ Item {
                     return;
                 }
                 if (!formatResult.success) {
+                    if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                        if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                            smartInstallDialog.reportRetryResult(false, formatResult.message || "Formatting failed.");
+                            return;
+                        }
+                    }
+
                     var syncErrLang = root.currentLanguageId || "this language";
                     var syncErrExt = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
                     var syncErrCtx = null;
@@ -3519,6 +3541,13 @@ Item {
                     }
                     return;
                 }
+
+                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                    if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                        smartInstallDialog.reportRetryResult(true, formatResult.message || "Formatted successfully.");
+                    }
+                }
+
                 var resFormatted = formatResult.formatted || text;
                 if (resFormatted === text) {
                     if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
@@ -4808,19 +4837,13 @@ Item {
         var s = Math.min(startPos, textLen);
         var e = Math.min(endPos, textLen);
 
-        // Safety check: if originalText was provided, verify if the range or nearby text matches
+        // Safety check: verify original selected boundaries and text have not changed
         if (originalText && originalText.length > 0) {
             var currentRangeText = codeTextArea.getText(s, e);
             if (currentRangeText !== originalText) {
-                var foundIndex = docText.indexOf(originalText, Math.max(0, s - 500));
-                if (foundIndex !== -1 && Math.abs(foundIndex - s) < 1000) {
-                    s = foundIndex;
-                    e = foundIndex + originalText.length;
-                } else {
-                    console.warn("[EditorArea] Selection text mismatch, skipping replace to avoid altering wrong code.");
-                    console.log("[AIReplacement] Replacement applied: false");
-                    return false;
-                }
+                console.warn("[EditorArea] Selection text or boundaries changed during AI processing, skipping replace to avoid altering wrong code.");
+                console.log("[AIReplacement] Replacement applied: false");
+                return false;
             }
 
             // Severe scope hazard check: Prevent replacing large selection with a tiny partial snippet
