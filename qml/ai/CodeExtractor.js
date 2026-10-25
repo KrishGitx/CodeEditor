@@ -154,6 +154,28 @@ function validateReplacementScope(extractedCode, originalSelectedText, context) 
         };
     }
 
+    // 6. Duplicated Leading Line Hazard (Case B)
+    // Detect if the AI returned the same leading line twice when the original contains it once.
+    if (replLines.length >= 2) {
+        var replFirst = replLines[0].trim();
+        var replSecond = replLines[1].trim();
+        if (replFirst && replFirst === replSecond) {
+            var origFirst = origLines.length >= 1 ? origLines[0].trim() : "";
+            var origSecond = origLines.length >= 2 ? origLines[1].trim() : "";
+            var origHadRepetition = (origFirst === origSecond && origFirst === replFirst);
+            var origOccurrences = 0;
+            for (var oi = 0; oi < origLines.length; oi++) {
+                if (origLines[oi].trim() === replFirst) origOccurrences++;
+            }
+            if (!origHadRepetition && origOccurrences <= 1) {
+                return {
+                    isValid: false,
+                    reason: "Duplication Hazard: AI returned duplicated leading line ('" + replFirst + "') when original selection contains it once. Rejection prevents accidental duplicate insertion."
+                };
+            }
+        }
+    }
+
     return { isValid: true, reason: "Valid replacement scope" };
 }
 
@@ -208,9 +230,9 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         var match = afterMarker.match(fenceRegex);
         var extracted = "";
         if (match && match[2] !== undefined && match[2].trim().length > 0) {
-            extracted = sanitizeExtractedCode(match[2]);
+            extracted = sanitizeExtractedCode(match[2], origText);
         } else {
-            extracted = sanitizeExtractedCode(afterMarker);
+            extracted = sanitizeExtractedCode(afterMarker, origText);
         }
 
         if (extracted && extracted.length > 0) {
@@ -226,6 +248,7 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
             if (!scopeCheck.isValid) {
                 console.log("[AIReplacement] Scope validation: FAIL");
                 console.log("[AIReplacement] Replacement applied: false");
+                logStage4Diagnostic("scope_mismatch", null, scopeCheck.reason);
                 return {
                     status: "scope_mismatch",
                     code: null,
@@ -234,7 +257,24 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
                 };
             }
 
+            if (origText && extracted.trim() === origText.trim()) {
+                console.log("[AIReplacement] Parsed state: UNCHANGED");
+                console.log("[AIReplacement] Replacement lines: 0");
+                console.log("[AIReplacement] Replacement chars: 0");
+                console.log("[AIReplacement] Scope validation: PASS");
+                console.log("[AIReplacement] Replacement applied: false");
+                logStage4Diagnostic("unchanged", extracted);
+                return {
+                    status: "unchanged",
+                    code: extracted,
+                    state: "UNCHANGED",
+                    explanation: explanation,
+                    message: "Code is already correct and remains unchanged."
+                };
+            }
+
             console.log("[AIReplacement] Scope validation: PASS");
+            logStage4Diagnostic("replacement", extracted);
             return {
                 status: "replacement",
                 code: extracted,
@@ -248,7 +288,67 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         console.log("[AIReplacement] Replacement chars: 0");
         console.log("[AIReplacement] Scope validation: FAIL");
         console.log("[AIReplacement] Replacement applied: false");
+        logStage4Diagnostic("invalid", null);
         return { status: "invalid", code: null, state: "INVALID" };
+    }
+
+    // 2. Direct Single Code Block (per Rule 8: single code block with explanation outside)
+    var directFenceRegex = /(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|$)/;
+    var directMatch = text.match(directFenceRegex);
+    if (directMatch && directMatch[2] !== undefined && directMatch[2].trim().length > 0) {
+        var directExtracted = sanitizeExtractedCode(directMatch[2], origText);
+        var preText = text.substring(0, directMatch.index).trim();
+        var postText = text.substring(directMatch.index + directMatch[0].length).trim();
+        var directExplanation = (preText && postText) ? (preText + "\n" + postText) : (preText || postText);
+
+        if (directExtracted && directExtracted.length > 0) {
+            // Check Rule 4: If code is already correct, return it unchanged
+            if (origText && directExtracted.trim() === origText.trim()) {
+                console.log("[AIReplacement] Parsed state: UNCHANGED");
+                console.log("[AIReplacement] Replacement lines: 0");
+                console.log("[AIReplacement] Replacement chars: 0");
+                console.log("[AIReplacement] Scope validation: PASS");
+                console.log("[AIReplacement] Replacement applied: false");
+                logStage4Diagnostic("unchanged", directExtracted);
+                return {
+                    status: "unchanged",
+                    code: directExtracted,
+                    state: "UNCHANGED",
+                    explanation: directExplanation,
+                    message: "Code is already correct and remains unchanged."
+                };
+            }
+
+            var directReplLines = directExtracted.split(/\r?\n/).filter(function(l) { return l.trim().length > 0; });
+            var directReplLineCount = directReplLines.length;
+            var directReplChars = directExtracted.length;
+
+            console.log("[AIReplacement] Parsed state: FIXED_CODE");
+            console.log("[AIReplacement] Replacement lines: " + directReplLineCount);
+            console.log("[AIReplacement] Replacement chars: " + directReplChars);
+
+            var directScopeCheck = validateReplacementScope(directExtracted, origText, ctx);
+            if (!directScopeCheck.isValid) {
+                console.log("[AIReplacement] Scope validation: FAIL");
+                console.log("[AIReplacement] Replacement applied: false");
+                logStage4Diagnostic("scope_mismatch", null, directScopeCheck.reason);
+                return {
+                    status: "scope_mismatch",
+                    code: null,
+                    state: "FIXED_CODE",
+                    error: directScopeCheck.reason
+                };
+            }
+
+            console.log("[AIReplacement] Scope validation: PASS");
+            logStage4Diagnostic("replacement", directExtracted);
+            return {
+                status: "replacement",
+                code: directExtracted,
+                state: "FIXED_CODE",
+                explanation: directExplanation
+            };
+        }
     }
 
     // 2. SUCCESS (No bugs found)
@@ -345,13 +445,15 @@ function parseReplacementResponse(response, preferredLang, originalSelectedText,
         return { status: "insufficient_context", code: null, state: "INSUFFICIENT_CONTEXT" };
     }
 
-    // 6. INVALID / UNSTRUCTURED
+    // 6. INVALID / EXPLANATION ONLY (Case D & E)
     console.log("[AIReplacement] Parsed state: INVALID");
     console.log("[AIReplacement] Replacement lines: 0");
     console.log("[AIReplacement] Replacement chars: 0");
     console.log("[AIReplacement] Scope validation: FAIL");
     console.log("[AIReplacement] Replacement applied: false");
-    return { status: "invalid", code: null, state: "INVALID" };
+    var rejReason = "No code block returned in AI response (explanation only).";
+    logStage4Diagnostic("invalid", null, rejReason);
+    return { status: "invalid", code: null, state: "INVALID", explanation: (response || "").trim(), error: rejReason };
 }
 
 /**
@@ -535,7 +637,7 @@ function extractCodeFromMarkdown(response, preferredLang) {
     return fallbackResult.length > 0 ? fallbackResult : sanitizeExtractedCode(text);
 }
 
-function sanitizeExtractedCode(code) {
+function sanitizeExtractedCode(code, originalSelectedText) {
     if (!code || typeof code !== "string") return "";
     var lines = code.split(/\r?\n/);
     var cleanLines = [];
@@ -551,7 +653,45 @@ function sanitizeExtractedCode(code) {
         }
         cleanLines.push(l);
     }
-    return cleanLines.join("\n").trim();
+    var cleaned = cleanLines.join("\n").trim();
+
+    // Guard against spurious leading '(' introduced by AI output when original selection did not start with '('
+    var origText = originalSelectedText || "";
+    if (origText && typeof origText === "string" && origText.trim().length > 0) {
+        var origTrim = origText.trim();
+        var origStartsWithParen = (origTrim.charAt(0) === '(');
+        if (!origStartsWithParen) {
+            var cLines = cleaned.split(/\r?\n/);
+            if (cLines.length > 0 && cLines[0].trim() === "(") {
+                console.log("[AIReplacement] Diagnostic: Detected and removed spurious leading '(' line introduced by AI response.");
+                cLines.shift();
+                cleaned = cLines.join("\n").trim();
+            } else if (cleaned.charAt(0) === '(') {
+                var openCount = (cleaned.match(/\(/g) || []).length;
+                var closeCount = (cleaned.match(/\)/g) || []).length;
+                if (openCount > closeCount) {
+                    console.log("[AIReplacement] Diagnostic: Detected and removed spurious leading '(' character introduced by AI response.");
+                    cleaned = cleaned.substring(1).trim();
+                }
+            }
+        }
+    }
+
+    return cleaned;
+}
+
+function logStage4Diagnostic(status, extracted, rejectionReason) {
+    var first10 = (extracted || "").substring(0, 10);
+    var last10 = (extracted || "").length > 10 ? (extracted || "").substring((extracted || "").length - 10) : (extracted || "");
+    console.log("[AI_DIAGNOSTIC_STAGE_4] === EXTRACTED REPLACEMENT CODE IMMEDIATELY AFTER PARSING ===");
+    console.log("[AI_DIAGNOSTIC_STAGE_4] Status: " + status);
+    if (rejectionReason) {
+        console.log("[AI_DIAGNOSTIC_STAGE_4] Rejection Reason: " + rejectionReason);
+    }
+    console.log("[AI_DIAGNOSTIC_STAGE_4] Length: " + (extracted ? extracted.length : 0));
+    console.log("[AI_DIAGNOSTIC_STAGE_4] First 10 chars: " + JSON.stringify(first10));
+    console.log("[AI_DIAGNOSTIC_STAGE_4] Last 10 chars: " + JSON.stringify(last10));
+    console.log("[AI_DIAGNOSTIC_STAGE_4] Full extracted code (with whitespace visible): " + JSON.stringify(extracted || ""));
 }
 
 /**

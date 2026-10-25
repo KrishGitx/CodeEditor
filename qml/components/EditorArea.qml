@@ -704,7 +704,7 @@ Item {
     signal requestOpenFolder()
     signal requestRunFile()
 
-    signal askAi(string code, int selectionStart, int selectionEnd, string languageId, string surroundingContext, int totalDocLength)
+    signal askAi(string code, int selectionStart, int selectionEnd, string languageId)
     signal sendAiPrompt(string prompt)
 
     property string pendingAiCode: ""
@@ -1586,6 +1586,7 @@ Item {
                                                         // Floating AI Replace Pill on top of original saved selection
                                                         Rectangle {
                                                             id: floatingAiSelectionPill
+                                                            objectName: "floatingAiSelectionPill"
                                                             z: 90
 
                                                             readonly property bool hasActiveSelection: codeTextArea.selectionStart !== codeTextArea.selectionEnd
@@ -2602,7 +2603,7 @@ Item {
                             }
                             Action {
                                 text: (root.codeTextArea && root.codeTextArea.selectedText) ? "Ask AI": "Run File\tF5"
-                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText, root.codeTextArea.selectionStart, root.codeTextArea.selectionEnd, root.currentLanguageId, root.codeTextArea.text, (root.codeTextArea.text ? root.codeTextArea.text.length : 0)) : root.requestRunFile()
+                                onTriggered: (root.codeTextArea && root.codeTextArea.selectedText) ? root.askAi(root.codeTextArea.selectedText, root.codeTextArea.selectionStart, root.codeTextArea.selectionEnd, root.currentLanguageId) : root.requestRunFile()
                             }
 
                             MenuSeparator {
@@ -3298,7 +3299,15 @@ Item {
             }
             var code = (codeTextArea && codeTextArea.selectedText) ? codeTextArea.selectedText : "";
             if (code.length > 0) {
-                root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId, (codeTextArea ? codeTextArea.text : ""), (codeTextArea && codeTextArea.text ? codeTextArea.text.length : 0));
+                var sFirst10 = code.substring(0, 10);
+                var sLast10 = code.length > 10 ? code.substring(code.length - 10) : code;
+                console.log("[AI_DIAGNOSTIC_STAGE_1] === EXACT ORIGINAL SELECTION CAPTURED FROM EDITOR ===");
+                console.log("[AI_DIAGNOSTIC_STAGE_1] Length: " + code.length);
+                console.log("[AI_DIAGNOSTIC_STAGE_1] Start: " + codeTextArea.selectionStart + ", End: " + codeTextArea.selectionEnd);
+                console.log("[AI_DIAGNOSTIC_STAGE_1] First 10 chars: " + JSON.stringify(sFirst10));
+                console.log("[AI_DIAGNOSTIC_STAGE_1] Last 10 chars: " + JSON.stringify(sLast10));
+                console.log("[AI_DIAGNOSTIC_STAGE_1] Full selection text (with whitespace visible): " + JSON.stringify(code));
+                root.askAi(code, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
             }
         } else if (actionId === "ai" || actionId === "radial_ai") {
             // 2. Radial Menu -> AI: ONLY this action opens the compact Ctrl+P prompt popup
@@ -3332,7 +3341,7 @@ Item {
             }
         } else if (actionId === "run") {
             if (codeTextArea && codeTextArea.selectedText && codeTextArea.selectedText.trim().length > 0) {
-                root.askAi(codeTextArea.selectedText, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId, (codeTextArea ? codeTextArea.text : ""), (codeTextArea && codeTextArea.text ? codeTextArea.text.length : 0));
+                root.askAi(codeTextArea.selectedText, codeTextArea.selectionStart, codeTextArea.selectionEnd, root.currentLanguageId);
                 return;
             }
             var ext = root.activeFileName ? root.activeFileName.split(".").pop().toLowerCase() : "";
@@ -4859,11 +4868,34 @@ Item {
             }
         }
 
+        // Stage 5 diagnostic: Replacement text immediately before it is sent to the editor
+        var repText = newCode || "";
+        var repFirst10 = repText.length > 10 ? repText.substring(0, 10) : repText;
+        var repLast10 = repText.length > 10 ? repText.substring(repText.length - 10) : repText;
+        console.log("[AI_DIAGNOSTIC_STAGE_5] === REPLACEMENT TEXT IMMEDIATELY BEFORE EDITOR INSERTION ===");
+        console.log("[AI_DIAGNOSTIC_STAGE_5] Target Range: [" + s + ", " + e + "], Length: " + repText.length);
+        console.log("[AI_DIAGNOSTIC_STAGE_5] First 10 chars: " + JSON.stringify(repFirst10));
+        console.log("[AI_DIAGNOSTIC_STAGE_5] Last 10 chars: " + JSON.stringify(repLast10));
+        console.log("[AI_DIAGNOSTIC_STAGE_5] Full replacement text (with whitespace visible): " + JSON.stringify(repText));
+
         // Replace ONLY the saved selection range using native remove & insert to preserve undo/redo history
         codeTextArea.remove(s, e);
-        codeTextArea.insert(s, newCode || "");
-        codeTextArea.select(s, s + (newCode ? newCode.length : 0));
-        codeTextArea.cursorPosition = s + (newCode ? newCode.length : 0);
+        codeTextArea.insert(s, repText);
+
+        // Stage 6 diagnostic: Actual document text immediately after replacement
+        var postDocText = codeTextArea.text || "";
+        var insLen = repText.length;
+        var insertedSlice = postDocText.substring(s, s + insLen);
+        var docFirst10 = insertedSlice.length > 10 ? insertedSlice.substring(0, 10) : insertedSlice;
+        var docLast10 = insertedSlice.length > 10 ? insertedSlice.substring(insertedSlice.length - 10) : insertedSlice;
+        console.log("[AI_DIAGNOSTIC_STAGE_6] === ACTUAL DOCUMENT TEXT IMMEDIATELY AFTER REPLACEMENT ===");
+        console.log("[AI_DIAGNOSTIC_STAGE_6] Post-doc Length: " + postDocText.length + ", Inserted Range: [" + s + ", " + (s + insLen) + "], Inserted Length: " + insLen);
+        console.log("[AI_DIAGNOSTIC_STAGE_6] First 10 chars of inserted text: " + JSON.stringify(docFirst10));
+        console.log("[AI_DIAGNOSTIC_STAGE_6] Last 10 chars of inserted text: " + JSON.stringify(docLast10));
+        console.log("[AI_DIAGNOSTIC_STAGE_6] Full inserted text in document (with whitespace visible): " + JSON.stringify(insertedSlice));
+
+        codeTextArea.select(s, s + repText.length);
+        codeTextArea.cursorPosition = s + repText.length;
         codeTextArea.forceActiveFocus();
         root.clearPendingAiReplacement();
         root.updateCursorPosition();

@@ -25,6 +25,10 @@ Rectangle {
     property string targetFilePath: ""
     property string targetLanguageId: ""
     property string failureReason: ""
+    property string officialUrl: ""
+    property string downloadUrl: ""
+    property string actionRequired: ""
+    property string resumeNote: ""
 
     // Explicit states: "ready", "analyzing", "single_command", "complex_setup", "cannot_resolve", "ai_unavailable", "installing", "post_install_analyzing", "fix_available", "manual_installation_required", "retrying", "retry_failed", "success", "failed"
     property string dialogState: "ready"
@@ -121,11 +125,17 @@ Rectangle {
             root.retryAction = proposal.retryAction || root.retryAction;
             root.targetFilePath = proposal.filePath || root.targetFilePath;
             root.targetLanguageId = proposal.languageId || root.targetLanguageId;
+            root.officialUrl = proposal.officialUrl || proposal.downloadUrl || "";
+            root.downloadUrl = proposal.downloadUrl || proposal.officialUrl || "";
+            root.actionRequired = proposal.actionRequired || "";
+            root.resumeNote = proposal.resumeNote || "";
             root.isInstalling = false;
 
             if (root.sourceKind === "ai_unavailable") {
                 root.failureReason = root.explanationText || "AI provider unavailable";
                 root.setDialogState("ai_unavailable");
+            } else if (root.resolutionType === "manual_installation_required") {
+                root.setDialogState("manual_installation_required");
             } else if (root.resolutionType === "cannot_resolve") {
                 root.setDialogState("cannot_resolve");
             } else if (root.resolutionType === "complex_setup") {
@@ -209,12 +219,24 @@ Rectangle {
                 }
             }
         }
+
+        function onOriginalOperationRetried(name, success, errorMsg) {
+            console.log("[SmartInstall] onOriginalOperationRetried received: tool=" + name + " success=" + success + " error=" + errorMsg);
+            if (success) {
+                root.statusMessage = name + " installed and operational!";
+                root.setDialogState("success");
+            } else {
+                root.originalRetryError = errorMsg || "Operation failed on retry.";
+                root.setDialogState("retry_failed");
+            }
+        }
     }
 
     Rectangle {
         id: modalCard
-        width: Math.min(580, parent.width - 32)
-        height: Math.min(460, parent.height - 48)
+        objectName: "modalCard"
+        width: Math.min(640, Math.max(480, parent.width - 32))
+        height: Math.min(520, Math.max(380, parent.height - 48))
         anchors.centerIn: parent
         radius: 8
         color: theme ? theme.bgSurface : "#1e1e1e"
@@ -672,6 +694,24 @@ Rectangle {
                             wrapMode: Text.WordWrap
                         }
 
+                        Text {
+                            Layout.fillWidth: true
+                            visible: root.officialUrl.length > 0 || root.downloadUrl.length > 0
+                            text: "Official download / documentation: " + (root.officialUrl || root.downloadUrl)
+                            color: "#38bdf8"
+                            font.pixelSize: 11
+                            font.underline: cannotResolveLinkMa.containsMouse
+                            wrapMode: Text.WrapAnywhere
+
+                            MouseArea {
+                                id: cannotResolveLinkMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: Qt.openUrlExternally(root.officialUrl || root.downloadUrl)
+                            }
+                        }
+
                         Item { Layout.fillHeight: true }
                     }
                 }
@@ -894,19 +934,132 @@ Rectangle {
                             Layout.fillHeight: true
                             clip: true
 
-                            Text {
+                            ColumnLayout {
                                 width: parent.width
-                                text: root.statusMessage || root.explanationText || "This tool requires administrator privileges, interactive installer setup, or custom system configuration that cannot be safely automated by DGX Studio."
-                                color: theme ? theme.textSecondary : "#aaaaaa"
-                                font.pixelSize: 11
-                                wrapMode: Text.WordWrap
-                            }
-                        }
+                                spacing: 8
 
-                        Text {
-                            text: "Please follow standard installation instructions for your operating system."
-                            color: theme ? theme.textMuted : "#777777"
-                            font.pixelSize: 10
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: root.statusMessage || root.explanationText || "This tool requires administrator privileges, interactive installer setup, or custom system configuration that cannot be safely automated by DGX Studio."
+                                    color: theme ? theme.textSecondary : "#aaaaaa"
+                                    font.pixelSize: 11
+                                    wrapMode: Text.WordWrap
+                                }
+
+                                // Official Vendor Link
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    visible: root.officialUrl.length > 0 || root.downloadUrl.length > 0
+                                    spacing: 2
+
+                                    Text {
+                                        text: "Official download / vendor documentation:"
+                                        color: theme ? theme.textPrimary : "#e2e8f0"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.officialUrl || root.downloadUrl
+                                        color: "#38bdf8"
+                                        font.pixelSize: 11
+                                        font.underline: officialLinkMa.containsMouse
+                                        wrapMode: Text.WrapAnywhere
+
+                                        MouseArea {
+                                            id: officialLinkMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                Qt.openUrlExternally(root.officialUrl || root.downloadUrl);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Exact action required
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    visible: root.actionRequired.length > 0
+                                    spacing: 2
+
+                                    Text {
+                                        text: "Action required:"
+                                        color: theme ? theme.textPrimary : "#e2e8f0"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.actionRequired
+                                        color: theme ? theme.textSecondary : "#cccccc"
+                                        font.pixelSize: 11
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+
+                                // Verification Command
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    visible: root.verifyCommand.length > 0
+                                    spacing: 2
+
+                                    Text {
+                                        text: "Verification command (run after installing):"
+                                        color: theme ? theme.textPrimary : "#e2e8f0"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 28
+                                        radius: 3
+                                        color: theme ? theme.bgInput : "#0d0d0d"
+                                        border.color: theme ? theme.borderNormal : "#333333"
+                                        border.width: 1
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 6
+                                            spacing: 6
+
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: root.verifyCommand
+                                                color: theme ? theme.success : "#4ade80"
+                                                font.pixelSize: 11
+                                                font.family: theme ? theme.fontFamilyMono : "monospace"
+                                                elide: Text.ElideMiddle
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // How Smart Install will resume
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+
+                                    Text {
+                                        text: "How Smart Install will resume:"
+                                        color: theme ? theme.textPrimary : "#e2e8f0"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: root.resumeNote ? root.resumeNote : "Once installed, re-run the format or build command in DGX Studio. Smart Install will detect the installed runtime automatically."
+                                        color: theme ? theme.textMuted : "#888888"
+                                        font.pixelSize: 10
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1127,27 +1280,169 @@ Rectangle {
                     }
                 }
 
-                // Live output logs
+                // Live output logs with robust scrolling and auto-scroll control
                 Rectangle {
+                    id: logOutputContainer
+                    objectName: "logOutputContainer"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumHeight: 120
                     radius: 4
                     color: theme ? theme.bgPanel : "#121212"
                     border.color: theme ? theme.borderSubtle : "#252525"
                     border.width: 1
+                    clip: true
 
-                    ScrollView {
+                    ColumnLayout {
                         anchors.fill: parent
-                        anchors.margins: 8
-                        clip: true
+                        anchors.margins: 6
+                        spacing: 4
 
-                        Text {
-                            width: parent.width
-                            text: root.installLogs || root.statusMessage || "Starting installation process..."
-                            color: theme ? theme.textSecondary : "#aaaaaa"
-                            font.pixelSize: 10
-                            font.family: theme ? theme.fontFamilyMono : "monospace"
-                            wrapMode: Text.WrapAnywhere
+                        // Log header with Copy Log action
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Text {
+                                text: "Process Output & Diagnostics:"
+                                color: theme ? theme.textMuted : "#888888"
+                                font.pixelSize: 10
+                                font.bold: true
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            // Scroll to Bottom button (appears if user scrolled up)
+                            Rectangle {
+                                width: toBottomText.implicitWidth + 12
+                                height: 20
+                                radius: 3
+                                color: toBottomMa.containsMouse ? (theme ? theme.accent : "#0078d4") : (theme ? theme.bgSurfaceHover : "#242424")
+                                visible: logFlickable.userScrolledUp
+                                border.color: theme ? theme.borderSubtle : "#333333"
+                                border.width: 1
+
+                                Text {
+                                    id: toBottomText
+                                    anchors.centerIn: parent
+                                    text: "↓ Jump to Latest"
+                                    color: "#ffffff"
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                }
+
+                                MouseArea {
+                                    id: toBottomMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        logFlickable.userScrolledUp = false;
+                                        logFlickable.scrollToBottom();
+                                    }
+                                }
+                            }
+
+                            // Copy Log Button
+                            Rectangle {
+                                width: copyLogText.implicitWidth + 12
+                                height: 20
+                                radius: 3
+                                color: copyLogMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#282828") : "transparent"
+                                border.color: theme ? theme.borderSubtle : "#333333"
+                                border.width: 1
+
+                                Text {
+                                    id: copyLogText
+                                    anchors.centerIn: parent
+                                    text: "Copy Output"
+                                    color: theme ? theme.textSecondary : "#aaaaaa"
+                                    font.pixelSize: 9
+                                }
+
+                                MouseArea {
+                                    id: copyLogMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.copy_to_clipboard) {
+                                            extensionManager.copy_to_clipboard(root.installLogs || root.statusMessage);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Scrollable content area
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: 3
+                            color: theme ? theme.bgInput : "#0d0d0d"
+                            clip: true
+
+                            Flickable {
+                                id: logFlickable
+                                objectName: "logFlickable"
+                                anchors.fill: parent
+                                anchors.margins: 4
+                                contentWidth: width
+                                contentHeight: logTextArea.implicitHeight
+                                boundsBehavior: Flickable.StopAtBounds
+                                clip: true
+
+                                property bool userScrolledUp: false
+
+                                function isAtBottom() {
+                                    if (contentHeight <= height) return true;
+                                    return (contentY + height) >= (contentHeight - 16);
+                                }
+
+                                function scrollToBottom() {
+                                    if (contentHeight > height) {
+                                        contentY = contentHeight - height;
+                                    }
+                                }
+
+                                onMovementStarted: {
+                                    userScrolledUp = !isAtBottom();
+                                }
+
+                                onMovementEnded: {
+                                    userScrolledUp = !isAtBottom();
+                                }
+
+                                ScrollBar.vertical: ScrollBar {
+                                    id: logVBar
+                                    policy: logFlickable.contentHeight > logFlickable.height ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
+                                    width: 8
+                                    anchors.right: parent.right
+                                }
+
+                                TextEdit {
+                                    id: logTextArea
+                                    width: logFlickable.width - (logVBar.visible ? logVBar.width + 4 : 4)
+                                    text: root.installLogs || root.statusMessage || "Starting installation process..."
+                                    color: theme ? theme.textSecondary : "#aaaaaa"
+                                    font.pixelSize: 10
+                                    font.family: theme ? theme.fontFamilyMono : "Consolas, monospace"
+                                    wrapMode: TextEdit.WrapAnywhere
+                                    readOnly: true
+                                    selectByMouse: true
+                                    selectionColor: theme ? theme.accent : "#0078d4"
+
+                                    onTextChanged: {
+                                        if (!logFlickable.userScrolledUp) {
+                                            Qt.callLater(function() {
+                                                if (!logFlickable.userScrolledUp) {
+                                                    logFlickable.scrollToBottom();
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1182,12 +1477,52 @@ Rectangle {
 
                     MouseArea {
                         id: cancelMa
+                        objectName: "cancelMa"
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             root.isOpen = false;
                             root.cancelled();
+                        }
+                    }
+                }
+
+                // Open Official Site Button (shown when manual installation is required or cannot resolve and URL exists)
+                Rectangle {
+                    width: 140
+                    height: 28
+                    radius: 3
+                    color: openVendorSiteMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4")
+                    visible: (root.dialogState === "manual_installation_required" || root.dialogState === "cannot_resolve") && (root.officialUrl.length > 0 || root.downloadUrl.length > 0)
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        VectorIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "link"
+                            size: 11
+                            color: "#ffffff"
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Open Vendor Site"
+                            color: "#ffffff"
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                    }
+
+                    MouseArea {
+                        id: openVendorSiteMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            Qt.openUrlExternally(root.officialUrl || root.downloadUrl);
                         }
                     }
                 }
@@ -1373,6 +1708,7 @@ Rectangle {
 
                     MouseArea {
                         id: confirmMa
+                        objectName: "confirmMa"
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor

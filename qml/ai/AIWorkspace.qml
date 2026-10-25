@@ -111,6 +111,15 @@ Rectangle {
 
         function onMessageReceived(msgId, role, content) {
             var ctx = root.activeSelectionContext;
+            if (role === "assistant") {
+                var rFirst20 = (content || "").substring(0, 20);
+                var rLast20 = (content || "").length > 20 ? (content || "").substring((content || "").length - 20) : (content || "");
+                console.log("[AI_DIAGNOSTIC_STAGE_3] === COMPLETE RAW AI RESPONSE BEFORE PARSING ===");
+                console.log("[AI_DIAGNOSTIC_STAGE_3] Length: " + (content ? content.length : 0));
+                console.log("[AI_DIAGNOSTIC_STAGE_3] First 20 chars: " + JSON.stringify(rFirst20));
+                console.log("[AI_DIAGNOSTIC_STAGE_3] Last 20 chars: " + JSON.stringify(rLast20));
+                console.log("[AI_DIAGNOSTIC_STAGE_3] Full raw response (with whitespace visible): " + JSON.stringify(content || ""));
+            }
             for (var i = 0; i < chatHistoryModel.count; i++) {
                 if (chatHistoryModel.get(i).msgId === msgId) {
                     chatHistoryModel.setProperty(i, "content", content);
@@ -123,7 +132,11 @@ Rectangle {
                         if (ctx.isSelectionRequest) {
                             var parseRes = CodeExtractor.parseReplacementResponse(content, ctx.languageId, ctx.originalSelectedText, ctx);
                             if (parseRes.status === "replacement" && parseRes.code && parseRes.code.trim().length > 0) {
-                                root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes.code, ctx.originalSelectedText);
+                                if (ctx.originalSelectedText && parseRes.code.trim() === ctx.originalSelectedText.trim()) {
+                                    root.aiReplacementFailed();
+                                } else {
+                                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes.code, ctx.originalSelectedText);
+                                }
                             } else {
                                 root.aiReplacementFailed();
                             }
@@ -145,7 +158,11 @@ Rectangle {
             if (role === "assistant" && ctx && ctx.isSelectionRequest) {
                 var parseRes2 = CodeExtractor.parseReplacementResponse(content, ctx.languageId, ctx.originalSelectedText, ctx);
                 if (parseRes2.status === "replacement" && parseRes2.code && parseRes2.code.trim().length > 0) {
-                    root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes2.code, ctx.originalSelectedText);
+                    if (ctx.originalSelectedText && parseRes2.code.trim() === ctx.originalSelectedText.trim()) {
+                        root.aiReplacementFailed();
+                    } else {
+                        root.aiReplacementReady(ctx.selectionStart, ctx.selectionEnd, parseRes2.code, ctx.originalSelectedText);
+                    }
                 } else {
                     root.aiReplacementFailed();
                 }
@@ -406,28 +423,23 @@ Rectangle {
         var docLen = (totalDocLength !== undefined && totalDocLength > 0) ? totalDocLength : (code ? code.length : -1);
         var isFullFile = (startPos === 0 && docLen > 0 && endPos >= docLen) || (code && docLen > 0 && code.length >= docLen);
 
-        var promptTemplate = (customPrompt && customPrompt.trim().length > 0) ? customPrompt.trim() : (
-            "Review the provided code selection and fix any bugs that exist.\n\n" +
-            "If there are no bugs, return only:\n" +
-            "SUCCESS\n\n" +
-            "If a bug exists:\n" +
-            "1. Give a brief explanation of approximately 50 words describing the bug.\n" +
-            "2. Write [Fixed Code] on a separate line.\n" +
-            "3. Below [Fixed Code], provide the corrected code.\n\n" +
-            "IMPORTANT:\n" +
-            "- Fix only actual bugs or errors.\n" +
-            "- Return the exact same selection of code with only the necessary bug fixes applied.\n" +
-            "- Do not rewrite correct code.\n" +
-            "- Do not refactor, optimize, or change formatting unnecessarily.\n" +
-            "- Do not autocomplete incomplete code or fragments.\n" +
-            "- Do not add missing code that was not part of the selection.\n" +
-            "- Preserve all other supplied code exactly as it was.\n" +
-            "- The selected code defines the maximum replacement scope.\n" +
-            "- If no bug exists, return only SUCCESS without explanation or code."
+        var isCustom = (customPrompt && customPrompt.trim().length > 0);
+        var exactTestedPrompt = (
+            "Fix the bug in the following code. Make only the changes necessary to fix the actual problem.\n\n" +
+            "Rules:\n\n" +
+            "1. Return the complete corrected version of the provided code, preserving its original structure.\n" +
+            "2. Do not add new features, autocomplete incomplete code, or write code that was not present in the original.\n" +
+            "3. Do not add imports, functions, classes, comments, examples, or extra lines unless they are strictly necessary to fix the bug.\n" +
+            "4. If the code is already correct, return it unchanged.\n" +
+            "5. If the intended behavior is ambiguous, explain what is unclear instead of guessing.\n" +
+            "6. Preserve existing variable names, formatting, and logic wherever possible.\n" +
+            "7. Do not refactor or optimize unrelated code.\n" +
+            "8. Return the corrected code in a single code block. Briefly explain the exact change outside the code block.\n\n" +
+            "Here is the code to fix:"
         );
 
-        // Send ONLY the selected code as the source-code payload (Requirement 2)
-        var userMsg = promptTemplate + "\n\n```" + (langTag || "") + "\n" + code + "\n```";
+        var codeBlock = "```" + (langTag || "") + "\n" + code + "\n```";
+        var fullPrompt = isCustom ? (customPrompt.trim() + "\n\n" + codeBlock) : (exactTestedPrompt + "\n\n" + codeBlock);
 
         root.pendingSelectionContext = {
             isSelectionRequest: true,
@@ -445,11 +457,19 @@ Rectangle {
             root.aiReplacementStarted(startPos, endPos, code);
         }
 
-        submitPrompt(userMsg);
+        var pFirst20 = (fullPrompt || "").substring(0, 20);
+        var pLast20 = (fullPrompt || "").length > 20 ? (fullPrompt || "").substring((fullPrompt || "").length - 20) : (fullPrompt || "");
+        console.log("[AI_DIAGNOSTIC_STAGE_2] === EXACT FINAL PROMPT SENT TO AI ===");
+        console.log("[AI_DIAGNOSTIC_STAGE_2] Length: " + (fullPrompt ? fullPrompt.length : 0));
+        console.log("[AI_DIAGNOSTIC_STAGE_2] First 20 chars: " + JSON.stringify(pFirst20));
+        console.log("[AI_DIAGNOSTIC_STAGE_2] Last 20 chars: " + JSON.stringify(pLast20));
+        console.log("[AI_DIAGNOSTIC_STAGE_2] Full prompt (with whitespace visible): " + JSON.stringify(fullPrompt || ""));
+
+        submitPrompt(fullPrompt);
     }
 
     function askAboutCode(code) {
-        askAboutSelection(code, -1, -1, "");
+        askAboutSelection(code, -1, -1, "", "", "", -1);
     }
 
     function sendDirectPrompt(promptText) {

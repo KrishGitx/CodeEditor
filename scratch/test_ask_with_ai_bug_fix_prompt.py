@@ -84,13 +84,22 @@ class TestAskWithAiBugFixPrompt(unittest.TestCase):
 
         # Must contain selected code
         self.assertIn(selected_code, user_prompt)
+        # The prompt template sent with code should NOT be shown to user in user_prompt
+        for sub in expected_substrings:
+            self.assertNotIn(sub, user_prompt)
+        # Instead, internal_instruction carries the prompt template sent with code
+        for sub in expected_substrings:
+            self.assertIn(sub, internal_instr)
+        # Combined prompt sent to AI worker contains both
+        combined_worker_prompt = f"{internal_instr}\n\n{user_prompt}"
+        for sub in expected_substrings:
+            self.assertIn(sub, combined_worker_prompt)
+        self.assertIn(selected_code, combined_worker_prompt)
         # Must NOT contain surrounding file or context
-        self.assertNotIn("import math", user_prompt)
-        self.assertNotIn("def run():", user_prompt)
-        self.assertNotIn("print(result)", user_prompt)
-        self.assertNotIn("FOR REASONING ONLY", user_prompt)
-        # Internal instruction should be empty so live prompt is clean
-        self.assertEqual(internal_instr, "")
+        self.assertNotIn("import math", combined_worker_prompt)
+        self.assertNotIn("def run():", combined_worker_prompt)
+        self.assertNotIn("print(result)", combined_worker_prompt)
+        self.assertNotIn("FOR REASONING ONLY", combined_worker_prompt)
 
     def test_02_correct_selection_returns_success_no_replacement(self):
         """2. Correct selection -> AI returns only SUCCESS -> no replacement occurs."""

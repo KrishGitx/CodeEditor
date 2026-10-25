@@ -232,6 +232,8 @@ class EditorBackend(QObject):
         self.extension_manager = ExtensionManager()
         self.extension_manager.formatterInstallProgress.connect(self.formatterInstallProgress.emit)
         self.formatter_manager = FormatterManager(self.extension_manager)
+        self.extension_manager.editor_backend = self
+        self.extension_manager.set_formatter_manager(self.formatter_manager)
         self.backing_docs = {}  # Normalized key -> BackingDocument
 
         # Filesystem Watcher for external filesystem change detection

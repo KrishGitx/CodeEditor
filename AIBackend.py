@@ -202,8 +202,32 @@ class AIBackend(QObject):
         self.current_msg_id += 1
         msg_id_str = f"msg_{self.current_msg_id}"
 
+        display_prompt = prompt.strip()
+        worker_prompt = prompt.strip()
+
+        # If internal_instruction was explicitly passed (e.g. from custom prompt), prepend it
+        if internal_instruction and internal_instruction.strip():
+            worker_prompt = f"{internal_instruction.strip()}\n\n{display_prompt}"
+
+        # In the chat UI, show only the code selection if prompt is an automated selection bug fix prompt
+        if ("Here is the code to fix:" in display_prompt or
+            "Fix the bug in the following code." in display_prompt or
+            "Review the provided code selection and fix any bugs that exist." in display_prompt):
+            code_match = re.search(r'(```[\s\S]*?```)', display_prompt)
+            if code_match:
+                display_prompt = code_match.group(1).strip()
+
+        # Stage 2 Diagnostic: Exact final prompt sent to AI
+        p_first20 = worker_prompt[:20] if worker_prompt else ""
+        p_last20 = worker_prompt[-20:] if len(worker_prompt or "") > 20 else worker_prompt or ""
+        print("[AI_DIAGNOSTIC_STAGE_2] === EXACT FINAL PROMPT SENT TO AI ===")
+        print(f"[AI_DIAGNOSTIC_STAGE_2] Length: {len(worker_prompt or '')}")
+        print(f"[AI_DIAGNOSTIC_STAGE_2] First 20 chars: {repr(p_first20)}")
+        print(f"[AI_DIAGNOSTIC_STAGE_2] Last 20 chars: {repr(p_last20)}")
+        print(f"[AI_DIAGNOSTIC_STAGE_2] Full prompt (with whitespace visible): {repr(worker_prompt or '')}")
+
         # Emit user message for UI display - ONLY user visible prompt, NEVER internal instruction
-        self.messageReceived.emit(f"user_{self.current_msg_id}", "user", prompt.strip())
+        self.messageReceived.emit(f"user_{self.current_msg_id}", "user", display_prompt)
         self.statusChanged.emit("thinking")
 
         def on_chunk(chunk):
@@ -211,6 +235,15 @@ class AIBackend(QObject):
             self.chunkReceived.emit(msg_id_str, chunk)
 
         def on_done(full_text):
+            # Stage 3 Diagnostic: Complete raw AI response before parsing
+            r_first20 = (full_text or "")[:20]
+            r_last20 = (full_text or "")[-20:] if len(full_text or "") > 20 else (full_text or "")
+            print("[AI_DIAGNOSTIC_STAGE_3] === COMPLETE RAW AI RESPONSE BEFORE PARSING ===")
+            print(f"[AI_DIAGNOSTIC_STAGE_3] Length: {len(full_text or '')}")
+            print(f"[AI_DIAGNOSTIC_STAGE_3] First 20 chars: {repr(r_first20)}")
+            print(f"[AI_DIAGNOSTIC_STAGE_3] Last 20 chars: {repr(r_last20)}")
+            print(f"[AI_DIAGNOSTIC_STAGE_3] Full raw response (with whitespace visible): {repr(full_text or '')}")
+
             cleaned = clean_ai_text(full_text)
             if cleaned and cleaned.strip():
                 self.messageReceived.emit(msg_id_str, "assistant", cleaned)
@@ -223,7 +256,6 @@ class AIBackend(QObject):
             self.errorOccurred.emit(err_msg)
             self.statusChanged.emit("error")
 
-        worker_prompt = f"{internal_instruction.strip()}\n\n{prompt.strip()}" if internal_instruction and internal_instruction.strip() else prompt.strip()
         self.active_worker = AIWorkerThread(worker_prompt, on_chunk, on_done, on_error)
         self.active_worker.start()
 

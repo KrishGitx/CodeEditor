@@ -14,32 +14,29 @@ NO_CHANGE_MARKER = "[NO_CHANGE]"
 SUCCESS_MARKER = "SUCCESS"
 INSUFF_MARKER = "[INSUFFICIENT_CONTEXT]"
 
-SELECTION_BUG_FIX_PROMPT = (
-    "Review the provided code selection and fix any bugs that exist.\n\n"
-    "If there are no bugs, return only:\n"
-    "SUCCESS\n\n"
-    "If a bug exists:\n"
-    "1. Give a brief explanation of approximately 50 words describing the bug.\n"
-    "2. Write [Fixed Code] on a separate line.\n"
-    "3. Below [Fixed Code], provide the corrected code.\n\n"
-    "IMPORTANT:\n"
-    "- Fix only actual bugs or errors.\n"
-    "- Return the exact same selection of code with only the necessary bug fixes applied.\n"
-    "- Do not rewrite correct code.\n"
-    "- Do not refactor, optimize, or change formatting unnecessarily.\n"
-    "- Do not autocomplete incomplete code or fragments.\n"
-    "- Do not add missing code that was not part of the selection.\n"
-    "- Preserve all other supplied code exactly as it was.\n"
-    "- The selected code defines the maximum replacement scope.\n"
-    "- If no bug exists, return only SUCCESS without explanation or code."
+EXACT_TESTED_PROMPT = (
+    "Fix the bug in the following code. Make only the changes necessary to fix the actual problem.\n\n"
+    "Rules:\n\n"
+    "1. Return the complete corrected version of the provided code, preserving its original structure.\n"
+    "2. Do not add new features, autocomplete incomplete code, or write code that was not present in the original.\n"
+    "3. Do not add imports, functions, classes, comments, examples, or extra lines unless they are strictly necessary to fix the bug.\n"
+    "4. If the code is already correct, return it unchanged.\n"
+    "5. If the intended behavior is ambiguous, explain what is unclear instead of guessing.\n"
+    "6. Preserve existing variable names, formatting, and logic wherever possible.\n"
+    "7. Do not refactor or optimize unrelated code.\n"
+    "8. Return the corrected code in a single code block. Briefly explain the exact change outside the code block.\n\n"
+    "Here is the code to fix:"
 )
+
+SELECTION_BUG_FIX_PROMPT = EXACT_TESTED_PROMPT
 
 
 def build_selection_internal_instruction(is_full_file: bool = False, lang_tag: str = "") -> str:
     """
     Constructs the system instruction for selection replacement mode.
+    Returns empty string as required by the tested prompt specification.
     """
-    return SELECTION_BUG_FIX_PROMPT
+    return ""
 
 
 def build_selection_prompt(
@@ -50,17 +47,21 @@ def build_selection_prompt(
     is_full_file: bool = False
 ) -> Tuple[str, str]:
     """
-    Builds the user-visible prompt and backend internal instruction for selection bug fixing.
-    Sends ONLY the selected code as the source-code payload (no full file or surrounding context).
+    Builds the prompt using the exact tested prompt with the user's selected code appended.
+    Does not append additional system instructions, internal instructions, scope rules, or second prompts.
     Returns (user_prompt, internal_instruction).
     """
     lang_tag = (lang_id or "").lower().strip()
-    base_prompt = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else SELECTION_BUG_FIX_PROMPT
-    user_prompt = f"{base_prompt}\n\n```{lang_tag}\n{code}\n```"
-    return user_prompt, ""
+    code_block = f"```{lang_tag}\n{code}\n```" if lang_tag else f"```\n{code}\n```"
+    if custom_prompt and custom_prompt.strip():
+        user_prompt = f"{custom_prompt.strip()}\n\n{code_block}"
+    else:
+        user_prompt = f"{EXACT_TESTED_PROMPT}\n\n{code_block}"
+    internal_instruction = ""
+    return user_prompt, internal_instruction
 
 
-def sanitize_extracted_code(code: str) -> str:
+def sanitize_extracted_code(code: str, original_selected_text: str = "") -> str:
     """Cleans marker artifacts or unescaped control tags from code blocks."""
     if not code:
         return ""
@@ -70,8 +71,36 @@ def sanitize_extracted_code(code: str) -> str:
         .replace(NO_CHANGE_MARKER, "")
         .replace(INSUFF_MARKER, "")
     )
-    return cleaned.strip("\r\n")
-    return cleaned.strip("\r\n")
+    cleaned = cleaned.strip("\r\n")
+
+    # Guard against spurious leading '(' introduced by AI output when original selection did not start with '('
+    if original_selected_text and original_selected_text.strip():
+        orig_stripped = original_selected_text.strip()
+        orig_starts_with_paren = orig_stripped.startswith("(")
+        if not orig_starts_with_paren:
+            lines = cleaned.splitlines()
+            if lines and lines[0].strip() == "(":
+                print("[AIReplacement] Diagnostic: Detected and removed spurious leading '(' line introduced by AI response.")
+                cleaned = "\n".join(lines[1:]).strip("\r\n")
+            elif cleaned.startswith("(") and cleaned.count("(") > cleaned.count(")"):
+                print("[AIReplacement] Diagnostic: Detected and removed spurious leading '(' character introduced by AI response.")
+                cleaned = cleaned[1:].strip("\r\n")
+
+    return cleaned
+
+
+def _log_stage_4_diagnostic(status: str, extracted: Optional[str], rejection_reason: str = ""):
+    first10 = (extracted or "")[:10]
+    last10 = (extracted or "")[-10:] if len(extracted or "") > 10 else (extracted or "")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] === EXTRACTED REPLACEMENT CODE IMMEDIATELY AFTER PARSING ===")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] Status: {status}")
+    if rejection_reason:
+        print(f"[AI_DIAGNOSTIC_STAGE_4] Rejection Reason: {rejection_reason}")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] Length: {len(extracted or '')}")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] First 10 chars: {repr(first10)}")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] Last 10 chars: {repr(last10)}")
+    print(f"[AI_DIAGNOSTIC_STAGE_4] Full extracted code (with whitespace visible): {repr(extracted or '')}")
+
 
 
 def validate_replacement_scope(
@@ -161,6 +190,19 @@ def validate_replacement_scope(
     if orig_has_imports and not repl_has_imports and orig_line_count >= 10 and repl_line_count < orig_line_count * 0.6:
         return False, "Scope Hazard: Selected scope contains import/package statements which are missing from the replacement."
 
+    # 6. Duplicated Leading Line Hazard (Case B)
+    # Detect if the AI returned the same leading line twice when the original contains it once.
+    if len(repl_lines) >= 2:
+        repl_first = repl_lines[0].strip()
+        repl_second = repl_lines[1].strip()
+        if repl_first and repl_first == repl_second:
+            orig_first = orig_lines[0].strip() if len(orig_lines) >= 1 else ""
+            orig_second = orig_lines[1].strip() if len(orig_lines) >= 2 else ""
+            orig_had_repetition = (orig_first == orig_second and orig_first == repl_first)
+            orig_occurrences = sum(1 for l in orig_lines if l.strip() == repl_first)
+            if not orig_had_repetition and orig_occurrences <= 1:
+                return False, f"Duplication Hazard: AI returned duplicated leading line ('{repl_first}') when original selection contains it once. Rejection prevents accidental duplicate insertion."
+
     return True, "Valid replacement scope"
 
 
@@ -205,11 +247,27 @@ def parse_replacement_response(
         fence_regex = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|\Z)")
         fence_match = fence_regex.search(after_marker)
         if fence_match and fence_match.group(2) and fence_match.group(2).strip():
-            extracted = sanitize_extracted_code(fence_match.group(2))
+            extracted = sanitize_extracted_code(fence_match.group(2), original_selected_text)
         else:
-            extracted = sanitize_extracted_code(after_marker)
+            extracted = sanitize_extracted_code(after_marker, original_selected_text)
 
         if extracted and extracted.strip():
+            # Check if code is unchanged
+            if original_selected_text and extracted.strip() == original_selected_text.strip():
+                print("[AIReplacement] Parsed state: UNCHANGED")
+                print("[AIReplacement] Replacement lines: 0")
+                print("[AIReplacement] Replacement chars: 0")
+                print("[AIReplacement] Scope validation: PASS")
+                print("[AIReplacement] Replacement applied: false")
+                _log_stage_4_diagnostic("unchanged", extracted)
+                return {
+                    "status": "unchanged",
+                    "code": extracted,
+                    "state": "UNCHANGED",
+                    "explanation": explanation,
+                    "message": "Code is already correct and remains unchanged."
+                }
+
             repl_lines = [l for l in extracted.splitlines() if l.strip()]
             repl_line_count = len(repl_lines)
             repl_chars = len(extracted)
@@ -221,6 +279,7 @@ def parse_replacement_response(
             is_valid, reason = validate_replacement_scope(extracted, original_selected_text, ctx)
             if is_valid:
                 print("[AIReplacement] Scope validation: PASS")
+                _log_stage_4_diagnostic("replacement", extracted)
                 return {
                     "status": "replacement",
                     "code": extracted,
@@ -231,6 +290,7 @@ def parse_replacement_response(
             else:
                 print("[AIReplacement] Scope validation: FAIL")
                 print("[AIReplacement] Replacement applied: false")
+                _log_stage_4_diagnostic("scope_mismatch", None, rejection_reason=reason)
                 return {
                     "status": "scope_mismatch",
                     "code": None,
@@ -243,7 +303,68 @@ def parse_replacement_response(
         print("[AIReplacement] Replacement chars: 0")
         print("[AIReplacement] Scope validation: FAIL")
         print("[AIReplacement] Replacement applied: false")
+        _log_stage_4_diagnostic("invalid", None, rejection_reason="Empty or unextractable code block after [Fixed Code]")
         return {"status": "invalid", "code": None, "state": "INVALID"}
+
+    # 2. Direct Single Code Block (per Rule 8: single code block with explanation outside)
+    fence_regex = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_\+#\.\-]*)[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n)?(?:`{3,}|~{3,}|\Z)")
+    fence_matches = list(fence_regex.finditer(response))
+    if fence_matches:
+        match = fence_matches[0]
+        extracted = sanitize_extracted_code(match.group(2), original_selected_text)
+        explanation_parts = []
+        if match.start() > 0:
+            explanation_parts.append(response[:match.start()].strip())
+        if match.end() < len(response):
+            explanation_parts.append(response[match.end():].strip())
+        explanation = "\n".join([p for p in explanation_parts if p])
+
+        if extracted and extracted.strip():
+            # Check Rule 4: If code is already correct, return it unchanged.
+            if original_selected_text and extracted.strip() == original_selected_text.strip():
+                print("[AIReplacement] Parsed state: UNCHANGED")
+                print("[AIReplacement] Replacement lines: 0")
+                print("[AIReplacement] Replacement chars: 0")
+                print("[AIReplacement] Scope validation: PASS")
+                print("[AIReplacement] Replacement applied: false")
+                _log_stage_4_diagnostic("unchanged", extracted)
+                return {
+                    "status": "unchanged",
+                    "code": extracted,
+                    "state": "UNCHANGED",
+                    "explanation": explanation,
+                    "message": "Code is already correct and remains unchanged."
+                }
+
+            repl_lines = [l for l in extracted.splitlines() if l.strip()]
+            repl_line_count = len(repl_lines)
+            repl_chars = len(extracted)
+
+            print("[AIReplacement] Parsed state: FIXED_CODE")
+            print(f"[AIReplacement] Replacement lines: {repl_line_count}")
+            print(f"[AIReplacement] Replacement chars: {repl_chars}")
+
+            is_valid, reason = validate_replacement_scope(extracted, original_selected_text, ctx)
+            if is_valid:
+                print("[AIReplacement] Scope validation: PASS")
+                _log_stage_4_diagnostic("replacement", extracted)
+                return {
+                    "status": "replacement",
+                    "code": extracted,
+                    "state": "FIXED_CODE",
+                    "explanation": explanation,
+                    "reason": reason
+                }
+            else:
+                print("[AIReplacement] Scope validation: FAIL")
+                print("[AIReplacement] Replacement applied: false")
+                _log_stage_4_diagnostic("scope_mismatch", None, rejection_reason=reason)
+                return {
+                    "status": "scope_mismatch",
+                    "code": None,
+                    "state": "FIXED_CODE",
+                    "error": reason
+                }
 
     # 2. SUCCESS (No bugs found)
     trim_resp = response.strip()
@@ -328,10 +449,18 @@ def parse_replacement_response(
         print(f"[AIReplacement] Replacement applied: false")
         return {"status": "insufficient_context", "code": None, "state": "INSUFFICIENT_CONTEXT"}
 
-    # 6. INVALID / UNSTRUCTURED
+    # 6. INVALID / EXPLANATION ONLY (Case D & E)
     print(f"[AIReplacement] Parsed state: INVALID")
     print(f"[AIReplacement] Replacement lines: 0")
     print(f"[AIReplacement] Replacement chars: 0")
     print(f"[AIReplacement] Scope validation: FAIL")
     print(f"[AIReplacement] Replacement applied: false")
-    return {"status": "invalid", "code": None, "state": "INVALID"}
+    rej_reason = "No code block returned in AI response (explanation only)."
+    _log_stage_4_diagnostic("invalid", None, rejection_reason=rej_reason)
+    return {
+        "status": "invalid",
+        "code": None,
+        "state": "INVALID",
+        "explanation": response.strip(),
+        "error": rej_reason
+    }

@@ -333,13 +333,15 @@ class FormatterManager:
                             "success": True,
                             "formatted": source_code,
                             "message": "Document is already formatted",
-                            "available": True
+                            "available": True,
+                            "dependency": "csharpier"
                         }
                     return {
                         "success": True,
                         "formatted": clean_formatted,
                         "message": "C# formatted with CSharpier",
-                        "available": True
+                        "available": True,
+                        "dependency": "csharpier"
                     }
 
             err = (proc.stderr or proc.stdout or f"Exit code {proc.returncode}").strip()
@@ -415,6 +417,17 @@ class FormatterManager:
                     env["PATH"] = tool_runtime["PATH_PREPEND"] + os.pathsep + env.get("PATH", "")
 
             cmd = [tool_path, "--replace", temp_file] if not tool_path.lower().endswith(".jar") else [java_exe_to_use, "-jar", tool_path, "--replace", temp_file]
+
+            # Diagnostic logging: Section 3 Runtime Details
+            print("[JavaRuntime] === FORMATTER SUBPROCESS RUNTIME CONFIGURATION ===")
+            print(f"[JavaRuntime] DGX Studio IDE runtime: Python {sys.version.split()[0]} (IDE process does not run in a JVM)")
+            print(f"[JavaRuntime] Exact formatter executable/JAR path: {tool_path}")
+            print(f"[JavaRuntime] Complete formatter command: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+            print(f"[JavaRuntime] Resolved Java executable for subprocess: {java_exe_to_use}")
+            print(f"[JavaRuntime] Subprocess JAVA_HOME: {env.get('JAVA_HOME', '(not set)')}")
+            print(f"[JavaRuntime] Subprocess PATH prepend: {tool_runtime.get('PATH_PREPEND', '(none)') if tool_runtime else '(none)'}")
+            print(f"[JavaRuntime] Subprocess PATH: {env.get('PATH', '')[:300]}...")
+
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -426,6 +439,12 @@ class FormatterManager:
                 timeout=15,
                 creationflags=creationflags
             )
+
+            print(f"[JavaRuntime] Formatter subprocess exit code: {proc.returncode}")
+            if proc.stdout and proc.stdout.strip():
+                print(f"[JavaRuntime] Formatter subprocess stdout: {proc.stdout.strip()[:300]}")
+            if proc.stderr and proc.stderr.strip():
+                print(f"[JavaRuntime] Formatter subprocess stderr: {proc.stderr.strip()[:300]}")
 
             if os.path.exists(temp_file):
                 with open(temp_file, "r", encoding="utf-8", errors="replace") as f:
@@ -588,6 +607,10 @@ class FormatterManager:
             if "PATH_PREPEND" in tool_runtime and tool_runtime["PATH_PREPEND"]:
                 env["PATH"] = tool_runtime["PATH_PREPEND"] + os.pathsep + env.get("PATH", "")
 
+        file_dir = None
+        if file_path and os.path.exists(file_path):
+            file_dir = os.path.dirname(os.path.abspath(file_path))
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -598,6 +621,7 @@ class FormatterManager:
                 encoding="utf-8",
                 errors="replace",
                 env=env,
+                cwd=file_dir,
                 shell=use_shell,
                 creationflags=creationflags
             )
