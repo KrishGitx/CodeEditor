@@ -310,6 +310,7 @@ Item {
     // Active Tab Persistent Editor References
     readonly property var activeEditorPane: (tabEditorRepeater && activeTabIndex >= 0 && activeTabIndex < tabEditorRepeater.count) ? tabEditorRepeater.itemAt(activeTabIndex) : null
     readonly property var codeTextArea: activeEditorPane ? activeEditorPane.codeTextArea : null
+    readonly property var floatingAiSelectionPill: activeEditorPane ? activeEditorPane.floatingAiSelectionPill : null
     readonly property var editorFlickable: activeEditorPane ? activeEditorPane.editorFlickable : null
     readonly property var gutterFlickable: activeEditorPane ? activeEditorPane.gutterFlickable : null
     readonly property var indentGuidesCanvas: activeEditorPane ? activeEditorPane.indentGuidesCanvas : null
@@ -728,6 +729,9 @@ Item {
         pendingAiCode = code;
         pendingAiOriginalText = originalText || "";
         isAiReplacementGenerating = false;
+        if (codeTextArea && (codeTextArea.selectionStart !== startPos || codeTextArea.selectionEnd !== endPos)) {
+            codeTextArea.select(startPos, endPos);
+        }
     }
 
     function clearPendingAiReplacement() {
@@ -895,6 +899,7 @@ Item {
                                         property alias indentGuidesCanvas: indentGuidesCanvas
                                         property alias editorFlickable: editorFlickable
                                         property alias codeTextArea: codeTextArea
+                                        property alias floatingAiSelectionPill: floatingAiSelectionPill
                                         property alias currentLineHighlight: currentLineHighlight
                                         property var paneScopeRanges: []
                                         property var paneGuideSegments: []
@@ -1583,7 +1588,7 @@ Item {
                                                             onTriggered: blinkOn = !blinkOn
                                                         }
 
-                                                        // Floating AI Replace Pill on top of original saved selection
+                                                        // Floating AI Replace Pill on top of active selection
                                                         Rectangle {
                                                             id: floatingAiSelectionPill
                                                             objectName: "floatingAiSelectionPill"
@@ -1592,23 +1597,26 @@ Item {
                                                             readonly property bool hasActiveSelection: codeTextArea.selectionStart !== codeTextArea.selectionEnd
                                                             readonly property int curSelStart: Math.min(codeTextArea.selectionStart, codeTextArea.selectionEnd)
                                                             readonly property int curSelEnd: Math.max(codeTextArea.selectionStart, codeTextArea.selectionEnd)
-                                                            readonly property bool matchesPendingSelection: (curSelStart === root.pendingAiStart && curSelEnd === root.pendingAiEnd)
+                                                            readonly property bool matchesPendingSelection: root.hasPendingAiReplacement && (curSelStart === root.pendingAiStart && curSelEnd === root.pendingAiEnd)
 
-                                                            visible: root.hasPendingAiReplacement && (tabPane.index === root.activeTabIndex) && !findReplaceBar.visible && hasActiveSelection && matchesPendingSelection
+                                                            visible: (tabPane.index === root.activeTabIndex) && !findReplaceBar.visible && hasActiveSelection && isReplacementReady && (typeof theme === "undefined" || !theme || theme.enableAI !== false)
 
-                                                            readonly property bool isReady: !root.isAiReplacementGenerating && root.pendingAiCode.length > 0
-                                                            enabled: isReady
-                                                            opacity: isReady ? 1.0 : 0.55
+                                                            readonly property bool isPendingForCurrent: matchesPendingSelection
+                                                            readonly property bool isGenerating: isPendingForCurrent && root.isAiReplacementGenerating
+                                                            readonly property bool isReplacementReady: isPendingForCurrent && !root.isAiReplacementGenerating && root.pendingAiCode.length > 0
 
-                                                            property var origSelRect: (root.hasPendingAiReplacement && hasActiveSelection && matchesPendingSelection) ? codeTextArea.positionToRectangle(root.pendingAiStart) : null
+                                                            enabled: isReplacementReady
+                                                            opacity: 1.0
+
+                                                            property var origSelRect: hasActiveSelection ? codeTextArea.positionToRectangle(curSelStart) : null
                                                             x: origSelRect ? Math.max(codeTextArea.leftPadding, Math.min(codeTextArea.width - width - 12, origSelRect.x)) : 0
                                                             y: origSelRect ? (origSelRect.y - height - 6 < 0 ? (origSelRect.y + (origSelRect.height > 0 ? origSelRect.height : root.editorLineHeight) + 4) : (origSelRect.y - height - 6)) : 0
 
                                                             width: pillRow.implicitWidth + 18
                                                             height: 24
                                                             radius: 4
-                                                            color: !isReady ? (theme ? theme.bgSurfaceHover : "#333333") : (pillMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4"))
-                                                            border.color: !isReady ? (theme ? theme.borderSubtle : "#444444") : (theme ? theme.borderFocus : "#60a5fa")
+                                                            color: pillMa.containsMouse ? (theme ? theme.accentHover : "#1084d8") : (theme ? theme.accent : "#0078d4")
+                                                            border.color: theme ? theme.borderFocus : "#60a5fa"
                                                             border.width: 1
 
                                                             RowLayout {
@@ -1619,15 +1627,15 @@ Item {
                                                                 VectorIcon {
                                                                     name: "sparkles"
                                                                     size: 11
-                                                                    color: floatingAiSelectionPill.isReady ? "#ffffff" : (theme ? theme.textMuted : "#888888")
+                                                                    color: "#ffffff"
                                                                 }
 
                                                                 Text {
                                                                     text: "Replace with AI"
-                                                                    color: floatingAiSelectionPill.isReady ? "#ffffff" : (theme ? theme.textMuted : "#888888")
-                                                                    font.pixelSize: 11
-                                                                    font.bold: true
-                                                                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                                                    color: "#ffffff"
+                                                                font.pixelSize: 11
+                                                                font.bold: true
+                                                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
                                                                 }
                                                             }
 
@@ -1637,7 +1645,8 @@ Item {
                                                                 hoverEnabled: floatingAiSelectionPill.enabled
                                                                 cursorShape: floatingAiSelectionPill.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                                                 onClicked: {
-                                                                    if (!floatingAiSelectionPill.enabled) return;
+                                                                    if (!floatingAiSelectionPill.enabled || !floatingAiSelectionPill.isReplacementReady) return;
+
                                                                     root.replaceSelection(root.pendingAiStart, root.pendingAiEnd, root.pendingAiCode, root.pendingAiOriginalText);
                                                                     root.clearPendingAiReplacement();
                                                                 }

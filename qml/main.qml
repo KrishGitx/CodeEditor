@@ -657,6 +657,30 @@ Window {
         notificationToast.show(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb);
     }
 
+    Connections {
+        target: typeof extensionManager !== "undefined" ? extensionManager : null
+        ignoreUnknownSignals: true
+
+        function onSmartFixAvailable(proposal) {
+            if (!proposal) return;
+            var title = proposal.title || "Smart Fix Available";
+            var msg = proposal.proposedFix || proposal.likelyCause || proposal.description || "A fix is available for review.";
+            var actionLabel = "Review Fix";
+            mainWindow.showNotification(
+                msg,
+                "info",
+                title,
+                10000,
+                actionLabel,
+                function() {
+                    smartInstallDialog.openProposal(proposal);
+                },
+                "Dismiss",
+                function() {}
+            );
+        }
+    }
+
     // =========================================================================
     // WORKSPACE PRESETS LOGIC
     // =========================================================================

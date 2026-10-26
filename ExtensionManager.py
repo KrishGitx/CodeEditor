@@ -361,6 +361,68 @@ def locate_executable(cmd: str, custom_path: Optional[str] = None) -> Optional[s
             for dp in dotnet_paths:
                 if os.path.isfile(dp):
                     return os.path.abspath(dp)
+        elif cmd_l in ("sqlcmd", "sqlcmd.exe"):
+            sqlcmd_globs = [
+                r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\*\Tools\Binn\sqlcmd.exe",
+                r"C:\Program Files (x86)\Microsoft SQL Server\Client SDK\ODBC\*\Tools\Binn\sqlcmd.exe",
+                r"C:\Program Files\Microsoft SQL Server\*\Tools\Binn\sqlcmd.exe",
+                r"C:\Program Files (x86)\Microsoft SQL Server\*\Tools\Binn\sqlcmd.exe",
+                r"C:\Program Files\SqlCmd\sqlcmd.exe",
+                r"C:\Program Files (x86)\SqlCmd\sqlcmd.exe",
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "sqlcmd", "sqlcmd.exe"),
+            ]
+            for pattern in sqlcmd_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+        elif cmd_l in ("psql", "psql.exe"):
+            psql_globs = [
+                r"C:\Program Files\PostgreSQL\*\bin\psql.exe",
+                r"C:\Program Files (x86)\PostgreSQL\*\bin\psql.exe",
+            ]
+            for pattern in psql_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+        elif cmd_l in ("sqlite3", "sqlite3.exe"):
+            sqlite_paths = [
+                r"C:\sqlite\sqlite3.exe",
+                r"C:\Program Files\SQLite\sqlite3.exe",
+                r"C:\Program Files (x86)\SQLite\sqlite3.exe",
+            ]
+            for sp in sqlite_paths:
+                if os.path.isfile(sp):
+                    return os.path.abspath(sp)
+        elif cmd_l in ("mysql", "mysql.exe"):
+            mysql_globs = [
+                r"C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe",
+                r"C:\Program Files\MySQL\MySQL Workbench *\mysql.exe",
+            ]
+            for pattern in mysql_globs:
+                for match in glob.glob(pattern):
+                    if os.path.isfile(match):
+                        return os.path.abspath(match)
+
+        # Check Windows Registry Machine/User PATH for newly installed tools not yet in current process PATH
+        try:
+            import winreg
+            for root_key, subkey in [
+                (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                (winreg.HKEY_CURRENT_USER, r"Environment")
+            ]:
+                try:
+                    with winreg.OpenKey(root_key, subkey) as key:
+                        val, _ = winreg.QueryValueEx(key, "Path")
+                        for dir_path in val.split(";"):
+                            dir_path = dir_path.strip()
+                            if dir_path and os.path.isdir(dir_path):
+                                target = os.path.join(dir_path, bin_name)
+                                if os.path.isfile(target):
+                                    return os.path.abspath(target)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # 5. Common locations for Unix / macOS
     if not is_win:
@@ -665,6 +727,19 @@ def collect_runtime_environment_info(
             except Exception:
                 pass
 
+    # 4. Database-related tools and diagnostics
+    elif l_lower == "sql" or any(k in t_lower for k in ("sqlcmd", "psql", "sqlite", "mysql", "sql")):
+        info["runtime_type"] = "Database"
+        db_target = ExtensionManager.detect_target_database_engine({"language": language, "toolName": tool_name, "executable": executable}, "")
+        info["database_engine"] = db_target.get("engine")
+        info["database_client"] = db_target.get("client_tool") or tool_name
+        found_db_exe = locate_executable(executable or tool_name or db_target.get("client_tool", ""))
+        info["runtime_executable"] = found_db_exe or "Not found in PATH"
+        if found_db_exe and os.path.isfile(found_db_exe):
+            info["in_path"] = bool(shutil.which(tool_name) or shutil.which(executable))
+            info["executable_path"] = found_db_exe
+            info["executable_dir"] = os.path.dirname(found_db_exe)
+
     return info
 
 
@@ -742,6 +817,42 @@ OFFICIAL_TOOL_DOCUMENTATION: Dict[str, Dict[str, str]] = {
         "action_required": "Run 'pip install black' in your active Python environment.",
         "verification_cmd": "black --version",
         "resume_note": "Smart Install will detect Black in your active Python environment."
+    },
+    "sqlcmd": {
+        "tool": "sqlcmd",
+        "official_url": "https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility",
+        "download_url": "https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility#download-and-install-sqlcmd",
+        "runtime_name": "Microsoft Command Line Utilities for SQL Server",
+        "action_required": "Install Microsoft sqlcmd client and configure target SQL Server connection.",
+        "verification_cmd": "sqlcmd -?",
+        "resume_note": "Smart Install will detect sqlcmd and retry the SQL operation against configured SQL Server."
+    },
+    "psql": {
+        "tool": "psql",
+        "official_url": "https://www.postgresql.org/docs/current/app-psql.html",
+        "download_url": "https://www.postgresql.org/download/",
+        "runtime_name": "PostgreSQL Client Utilities",
+        "action_required": "Install PostgreSQL client (psql) and configure target database connection.",
+        "verification_cmd": "psql --version",
+        "resume_note": "Smart Install will detect psql and retry the SQL operation against PostgreSQL database."
+    },
+    "sqlite3": {
+        "tool": "sqlite3",
+        "official_url": "https://www.sqlite.org/",
+        "download_url": "https://www.sqlite.org/download.html",
+        "runtime_name": "SQLite Command-Line Shell",
+        "action_required": "Install SQLite command line shell (sqlite3).",
+        "verification_cmd": "sqlite3 --version",
+        "resume_note": "Smart Install will detect sqlite3 and execute the SQL file."
+    },
+    "mysql": {
+        "tool": "mysql",
+        "official_url": "https://dev.mysql.com/doc/refman/8.0/en/mysql.html",
+        "download_url": "https://dev.mysql.com/downloads/installer/",
+        "runtime_name": "MySQL Client Utilities",
+        "action_required": "Install MySQL client (mysql) and configure database connection.",
+        "verification_cmd": "mysql --version",
+        "resume_note": "Smart Install will detect mysql and retry the SQL operation."
     }
 }
 
@@ -835,7 +946,9 @@ def is_installer_in_progress() -> bool:
     global _test_installer_in_progress_fn
     if _test_installer_in_progress_fn is not None:
         try:
-            return bool(_test_installer_in_progress_fn())
+            if callable(_test_installer_in_progress_fn):
+                return bool(_test_installer_in_progress_fn())
+            return bool(_test_installer_in_progress_fn)
         except Exception:
             return False
 
@@ -1291,6 +1404,24 @@ class Extension:
         }
 
 
+
+# =============================================================================
+# SMART AI ENGINE & RECOVERY ARCHITECTURE INTEGRATION
+# =============================================================================
+from smart_engine import (
+    SmartEngine,
+    RecoverySession,
+    SmartAction,
+    CommandRecord,
+    SmartSafetyGuard,
+    ActionRegistry,
+    SMART_AI_SYSTEM_PROMPT,
+    build_smart_prompt,
+    parse_smart_response,
+    validate_ai_plan_response
+)
+
+
 class ExtensionManager(QObject):
     extensionsChanged = Signal()
     extensionInstalled = Signal(str)  # extension_id
@@ -1305,6 +1436,11 @@ class ExtensionManager(QObject):
     smartInstallPostInstallVerified = Signal(str, str, str, str, str, str)  # tool_name, status ("success"|"fix_available"|"manual_installation_required"|"failed"), message, retry_action, file_path, lang_id
     smartInstallFixProposed = Signal(str, str, str, str, str, str, int)  # tool_name, fix_command, fix_explanation, retry_action, file_path, verify_command, fix_attempt_count
     originalOperationRetried = Signal(str, bool, str)  # tool_name, success, error_message
+    smartFixAvailable = Signal("QVariantMap")  # structured Smart Fix proposal for background error recovery
+    recoveryPlanUpdated = Signal("QVariantMap")  # structured session data, current batch, total steps, status
+    recoveryCommandStarted = Signal(str, str, str)  # session_id, command_id, command
+    recoveryCommandCompleted = Signal(str, str, int, str)  # session_id, command_id, exit_code, formatted_output
+    recoverySessionEnded = Signal(str, bool, str)  # session_id, success, final_report
     extensionMessageEmitted = Signal(str, str, str)  # extension_id, message, level
     commandExecuted = Signal(str, str)  # command_id, result_message
 
@@ -1350,6 +1486,10 @@ class ExtensionManager(QObject):
         self._formatter_manager = None
         self._attempted_fix_commands: Dict[str, List[str]] = {}
         self._active_run_ids: Dict[str, str] = {}
+        self._recent_failure_fingerprints: Dict[str, float] = {}
+        self._smart_engine = SmartEngine(extension_manager=self)
+        self._recovery_sessions = self._smart_engine._sessions
+        self._active_recovery_session_id: Optional[str] = None
 
         self.reload_extensions()
 
@@ -2067,15 +2207,58 @@ class ExtensionManager(QObject):
             step_t0 = time.time()
             _log_si("CMD_START", f"Starting step {idx + 1}/{len(steps)}: '{step}'", run_id=run_id)
             try:
-                proc = subprocess.run(
-                    step,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=env,
-                    cwd=working_dir
-                )
+                def _run_step_proc():
+                    call_match = re.match(r"^\s*&\s*", step)
+                    if call_match:
+                        rest_cmd = step[call_match.end():].strip()
+                        try:
+                            parts = shlex.split(rest_cmd, posix=(sys.platform != "win32"))
+                        except Exception:
+                            parts = rest_cmd.split()
+                        cleaned_parts = []
+                        for p in parts:
+                            if (p.startswith('"') and p.endswith('"')) or (p.startswith("'") and p.endswith("'")):
+                                p = p[1:-1]
+                            cleaned_parts.append(p)
+                        exe_name = cleaned_parts[0] if cleaned_parts else ""
+                        args = cleaned_parts[1:] if len(cleaned_parts) > 1 else []
+
+                        # Prefer validated executable paths and separate arguments through process infrastructure
+                        verified_exe = locate_executable(exe_name) or shutil.which(exe_name)
+                        if not verified_exe and os.path.isfile(exe_name):
+                            verified_exe = os.path.abspath(exe_name)
+
+                        if verified_exe:
+                            return subprocess.run(
+                                [verified_exe] + args,
+                                shell=False,
+                                capture_output=True,
+                                text=True,
+                                timeout=timeout,
+                                env=env,
+                                cwd=working_dir
+                            )
+                        ps_exe = locate_executable("powershell") or shutil.which("powershell") or "powershell.exe"
+                        return subprocess.run(
+                            [ps_exe, "-NoProfile", "-NonInteractive", "-Command", step],
+                            shell=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout,
+                            env=env,
+                            cwd=working_dir
+                        )
+                    return subprocess.run(
+                        step,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        env=env,
+                        cwd=working_dir
+                    )
+
+                proc = _run_step_proc()
                 duration = time.time() - step_t0
                 out = proc.stdout.strip()
                 err = proc.stderr.strip()
@@ -2092,15 +2275,7 @@ class ExtensionManager(QObject):
                         print(f"[SmartInstall] Installer lock released. Retrying step: '{step}'")
                         _log_si("RETRY", f"Retrying step '{step}' after installer lock released", run_id=run_id)
                         step_t0_retry = time.time()
-                        proc = subprocess.run(
-                            step,
-                            shell=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=timeout,
-                            env=env,
-                            cwd=working_dir
-                        )
+                        proc = _run_step_proc()
                         duration = time.time() - step_t0_retry
                         out = proc.stdout.strip()
                         err = proc.stderr.strip()
@@ -2278,72 +2453,227 @@ class ExtensionManager(QObject):
         return 1, "", "No operational formatter could be invoked."
 
     @staticmethod
+    def detect_target_database_engine(context: Optional[dict] = None, file_path: str = "") -> Dict[str, Any]:
+        """
+        Determines the target database engine from reliable existing configuration or execution context.
+        If the engine cannot be determined, identifies the target as ambiguous and requires user decision.
+        Distinguishes database clients from database servers.
+        """
+        ctx = context or {}
+        fp = file_path or ctx.get("filePath") or ctx.get("file_path") or ""
+
+        # 1. Direct engine specification in context
+        raw_engine = (
+            ctx.get("database_engine") or ctx.get("databaseEngine") or
+            ctx.get("db_engine") or ctx.get("dbEngine") or
+            ctx.get("dialect") or ctx.get("database_type") or ""
+        ).lower().strip()
+
+        # 2. Connection configuration in context or workspace
+        conn = ctx.get("connection") or ctx.get("connectionSettings") or ctx.get("database_config") or {}
+        if not raw_engine and isinstance(conn, dict):
+            raw_engine = (conn.get("type") or conn.get("engine") or conn.get("driver") or "").lower().strip()
+            if not raw_engine:
+                url = str(conn.get("url") or conn.get("connectionString") or "").lower()
+                if "sqlserver" in url or "mssql" in url or "1433" in url:
+                    raw_engine = "sqlserver"
+                elif "postgres" in url or "5432" in url:
+                    raw_engine = "postgresql"
+                elif "mysql" in url or "3306" in url:
+                    raw_engine = "mysql"
+                elif "sqlite" in url or url.endswith(".db") or url.endswith(".sqlite"):
+                    raw_engine = "sqlite"
+
+        # 3. Check workspace configuration files
+        if not raw_engine:
+            workspace_dir = os.path.dirname(os.path.abspath(fp)) if fp and os.path.exists(fp) else os.getcwd()
+            for fname in ("dgx.json", "database.json", "connections.json", "application.properties", ".env"):
+                cf_path = os.path.join(workspace_dir, fname)
+                if os.path.isfile(cf_path):
+                    try:
+                        with open(cf_path, "r", encoding="utf-8", errors="ignore") as f:
+                            txt = f.read().lower()
+                            if "sqlserver" in txt or "mssql" in txt:
+                                raw_engine = "sqlserver"
+                                break
+                            elif "postgres" in txt or "postgresql" in txt:
+                                raw_engine = "postgresql"
+                                break
+                            elif "mysql" in txt or "mariadb" in txt:
+                                raw_engine = "mysql"
+                                break
+                            elif "sqlite" in txt:
+                                raw_engine = "sqlite"
+                                break
+                    except Exception:
+                        pass
+
+        # 4. Check file content / dialect headers
+        if not raw_engine and fp and os.path.isfile(fp):
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    header = "".join([f.readline() for _ in range(30)]).lower()
+                    if "-- dialect: sqlserver" in header or "-- engine: sqlserver" in header or "-- target: sqlserver" in header or "\ngo\n" in f"\n{header}\n" or "use [" in header:
+                        raw_engine = "sqlserver"
+                    elif "-- dialect: postgres" in header or "-- engine: postgres" in header or "plpgsql" in header:
+                        raw_engine = "postgresql"
+                    elif "-- dialect: sqlite" in header or "-- engine: sqlite" in header or "pragma " in header:
+                        raw_engine = "sqlite"
+                    elif "-- dialect: mysql" in header or "-- engine: mysql" in header or "engine=innodb" in header:
+                        raw_engine = "mysql"
+            except Exception:
+                pass
+
+        # Engine normalization and tool mapping
+        engine_map = {
+            "sqlserver": ("sqlserver", "sqlcmd", "Microsoft SQL Server"),
+            "mssql": ("sqlserver", "sqlcmd", "Microsoft SQL Server"),
+            "sql server": ("sqlserver", "sqlcmd", "Microsoft SQL Server"),
+            "postgres": ("postgresql", "psql", "PostgreSQL"),
+            "postgresql": ("postgresql", "psql", "PostgreSQL"),
+            "sqlite": ("sqlite", "sqlite3", "SQLite"),
+            "sqlite3": ("sqlite", "sqlite3", "SQLite"),
+            "mysql": ("mysql", "mysql", "MySQL"),
+            "mariadb": ("mysql", "mysql", "MariaDB"),
+            "oracle": ("oracle", "sqlplus", "Oracle Database"),
+        }
+
+        if raw_engine in engine_map:
+            engine_id, client_tool, display_name = engine_map[raw_engine]
+            return {
+                "engine": engine_id,
+                "is_ambiguous": False,
+                "client_tool": client_tool,
+                "display_name": display_name,
+                "connection_available": bool(conn),
+                "connection_info": conn if isinstance(conn, dict) else {},
+                "reason": f"Target database engine identified as {display_name}."
+            }
+
+        return {
+            "engine": None,
+            "is_ambiguous": True,
+            "client_tool": None,
+            "display_name": "Unspecified Database",
+            "connection_available": False,
+            "connection_info": {},
+            "reason": "Target database engine cannot be determined from file, configuration, or execution context."
+        }
+
+    def retry_sql_operation(
+        self,
+        tool_name: str,
+        file_path: str = "",
+        executable: str = "",
+        verified_path: str = "",
+        context: Optional[dict] = None
+    ) -> Tuple[int, str, str]:
+        """
+        Retries the original SQL file execution operation against the target database.
+        Checks for required connection and execution context before attempting execution.
+        Captures real exit codes and stderr for AI recovery planning if execution fails.
+        """
+        ctx = context or {}
+        db_target = self.detect_target_database_engine(ctx, file_path)
+        client_exe = verified_path or locate_executable(executable) or locate_executable(tool_name) or locate_executable(db_target.get("client_tool", ""))
+
+        if not client_exe or not os.path.isfile(client_exe):
+            return 1, "", f"Cannot retry SQL execution: database client executable '{executable or tool_name}' not found."
+
+        # Check for required connection context
+        conn = db_target.get("connection_info") or ctx.get("connection") or ctx.get("connectionSettings") or ctx.get("database_config") or {}
+        engine = db_target.get("engine")
+
+        # For SQLite, a local db file can be used or inferred from file directory
+        if engine == "sqlite":
+            db_file = conn.get("database") or conn.get("file") or (os.path.splitext(file_path)[0] + ".db" if file_path else "test.db")
+            try:
+                proc = subprocess.run([client_exe, db_file, f".read {file_path}"], capture_output=True, text=True, timeout=30)
+                return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+            except Exception as e:
+                return 1, "", str(e)
+
+        # For server-based databases (SQL Server, Postgres, MySQL): connection settings are required!
+        if not conn or not (conn.get("host") or conn.get("server") or conn.get("connectionString") or conn.get("url")):
+            err_msg = (
+                f"Cannot execute SQL script: Database connection settings (server/host, database, credentials) "
+                f"for {db_target.get('display_name', 'database')} are not configured. "
+                "Installing the database client does not establish a connection or provide a running database server."
+            )
+            return 1, "", err_msg
+
+        # If connection settings exist, execute with appropriate client flags
+        cmd_args = [client_exe]
+        server = conn.get("server") or conn.get("host", "localhost")
+        database = conn.get("database", "")
+        user = conn.get("user") or conn.get("username", "")
+        password = conn.get("password", "")
+
+        if engine == "sqlserver":
+            cmd_args.extend(["-S", server])
+            if database:
+                cmd_args.extend(["-d", database])
+            if user:
+                cmd_args.extend(["-U", user])
+                if password:
+                    cmd_args.extend(["-P", password])
+            else:
+                cmd_args.append("-E")
+            if file_path:
+                cmd_args.extend(["-i", file_path])
+        elif engine == "postgresql":
+            cmd_args.extend(["-h", server])
+            if database:
+                cmd_args.extend(["-d", database])
+            if user:
+                cmd_args.extend(["-U", user])
+            if file_path:
+                cmd_args.extend(["-f", file_path])
+        elif engine == "mysql":
+            cmd_args.extend(["-h", server])
+            if database:
+                cmd_args.extend(["-D", database])
+            if user:
+                cmd_args.extend(["-u", user])
+            if password:
+                cmd_args.append(f"-p{password}")
+            if file_path:
+                cmd_args.extend(["-e", f"source {file_path}"])
+
+        try:
+            proc = subprocess.run(cmd_args, capture_output=True, text=True, timeout=30)
+            return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        except Exception as e:
+            return 1, "", str(e)
+
+
+    @staticmethod
     def validate_command_safety(command: str, tool_name: str = "") -> tuple:
-        """
-        Validates that the command is safe, non-destructive, and appropriate for tool installation.
-        Rejects arbitrary explanatory prose, destructive actions, and cross-platform mismatches.
-        """
-        if not command or not command.strip():
-            return False, "Installation command is empty."
+        """Validates command safety using SmartSafetyGuard."""
+        return SmartSafetyGuard.validate_command_safety(command, tool_name)
 
-        raw_cmd = command.strip()
-        cmd_clean = raw_cmd.lower()
-
-        # Reject conversational prose / explanatory sentences
-        prose_prefixes = (
-            "you ", "please ", "to install ", "download ", "first ", "we need to ",
-            "make sure ", "ensure ", "run the following", "here is ", "note:", "tip:",
-            "after ", "once ", "step 1", "step 2"
-        )
-        if any(cmd_clean.startswith(p) for p in prose_prefixes):
-            return False, "Command rejected: Explanatory prose detected instead of executable command."
-
-        # Blacklist destructive operations
-        destructive_patterns = [
-            r"\brm\s+-[a-zA-Z]*r",
-            r"\bdel\s+/[a-zA-Z]*f",
-            r"\bformat\s+[a-zA-Z]:",
-            r"\bmkfs\b",
-            r"\bdd\s+if=",
-            r"\bshutdown\b",
-            r"\breboot\b",
-            r":\(\)\s*\{\s*:\|:&\s*\};:",
-            r">\s*/dev/sd",
-            r"\bdrop\s+database\b",
-            r"\bchmod\s+-[a-zA-Z]*R\s+777\s+/",
-        ]
-        for pat in destructive_patterns:
-            if re.search(pat, cmd_clean):
-                return False, "Command rejected: Destructive or unsafe system operation detected."
-
-        # Reject platform-incompatible package managers
-        is_windows = (sys.platform == "win32")
-        is_darwin = (sys.platform == "darwin")
-        is_linux = sys.platform.startswith("linux")
-
-        if is_windows:
-            unix_only = [r"\bbrew\b", r"\bapt\b", r"\bapt-get\b", r"\bpacman\b", r"\byum\b", r"\bdnf\b", r"\bsudo\b"]
-            for mgr in unix_only:
-                if re.search(mgr, cmd_clean):
-                    return False, f"Command rejected: Platform mismatch. Unix tool ({mgr.strip(r'\\b')}) cannot run on Windows."
-        elif is_darwin or is_linux:
-            windows_only = [r"\bwinget\b", r"\bchoco\b", r"\bscoop\b"]
-            for mgr in windows_only:
-                if re.search(mgr, cmd_clean):
-                    return False, f"Command rejected: Platform mismatch. Windows tool ({mgr.strip(r'\\b')}) cannot run on {sys.platform}."
-
-        # Validate that command uses known package managers or standard installation mechanisms
+        # Validate that command uses known package managers, standard tools, or diagnostic queries
         allowed_installers = [
             "pip", "npm", "yarn", "pnpm", "cargo", "winget", "choco", "scoop",
             "brew", "apt", "apt-get", "pacman", "yum", "dnf", "rustup", "dotnet",
             "go install", "gem", "setup.py", "python -m pip", "python3 -m pip", "pyside6",
             "python", "python3", "py", "venv", "virtualenv", "rustfmt", "clang-format",
-            "google-java-format", "csharpier", "gofmt", "black", "ruff", "autopep8"
+            "google-java-format", "csharpier", "gofmt", "black", "ruff", "autopep8",
+            "shfmt", "prettier", "eslint", "flake8", "mypy", "isort", "git",
+            "gcc", "g++", "clang", "clang++", "make", "cmake", "ninja", "java", "javac",
+            "sqlcmd", "psql", "sqlite3", "mysql", "setx"
         ]
         has_installer = any(mgr in cmd_clean for mgr in allowed_installers)
-        if not has_installer:
+
+        diagnostic_query = (
+            any(q in cmd_clean for q in ("--version", "-version", "-v", "--help", "-h", "-?", "version", "status", "info")) or
+            cmd_clean.startswith(("where ", "which ", "type ", "get-command ")) or
+            (tool_name and tool_name.lower().strip() in cmd_clean)
+        )
+
+        if not (has_installer or diagnostic_query):
             if not any(k in cmd_clean for k in ("install", "add", "setup", "get", "activate", "update", "upgrade")):
-                return False, "Command rejected: Command is not a recognized developer tool installation command."
+                return False, "Command rejected: Command is not a recognized developer tool installation or diagnostic command."
 
         return True, "Valid"
 
@@ -2374,8 +2704,8 @@ class ExtensionManager(QObject):
         strict language isolation, and working software checks.
         """
         res_type = res.get("resolutionType") or res.get("resolution_type", "cannot_resolve")
-        if res_type == "cannot_resolve":
-            return True, "Cannot resolve is valid"
+        if res_type in ("cannot_resolve", "awaiting_user_decision", "recovery_session") or res.get("needs_user_decision") or res.get("status") == "awaiting_user_decision":
+            return True, "Valid resolution type"
 
         cmd = res.get("command", "")
         steps = res.get("steps", [])
@@ -2732,7 +3062,6 @@ class ExtensionManager(QObject):
                 pass
 
         if isinstance(data, dict):
-            r_type = data.get("resolutionType") or data.get("resolution_type") or ("single_command" if data.get("command") else "cannot_resolve")
             cmd = data.get("command", "")
             steps = data.get("steps", [])
             if isinstance(steps, str):
@@ -2742,10 +3071,45 @@ class ExtensionManager(QObject):
             pkg_name = data.get("package") or data.get("packageName") or fallback_exec or fallback_tool
             exec_name = data.get("executable") or fallback_exec or fallback_tool
 
-            return {
+            decision_req = data.get("decision_request") or data.get("decisionRequest")
+            needs_user_dec = bool(data.get("needs_user_decision", data.get("needsUserDecision", False))) or data.get("status") == "awaiting_user_decision"
+            if not decision_req and (needs_user_dec or "question" in data or "choices" in data or "options" in data):
+                q = data.get("question") or data.get("title") or "Clarification required"
+                decision_req = {
+                    "question": q,
+                    "why_necessary": data.get("why_necessary", data.get("whyNecessary", data.get("explanation", data.get("diagnosis", "")))),
+                    "whyNecessary": data.get("why_necessary", data.get("whyNecessary", data.get("explanation", data.get("diagnosis", "")))),
+                    "choices": data.get("choices", data.get("options", [])),
+                    "options": data.get("choices", data.get("options", [])),
+                    "allow_custom_answer": bool(data.get("allow_custom_answer", data.get("allowCustomAnswer", True))),
+                    "allowCustomAnswer": bool(data.get("allow_custom_answer", data.get("allowCustomAnswer", True))),
+                    "resume_key": data.get("resume_key", data.get("resumeKey", "user_choice")),
+                    "resumeKey": data.get("resume_key", data.get("resumeKey", "user_choice")),
+                    "default_choice": data.get("default_choice", data.get("defaultChoice", ""))
+                }
+                needs_user_dec = True
+            elif decision_req and isinstance(decision_req, dict):
+                needs_user_dec = True
+                if "why_necessary" in decision_req and "whyNecessary" not in decision_req:
+                    decision_req["whyNecessary"] = decision_req["why_necessary"]
+                elif "whyNecessary" in decision_req and "why_necessary" not in decision_req:
+                    decision_req["why_necessary"] = decision_req["whyNecessary"]
+                if "allow_custom_answer" in decision_req and "allowCustomAnswer" not in decision_req:
+                    decision_req["allowCustomAnswer"] = decision_req["allow_custom_answer"]
+                if "resume_key" in decision_req and "resumeKey" not in decision_req:
+                    decision_req["resumeKey"] = decision_req["resume_key"]
+                if "choices" in decision_req and "options" not in decision_req:
+                    decision_req["options"] = decision_req["choices"]
+
+            if needs_user_dec or decision_req:
+                r_type = "awaiting_user_decision"
+            else:
+                r_type = data.get("resolutionType") or data.get("resolution_type") or ("single_command" if data.get("command") else "cannot_resolve")
+
+            parsed_res = {
                 "tool": t_name,
                 "toolName": t_name,
-                "title": data.get("title") or f"Install {t_name}",
+                "title": data.get("title") or (decision_req.get("question") if decision_req else f"Install {t_name}"),
                 "dependency_type": data.get("dependencyType") or data.get("dependency_type") or fallback_type,
                 "dependencyType": data.get("dependencyType") or data.get("dependency_type") or fallback_type,
                 "package": pkg_name,
@@ -2763,6 +3127,15 @@ class ExtensionManager(QObject):
                 "source": "ai",
                 "retryOperation": data.get("retryOperation", True)
             }
+            if needs_user_dec or decision_req:
+                parsed_res["needs_user_decision"] = True
+                parsed_res["needsUserDecision"] = True
+                parsed_res["decision_request"] = decision_req
+                parsed_res["decisionRequest"] = decision_req
+                parsed_res["status"] = "awaiting_user_decision"
+                parsed_res["options"] = decision_req.get("choices", []) if decision_req else []
+                parsed_res["choices"] = decision_req.get("choices", []) if decision_req else []
+            return parsed_res
 
         # 2. Key-value fallback parsing
         tool_val = ""
@@ -2865,333 +3238,93 @@ class ExtensionManager(QObject):
     @Slot("QVariantMap", result="QVariantMap")
     def resolve_smart_install_context(self, context: dict) -> dict:
         """
-        NOW actually invokes the AI resolver:
-        1. Emits smartInstallAnalysisStarted and logs lifecycle.
-        2. Sends structured failure context to configured AI backend.
-        3. Parses response and validates command safety, package syntax, and domain isolation.
-        4. If validation fails, performs ONE corrective retry before falling back.
-        5. Returns structured recommendation for explicit user approval.
+        AI-driven Smart Recovery & Install resolver powered by SmartEngine.
+        Ingests real failure context and capabilities, queries the AI backend,
+        and returns an authoritative proposal with attached recovery session.
         """
-        cur_os = get_current_os()
-        tool_name = context.get("toolName") or context.get("executable") or context.get("operation", "Developer Tool")
-        clean_lang = (context.get("language") or context.get("languageId") or "").lower().strip()
-        retry_act = context.get("retryAction", "run")
-        file_path = context.get("filePath", "")
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
 
-        run_id = context.get("runId") or f"si_{int(time.time()*1000) % 1000000}"
-        context["runId"] = run_id
+        # Add detected diagnostic capabilities to context
+        if "installed_jdks" not in context:
+            try:
+                jdks = discover_installed_jdks()
+                if jdks:
+                    context["installed_jdks"] = [f"{j['version']} ({j['path']})" for j in jdks[:3]]
+            except Exception:
+                pass
 
-        # Strategy 1: Check for existing compatible tool or runtime before prompting installation
-        exec_name = context.get("executable") or tool_name
-        is_java_tool = clean_lang == "java" or "google-java-format" in tool_name.lower() or "google-java-format" in exec_name.lower()
+        if "available_extensions" not in context:
+            try:
+                context["available_extensions"] = [eid for eid in self._extensions.keys() if eid not in self._disabled_ids]
+            except Exception:
+                pass
 
-        if is_java_tool:
-            compat_jdk = find_compatible_jdk(min_version=21)
-            if compat_jdk:
-                jdk_path = compat_jdk["path"]
-                java_exe = compat_jdk["java_exe"]
-                jdk_ver = compat_jdk.get("version", "21+")
-                self.set_tool_runtime_config(tool_name, {
-                    "JAVA_HOME": jdk_path,
-                    "java_path": java_exe,
-                    "version": jdk_ver,
-                    "PATH_PREPEND": os.path.dirname(java_exe)
-                })
-                _log_si(
-                    "STRATEGY",
-                    f"Selected Strategy: existing_compatible_runtime - Formatter configured with installed JDK ({jdk_ver}) at {jdk_path}",
-                    run_id=run_id,
-                    details={
-                        "strategy": "existing_compatible_runtime",
-                        "tool": tool_name,
-                        "executable": java_exe,
-                        "version": jdk_ver,
-                        "location": jdk_path,
-                        "non_interactive": True,
-                        "requires_approval": False
-                    }
-                )
-                if retry_act == "format":
-                    op_exit, op_out, op_err = self.retry_formatting_operation(
-                        tool_name=tool_name,
-                        file_path=file_path,
-                        executable=exec_name,
-                        verified_path=locate_executable(exec_name)
-                    )
-                    if op_exit == 0:
-                        proposal = {
-                            "toolName": tool_name,
-                            "resolutionType": "single_command",
-                            "title": f"Configured {tool_name}",
-                            "command": "",
-                            "isInstalled": True,
-                            "explanation": f"Using existing compatible JDK {jdk_ver} at {jdk_path}. Formatting succeeded.",
-                            "status": "success",
-                            "source": "existing_runtime",
-                            "strategy": "existing_compatible_runtime",
-                            "currentOs": cur_os,
-                            "retryAction": retry_act,
-                            "filePath": file_path,
-                            "languageId": clean_lang
-                        }
-                        self._set_run_id(tool_name, run_id)
-                        return proposal
+        proposal = self._smart_engine.resolve_context(context)
+        return proposal
 
-        existing_path = locate_executable(exec_name) or locate_executable(tool_name)
-        if existing_path and context.get("operationType") != "failure" and not context.get("dependencyMissing"):
-            _log_si(
-                "STRATEGY",
-                f"Selected Strategy: existing_compatible_tool - Found existing {tool_name} at {existing_path}",
-                run_id=run_id,
-                details={
-                    "strategy": "existing_compatible_tool",
-                    "tool": tool_name,
-                    "executable": existing_path,
-                    "location": existing_path,
-                    "non_interactive": True,
-                    "requires_approval": False
-                }
-            )
-            proposal = {
-                "toolName": tool_name,
-                "resolutionType": "single_command",
-                "title": f"{tool_name} is already installed",
-                "command": "",
-                "isInstalled": True,
-                "explanation": f"{tool_name} is already installed and available at {existing_path}.",
-                "status": "already_installed",
-                "source": "existing_tool",
-                "strategy": "existing_compatible_tool",
-                "currentOs": cur_os,
-                "retryAction": retry_act,
-                "filePath": file_path,
-                "languageId": clean_lang
-            }
-            self._set_run_id(tool_name, run_id)
+    def _attach_command_recovery_session_if_needed(self, context: dict, proposal: dict) -> dict:
+        """
+        Connects recovery proposals to the RecoverySession workflow.
+        Maintains sessions for action plans and interactive user decisions.
+        """
+        if not proposal or not isinstance(proposal, dict):
             return proposal
 
-        # 1. Generate prompt from context
-        prompt = self.generate_smart_install_prompt(context=context)
-        print(f"[SmartInstall] AI request sent")
-        _log_si(
-            "AI_INPUT",
-            f"Dispatching installation prompt to AI backend for '{tool_name}'",
-            run_id=run_id,
-            details={"tool": tool_name, "prompt_length": len(prompt), "prompt_content": prompt}
-        )
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
 
-        # 2. Query configured AI backend through centralized AI pipeline
-        print(f"[SmartInstall] Sending request through existing AI backend")
-        ai_response_text = ""
-        is_ai_available = False
-        ai_failure_reason = ""
+        session_id = proposal.get("sessionId") or proposal.get("session_id")
+        session = self._recovery_sessions.get(session_id) if session_id else None
 
-        if ExtensionManager._custom_ai_resolver and callable(ExtensionManager._custom_ai_resolver):
-            try:
-                ai_response_text = ExtensionManager._custom_ai_resolver(prompt)
-                if ai_response_text:
-                    is_ai_available = True
-            except Exception as e:
-                ai_failure_reason = str(e)
+        if not session:
+            if session_id and self._smart_engine.get_session(session_id):
+                session = self._smart_engine.get_session(session_id)
+                self._recovery_sessions[session_id] = session
+            else:
+                session = self._smart_engine.create_session(context, maximum_commands=10)
+                session_id = session.session_id
+                self._recovery_sessions[session_id] = session
 
-        if not ai_response_text:
-            try:
-                from AIBackend import AIBackend
-                ai_backend = self.ai_backend or AIBackend.get_instance()
-                ai_response_text = ai_backend.ask(prompt)
-                if ai_response_text:
-                    is_ai_available = True
-                else:
-                    ai_failure_reason = "AI backend returned empty response"
-            except Exception as ex:
-                ai_failure_reason = str(ex)
-                is_ai_available = False
+        proposal["sessionId"] = session_id
+        proposal["session_id"] = session_id
 
-        _log_si(
-            "AI_RESPONSE",
-            f"AI response received: available={is_ai_available}",
-            run_id=run_id,
-            details={
-                "status": "available" if is_ai_available else "failed",
-                "error": ai_failure_reason or "(none)",
-                "raw_response": ai_response_text
-            }
-        )
+        # User decision needed
+        if proposal.get("status") == "awaiting_user_decision" or proposal.get("needs_user_decision") or proposal.get("decision_request"):
+            session.status = "awaiting_user_decision"
+            dec_req = proposal.get("decision_request") or proposal.get("decisionRequest")
+            session.decision_request = dec_req
+            proposal["decision_request"] = dec_req
+            proposal["decisionRequest"] = dec_req
+            proposal["status"] = "awaiting_user_decision"
+            proposal["resolutionType"] = "recovery_session"
+            self.recoveryPlanUpdated.emit(session.to_dict())
+            return proposal
 
-        # Check for manifest-contributed recipe if AI failed
-        manifest_recipe = self._contributed_tool_dependencies.get(tool_name, {})
-        recipe_cmd = ""
-        if manifest_recipe:
-            guide = manifest_recipe.get("installGuide", {})
-            recipe_cmd = guide.get(cur_os, "") or guide.get("all", "")
+        # Actions / Commands
+        if proposal.get("commands") or session.active_batch:
+            if proposal.get("commands") and not session.active_batch and not session.command_history:
+                session.accept_new_batch(proposal["commands"], proposal.get("proposed_total_steps"))
+            s_dict = session.to_dict()
+            proposal["commands"] = s_dict.get("active_batch", [])
+            proposal["total_steps"] = session.total_steps
+            proposal["totalSteps"] = session.total_steps
+            proposal["total_steps_display"] = s_dict.get("total_steps_display", "")
+            proposal["totalStepsDisplay"] = s_dict.get("totalStepsDisplay", "")
+            proposal["commands_remaining"] = session.commands_remaining
+            proposal["commandsRemaining"] = session.commands_remaining
+            proposal["resolutionType"] = "recovery_session"
+            proposal["status"] = session.status
+            self.recoveryPlanUpdated.emit(session.to_dict())
+            return proposal
 
-        if is_ai_available and ai_response_text:
-            print(f"[SmartInstall] AI request completed")
-            print(f"[SmartInstall] Raw AI response received: {ai_response_text}")
+        if proposal.get("status") == "cannot_resolve" or proposal.get("resolutionType") == "cannot_resolve":
+            session.status = "cannot_resolve"
+            proposal["status"] = "cannot_resolve"
+            return proposal
 
-            parsed = self.parse_ai_install_response(ai_response_text, fallback_tool=tool_name, fallback_exec=tool_name, fallback_type=context.get("operationType", "tool"))
-            print(f"[SmartInstall] AI response parsed")
-
-            # Validate resolution
-            is_valid, val_reason = self.validate_resolution(parsed, context)
-            print(f"[SmartInstall] AI response validation result: is_safe={is_valid}, pkg_valid={is_valid}")
-
-            # Corrective AI retry if invalid
-            if not is_valid:
-                print(f"[SmartInstall] Corrective AI retry started: {val_reason}")
-                reprompt = (
-                    f"Your previous recommendation had an issue: {val_reason}.\n"
-                    f"Please provide a valid, safe, official package identifier and installation command on {cur_os} in valid JSON format.\n\n"
-                    + prompt
-                )
-                corr_text = ""
-                try:
-                    from AIBackend import AIBackend
-                    ai_backend = self.ai_backend or AIBackend.get_instance()
-                    print(f"[SmartInstall] Sending request through existing AI backend")
-                    corr_text = ai_backend.ask(reprompt)
-                    if corr_text:
-                        parsed_corr = self.parse_ai_install_response(corr_text, fallback_tool=tool_name, fallback_exec=tool_name, fallback_type=context.get("operationType", "tool"))
-                        c_valid, c_msg = self.validate_resolution(parsed_corr, context)
-                        if c_valid:
-                            parsed = parsed_corr
-                            is_valid = True
-                        else:
-                            val_reason = c_msg
-                except Exception as rex:
-                    print(f"[SmartInstall] Re-prompt error: {rex}")
-
-            if not is_valid:
-                parsed["resolutionType"] = "cannot_resolve"
-                parsed["resolution_type"] = "cannot_resolve"
-                parsed["command"] = ""
-                parsed["explanation"] = f"Validation blocked command: {val_reason}"
-
-            final_res_type = parsed.get("resolutionType", "single_command")
-            final_source = "ai"
-            final_cmd = make_command_non_interactive(parsed.get("command", ""))
-
-            manual_fallback = get_official_manual_fallback(tool_name, reason=parsed.get("explanation") or parsed.get("diagnosis"))
-
-            proposal = {
-                "toolName": parsed.get("tool") or tool_name,
-                "toolType": parsed.get("dependencyType", "tool"),
-                "dependencyType": parsed.get("dependencyType", "tool"),
-                "packageName": parsed.get("package", tool_name),
-                "executable": parsed.get("executable", tool_name),
-                "resolutionType": final_res_type,
-                "title": parsed.get("title") or f"Install {parsed.get('tool', tool_name)}",
-                "diagnosis": parsed.get("diagnosis") or f"Missing {parsed.get('tool', tool_name)}",
-                "description": parsed.get("explanation") or parsed.get("diagnosis") or f"Installs {parsed.get('tool', tool_name)}",
-                "explanation": parsed.get("explanation", ""),
-                "command": final_cmd,
-                "steps": [make_command_non_interactive(s) for s in parsed.get("steps", [])],
-                "verifyCommand": parsed.get("verificationCommand") or parsed.get("verify") or f"{parsed.get('executable', tool_name)} --version",
-                "officialUrl": parsed.get("officialUrl") or manual_fallback.get("officialUrl", ""),
-                "downloadUrl": manual_fallback.get("downloadUrl", ""),
-                "actionRequired": manual_fallback.get("actionRequired", ""),
-                "resumeNote": manual_fallback.get("resumeNote", ""),
-                "strategy": "package_manager_silent" if final_cmd else "manual_fallback",
-                "source": final_source,
-                "needsConfirmation": True,
-                "currentOs": cur_os,
-                "retryAction": retry_act,
-                "filePath": file_path,
-                "languageId": clean_lang,
-                "isInstalled": False
-            }
-
-        elif recipe_cmd:
-            print(f"[SmartInstall] AI request failed: {ai_failure_reason or 'offline'}")
-            print(f"[SmartInstall] Resolution source: Built-in Recipe")
-            final_res_type = "single_command"
-            final_source = "built_in_recipe"
-            final_cmd = make_command_non_interactive(recipe_cmd)
-            manual_fallback = get_official_manual_fallback(tool_name)
-
-            proposal = {
-                "toolName": tool_name,
-                "toolType": context.get("operationType", "tool"),
-                "dependencyType": context.get("operationType", "tool"),
-                "packageName": tool_name,
-                "executable": manifest_recipe.get("executable", tool_name),
-                "resolutionType": final_res_type,
-                "title": f"Install {tool_name}",
-                "diagnosis": f"Built-in recipe for {tool_name}",
-                "description": f"Installs {tool_name} from extension recipe.",
-                "explanation": f"Installs {tool_name} tool dependency.",
-                "command": final_cmd,
-                "steps": [],
-                "verifyCommand": f"{manifest_recipe.get('executable', tool_name)} --version",
-                "officialUrl": manual_fallback.get("officialUrl", ""),
-                "downloadUrl": manual_fallback.get("downloadUrl", ""),
-                "actionRequired": manual_fallback.get("actionRequired", ""),
-                "resumeNote": manual_fallback.get("resumeNote", ""),
-                "strategy": "package_manager_silent",
-                "source": final_source,
-                "needsConfirmation": True,
-                "currentOs": cur_os,
-                "retryAction": retry_act,
-                "filePath": file_path,
-                "languageId": clean_lang,
-                "isInstalled": False
-            }
-        else:
-            print(f"[SmartInstall] AI request failed: {ai_failure_reason or 'offline'}")
-            print(f"[SmartInstall] Resolution source: AI Unavailable")
-            final_res_type = "cannot_resolve"
-            final_source = "ai_unavailable"
-            final_cmd = ""
-            manual_fallback = get_official_manual_fallback(tool_name, reason=f"AI unavailable: {ai_failure_reason or 'provider unreachable'}")
-
-            proposal = {
-                "toolName": tool_name,
-                "toolType": context.get("operationType", "tool"),
-                "dependencyType": context.get("operationType", "tool"),
-                "packageName": tool_name,
-                "executable": tool_name,
-                "resolutionType": final_res_type,
-                "title": f"AI Unavailable for {tool_name}",
-                "diagnosis": "AI could not analyze this issue.",
-                "description": f"Smart Install could not generate a verified recommendation because AI is unavailable ({ai_failure_reason or 'provider unreachable'}).",
-                "explanation": f"AI could not analyze this issue: {ai_failure_reason or 'provider unreachable'}",
-                "command": "",
-                "steps": [],
-                "verifyCommand": manual_fallback.get("verificationCommand") or f"{tool_name} --version",
-                "officialUrl": manual_fallback.get("officialUrl", ""),
-                "downloadUrl": manual_fallback.get("downloadUrl", ""),
-                "actionRequired": manual_fallback.get("actionRequired", ""),
-                "resumeNote": manual_fallback.get("resumeNote", ""),
-                "strategy": "manual_fallback",
-                "source": final_source,
-                "needsConfirmation": True,
-                "currentOs": cur_os,
-                "retryAction": retry_act,
-                "filePath": file_path,
-                "languageId": clean_lang,
-                "isInstalled": False
-            }
-
-        self._set_run_id(proposal.get("toolName") or tool_name, run_id)
-        _log_si(
-            "PLAN",
-            f"Generated installation plan for '{proposal.get('toolName', tool_name)}': resolution={proposal.get('resolutionType', final_res_type)}",
-            run_id=run_id,
-            details={
-                "tool": proposal.get("toolName", tool_name),
-                "resolution_type": proposal.get("resolutionType", final_res_type),
-                "command": proposal.get("command", ""),
-                "steps": proposal.get("steps", []),
-                "verify_command": proposal.get("verifyCommand", ""),
-                "source": proposal.get("source", final_source),
-                "title": proposal.get("title", "")
-            }
-        )
-
-        print(f"[SmartInstall] Final resolution type: {proposal.get('resolutionType', final_res_type)}")
-        print(f"[SmartInstall] Source: {proposal.get('source', final_source)}")
-        print(f"[SmartInstall] Command availability: {bool(proposal.get('command', ''))}")
-        print(f"[SmartInstall] ==================================================")
         return proposal
 
     @Slot("QVariantMap")
@@ -3200,6 +3333,7 @@ class ExtensionManager(QObject):
         def _worker():
             try:
                 proposal = self.resolve_smart_install_context(context)
+                proposal = self._attach_command_recovery_session_if_needed(context, proposal)
                 self.smartInstallResolved.emit(proposal)
             except Exception as e:
                 print(f"[SmartInstall] Async analysis error: {e}")
@@ -3220,7 +3354,8 @@ class ExtensionManager(QObject):
             executable=tool_name,
             detected_missing_dependency=tool_name
         )
-        return self.resolve_smart_install_context(ctx)
+        proposal = self.resolve_smart_install_context(ctx)
+        return self._attach_command_recovery_session_if_needed(ctx, proposal)
 
     @Slot(str, str, int, str, str, str, str, result="QVariantMap")
     def suggest_smart_install_for_failure(self, operation: str, error_output: str, exit_code: int, failed_command: str, lang_id: str = "", ext: str = "", file_path: str = "") -> dict:
@@ -3237,7 +3372,8 @@ class ExtensionManager(QObject):
             stderr=error_output,
             error_message=error_output
         )
-        return self.resolve_smart_install_context(ctx)
+        proposal = self.resolve_smart_install_context(ctx)
+        return self._attach_command_recovery_session_if_needed(ctx, proposal)
 
     def _classify_install_method(self, command: str, executable: str, package_name: str) -> str:
         cmd_lower = (command or "").lower().strip()
@@ -3723,6 +3859,37 @@ class ExtensionManager(QObject):
                 print("[SmartInstall] Post-install AI result: SUCCESS")
                 return "SUCCESS", "", "Tool installed and verified successfully."
             else:
+                found_exe = verified_path or locate_executable(executable) or locate_executable(tool_name)
+                if found_exe and os.path.isfile(found_exe):
+                    v_direct_cmd = [found_exe, "-?"] if "sqlcmd" in (found_exe.lower() + tool_name.lower()) else [found_exe, "--version"]
+                    try:
+                        v_direct_proc = subprocess.run(v_direct_cmd, capture_output=True, text=True, timeout=5)
+                        if v_direct_proc.returncode == 0:
+                            tool_dir = os.path.dirname(os.path.abspath(found_exe))
+                            self.set_tool_runtime_config(tool_name, {
+                                "PATH_PREPEND": tool_dir,
+                                "executable_path": found_exe
+                            })
+                            os.environ["PATH"] = tool_dir + os.pathsep + os.environ.get("PATH", "")
+                            self._custom_paths[tool_name] = found_exe
+                            if executable:
+                                self._custom_paths[executable] = found_exe
+
+                            if (file_path and file_path.lower().endswith(".sql")) or tool_name.lower() in ("sqlcmd", "psql", "sqlite3", "mysql") or retry_action in ("run", "sql", "execute"):
+                                op_ret_exit, op_ret_out, op_ret_err = self.retry_sql_operation(
+                                    tool_name=tool_name,
+                                    file_path=file_path,
+                                    executable=found_exe,
+                                    verified_path=found_exe,
+                                    context={"filePath": file_path, "toolName": tool_name}
+                                )
+                                if op_ret_exit == 0:
+                                    return "SUCCESS", "", f"{tool_name} verified at actual path '{found_exe}'. SQL execution succeeded."
+                                else:
+                                    return "FAILED", "", f"{tool_name} verified at actual path '{found_exe}', but SQL file execution failed: {op_ret_err}"
+                            return "SUCCESS", "", f"{tool_name} was found installed at '{found_exe}' and verified."
+                    except Exception:
+                        pass
                 err = install_stderr or install_stdout or verify_stderr or verify_stdout or f"Exit code {install_exit_code}"
                 print("[SmartInstall] Post-install AI result: FAILED")
                 return "FAILED", "", err
@@ -3772,9 +3939,18 @@ class ExtensionManager(QObject):
         # CRITICAL GUARD: Do not confuse successful installation with verification or operational success
         if (verify_exit_code != 0 or has_operational_failure) and status == "SUCCESS":
             print("[SmartInstall] AI incorrectly reported SUCCESS despite active verification or operational failure. Rejecting false success.")
-            if verify_exit_code != 0:
+            if has_operational_failure:
                 status = "FAILED"
-                explanation = verify_stderr or verify_stdout or f"Verification command failed with exit code {verify_exit_code}"
+                explanation = operation_error or operation_stderr or f"Operation failed with exit code {operation_exit_code}"
+            elif verify_exit_code != 0:
+                found_exe = verified_path or locate_executable(executable) or locate_executable(tool_name)
+                if found_exe and os.path.isfile(found_exe):
+                    status = "FIX"
+                    explanation = f"{tool_name} was found at '{found_exe}' but is missing from PATH. Environment PATH update required."
+                    fix_cmd = f'setx PATH "$env:PATH;{os.path.dirname(found_exe)}"'
+                else:
+                    status = "FAILED"
+                    explanation = verify_stderr or verify_stdout or f"Verification command failed with exit code {verify_exit_code}"
             elif runtime_info.get("incompatibility_detected"):
                 compat_jdk = find_compatible_jdk(min_version=21)
                 if compat_jdk:
@@ -3939,6 +4115,12 @@ class ExtensionManager(QObject):
             self.smartInstallCompleted.emit(tool_name, False, "Cannot execute: installation command is empty.", retry_action)
             return False
 
+        if command.startswith("dgx:extension") or command.startswith("dgx_extension"):
+            parts = command.split()
+            act = "enable" if any(x in parts for x in ("enable", "activate")) else "install"
+            ext_id = parts[-1]
+            return self.execute_extension_recovery(ext_id, act, tool_name, retry_action, file_path)
+
         # Command safety validation
         is_safe, reason = self.validate_command_safety(command, tool_name)
         if not is_safe:
@@ -4009,13 +4191,22 @@ class ExtensionManager(QObject):
                 )
 
                 if verified_path:
-                    v_cmd = f'"{verified_path}" --version'
+                    if tool_name.lower() in ("sqlcmd", "sqlcmd.exe") or (executable and executable.lower() in ("sqlcmd", "sqlcmd.exe")):
+                        v_cmd = f'"{verified_path}" -?'
+                    else:
+                        v_cmd = f'"{verified_path}" --version'
                 elif verify_command:
                     v_cmd = verify_command
                 elif executable:
-                    v_cmd = f'"{executable}" --version'
+                    if executable.lower() in ("sqlcmd", "sqlcmd.exe"):
+                        v_cmd = f'"{executable}" -?'
+                    else:
+                        v_cmd = f'"{executable}" --version'
                 else:
-                    v_cmd = f'"{tool_name}" --version'
+                    if tool_name.lower() in ("sqlcmd", "sqlcmd.exe"):
+                        v_cmd = f'"{tool_name}" -?'
+                    else:
+                        v_cmd = f'"{tool_name}" --version'
 
                 print(f"[SmartInstall] Verification started: {v_cmd}")
                 v_proc = subprocess.run(v_cmd, shell=True, capture_output=True, text=True, timeout=15)
@@ -4095,6 +4286,34 @@ class ExtensionManager(QObject):
                             details={"exit_code": op_exit, "error": op_err, "resolved": (op_exit == 0)}
                         )
                         self.originalOperationRetried.emit(tool_name, (op_exit == 0), op_err)
+                    elif (
+                        retry_action in ("run", "sql", "execute") or
+                        (file_path and file_path.lower().endswith(".sql")) or
+                        tool_name.lower() in ("sqlcmd", "psql", "sqlite3", "mysql")
+                    ):
+                        _log_si("STATE_TRANSITION", f"State transitioned to 'retrying': Retrying actual SQL operation", run_id=run_id, details={"state": "retrying"})
+                        self.smartInstallProgress.emit(tool_name, "retrying", "Retrying SQL operation against database...")
+                        _log_si(
+                            "OPERATION_RETRY",
+                            f"Retrying original SQL operation for '{tool_name}'",
+                            run_id=run_id,
+                            details={"operation": retry_action, "file_path": file_path, "tool": tool_name}
+                        )
+                        op_exit, op_out, op_err = self.retry_sql_operation(
+                            tool_name=tool_name,
+                            file_path=file_path,
+                            executable=executable,
+                            verified_path=verified_path,
+                            context=getattr(self, "_last_install_context", {}) or {"filePath": file_path, "toolName": tool_name}
+                        )
+                        print(f"[SmartInstall] SQL operation retry exit: {op_exit}, err: {op_err}")
+                        _log_si(
+                            "OPERATION_RETRY",
+                            f"Original SQL operation retry {'succeeded' if op_exit == 0 else 'failed with exit code ' + str(op_exit)}",
+                            run_id=run_id,
+                            details={"exit_code": op_exit, "error": op_err, "resolved": (op_exit == 0)}
+                        )
+                        self.originalOperationRetried.emit(tool_name, (op_exit == 0), op_err)
 
                     if op_exit == 0:
                         ver_str = (v_stdout or v_stderr or "OK").splitlines()[0] if (v_stdout or v_stderr) else "OK"
@@ -4114,7 +4333,10 @@ class ExtensionManager(QObject):
 
                 op_exit_code = 0
                 op_stderr_str = ""
-                if retry_action == "format" and (install_exit == 0 and v_exit == 0):
+                if op_exit != 0:
+                    op_exit_code = op_exit
+                    op_stderr_str = op_err
+                elif retry_action == "format" and (install_exit == 0 and v_exit == 0):
                     op_exit_code = 1
                     op_stderr_str = "Operation failed during retry"
 
@@ -4680,3 +4902,930 @@ class ExtensionManager(QObject):
             })
         self.updateCheckCompleted.emit(result)
         return result
+
+    # =========================================================================
+    # GENERAL BACKGROUND SMART FIX & ERROR RECOVERY
+    # =========================================================================
+
+    @Slot(str, str, str, str, int, str, str, str, result="QVariantMap")
+    @Slot(str, str, str, str, int, str, str, result="QVariantMap")
+    @Slot(str, str, str, str, result="QVariantMap")
+    @Slot(str, str, result="QVariantMap")
+    def classify_workflow_failure(
+        self,
+        operation: str,
+        error_message: str,
+        stderr: str = "",
+        stdout: str = "",
+        exit_code: int = 1,
+        command: str = "",
+        file_path: str = "",
+        language: str = ""
+    ) -> dict:
+        """Classifies a workflow failure into one of 12 structured error categories."""
+        return self.classify_failure(
+            operation=operation,
+            error_message=error_message,
+            stderr=stderr,
+            stdout=stdout,
+            exit_code=exit_code,
+            command=command,
+            file_path=file_path,
+            language=language
+        )
+
+    @staticmethod
+    def classify_failure(
+        operation: str = "",
+        error_message: str = "",
+        stderr: str = "",
+        stdout: str = "",
+        exit_code: int = 1,
+        command: str = "",
+        file_path: str = "",
+        language: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Classifies an operational failure across 12 structured error categories:
+        1. timeout_or_cancellation
+        2. transient
+        3. permission_failure
+        4. network_failure
+        5. unsupported_runtime_version
+        6. syntax_error
+        7. test_failure
+        8. runtime_exception
+        9. invalid_configuration
+        10. missing_dependency
+        11. missing_or_incompatible_extension
+        12. unknown
+        """
+        combined = f"{operation} {command} {error_message} {stderr} {stdout}".lower()
+
+        # 1. Timeout or cancellation
+        if exit_code in (-2, 130, 124) or any(k in combined for k in ("timeoutexpired", "timed out", "operation timed out", "cancelled by user", "sigint", "keyboardinterrupt", "interrupted")):
+            return {
+                "category": "timeout_or_cancellation",
+                "likely_cause": "Process execution timed out or was interrupted by user",
+                "is_transient": True
+            }
+
+        # 2. Transient locks / environment
+        if "1618" in combined or any(k in combined for k in ("another installation is in progress", "resource temporarily unavailable", "ebusy", "file is locked", "port already in use")):
+            return {
+                "category": "transient",
+                "likely_cause": "Transient file lock or active concurrent process in progress",
+                "is_transient": True
+            }
+
+        # 3. Permission / privilege
+        if exit_code in (13, 126) or any(k in combined for k in ("permissionerror", "permission denied", "access is denied", "eacces", "operation not permitted", "requires elevation", "run as administrator")):
+            return {
+                "category": "permission_failure",
+                "likely_cause": "Permission or access rights denied by operating system",
+                "is_transient": False
+            }
+
+        # 4. Network / package-manager
+        if any(k in combined for k in ("connectionrefusederror", "socket.timeout", "connection timed out", "could not resolve host", "failed to fetch", "getaddrinfo failed", "network is unreachable", "etimedout", "enotfound", "temporary failure in name resolution")):
+            return {
+                "category": "network_failure",
+                "likely_cause": "Network connection unreachable, timeout, or DNS resolution failure",
+                "is_transient": True
+            }
+
+        # 5. Unsupported runtime version
+        if any(k in combined for k in ("unsupportedclassversionerror", "has been compiled by a more recent version of the java runtime", "requires java 21", "python 3.10+ required", "unsupported runtime", "unsupported version", "incompatible java version")):
+            return {
+                "category": "unsupported_runtime_version",
+                "likely_cause": "Installed runtime version does not meet minimum requirements for tool/program",
+                "is_transient": False
+            }
+
+        # 6. Syntax or compilation error
+        if any(k in combined for k in ("syntaxerror", "indentationerror", "expected ';'", "expected '}'", "unexpected token", "parse error", "syntax error:", "error: expected expression", "error: unknown type name", "cannot parse", "syntax error")):
+            return {
+                "category": "syntax_error",
+                "likely_cause": "Syntax or parse error in user code / source files",
+                "is_transient": False
+            }
+
+        # 7. Test failure / assertion
+        if operation in ("test", "pytest", "unittest") or "test" in command.lower() or any(k in combined for k in ("assertionerror", "failed (failures=", "test failed", "fail: test", "assertion failure", "failed (errors=", "tests failed")):
+            return {
+                "category": "test_failure",
+                "likely_cause": "Unit test or assertion condition failed in user program",
+                "is_transient": False
+            }
+
+        # 8. User-code runtime exception
+        if any(k in combined for k in ("zerodivisionerror", "indexerror", "keyerror", "attributeerror", "typeerror", "valueerror", "nullpointerexception", "segmentation fault", "core dumped", "panic!", "fatal error:", "traceback (most recent call last)")):
+            return {
+                "category": "runtime_exception",
+                "likely_cause": "Unhandled exception or crash in application logic",
+                "is_transient": False
+            }
+
+        # 9. Invalid configuration
+        if any(k in combined for k in ("invalidconfiguration", "configuration error", "invalid config", "missing required configuration", "bad option:", "unrecognized argument", "config error")):
+            return {
+                "category": "invalid_configuration",
+                "likely_cause": "Invalid configuration file, option, or missing setting",
+                "is_transient": False
+            }
+
+        # 10. Missing dependency / executable / runner
+        if any(k in combined for k in (
+            "command not found", "is not recognized as an internal or external command",
+            "no such file or directory", "modulenotfounderror", "importerror: no module named",
+            "executable file not found", "cannot find", "package was not found",
+            "not installed", "missing executable", "no runner configured", "no runner",
+            "missing runner", "no sql runner"
+        )):
+            return {
+                "category": "missing_dependency",
+                "likely_cause": "Required tool, executable, or runner is not installed or not in PATH",
+                "is_transient": False
+            }
+
+        return {
+            "category": "unknown",
+            "likely_cause": "Unclassified operational error",
+            "is_transient": False
+        }
+
+    @Slot(str, str, str, result="QVariantMap")
+    @Slot(str, str, result="QVariantMap")
+    @Slot(str, result="QVariantMap")
+    def find_compatible_marketplace_extension(self, tool_or_lang: str, file_ext: str = "", file_path: str = "") -> dict:
+        """
+        Checks whether a compatible extension exists in DGX Studio Extensions marketplace
+        or local installed extensions. Prefers activation of installed disabled extensions.
+        """
+        clean_t = (tool_or_lang or "").lower().strip()
+        clean_e = (file_ext or "").lower().strip()
+        if not clean_e and file_path:
+            clean_e = os.path.splitext(file_path)[1].lower()
+        if clean_e and not clean_e.startswith("."):
+            clean_e = f".{clean_e}"
+
+        cur_os = get_current_os()
+        cur_arch = platform.machine().lower()
+
+        # 1. Check if matching extension is already installed
+        for ext_id, ext in self._extensions.items():
+            entry = DGX_MARKETPLACE_EXTENSIONS.get(ext_id, {})
+            tools = [x.lower() for x in entry.get("tools", [])]
+            langs = [x.lower() for x in (ext.languages or entry.get("languages", []))]
+            exts = [x.lower() for x in (ext.extensions or entry.get("extensions", []))]
+
+            matches = (
+                clean_t in tools or
+                clean_t in langs or
+                (clean_e and clean_e in exts) or
+                clean_t in (ext_id.lower(), ext.name.lower())
+            )
+            if matches:
+                if not ext.enabled or ext_id in self._disabled_ids:
+                    return {
+                        "compatible": True,
+                        "action": "activate",
+                        "extension_id": ext_id,
+                        "name": ext.displayName or ext.name,
+                        "description": ext.description,
+                        "extension": ext.to_dict(),
+                        "entry": entry
+                    }
+                else:
+                    return {}
+
+        # 2. Check marketplace catalog
+        for ext_id, entry in DGX_MARKETPLACE_EXTENSIONS.items():
+            tools = [x.lower() for x in entry.get("tools", [])]
+            langs = [x.lower() for x in entry.get("languages", [])]
+            exts = [x.lower() for x in entry.get("extensions", [])]
+
+            matches = (
+                clean_t in tools or
+                clean_t in langs or
+                (clean_e and clean_e in exts) or
+                clean_t in (ext_id.lower(), entry.get("name", "").lower())
+            )
+            if matches:
+                supported_os = entry.get("supported_os", ["windows", "macos", "linux"])
+                supported_arch = entry.get("supported_arch", ["x86_64", "arm64", "amd64", "x86", "aarch64"])
+                os_ok = cur_os in supported_os or "all" in supported_os
+                arch_ok = any(a in cur_arch for a in supported_arch) or "all" in supported_arch
+
+                if os_ok and arch_ok:
+                    return {
+                        "compatible": True,
+                        "action": "install",
+                        "extension_id": ext_id,
+                        "name": entry["name"],
+                        "description": entry["description"],
+                        "entry": entry
+                    }
+
+        return {}
+
+    @Slot(str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, result=bool)
+    @Slot(str, str, str, result=bool)
+    @Slot(str, str, result=bool)
+    def execute_extension_recovery(
+        self,
+        extension_id: str,
+        action: str = "install",
+        tool_name: str = "",
+        retry_action: str = "",
+        file_path: str = ""
+    ) -> bool:
+        """
+        Executes extension installation or activation as part of background error recovery,
+        verifies the capability is available, and retries the original operation.
+        """
+        run_id = self._get_run_id(tool_name or extension_id)
+        _log_si(
+            "MARKETPLACE_EXECUTION",
+            f"Executing extension recovery: action='{action}', extension_id='{extension_id}'",
+            run_id=run_id,
+            details={"extension_id": extension_id, "action": action, "tool": tool_name, "retry_action": retry_action}
+        )
+        self.smartInstallProgress.emit(tool_name or extension_id, "installing", f"{'Enabling' if action in ('enable', 'activate') else 'Installing'} extension {extension_id}...")
+
+        success = False
+        msg = ""
+        if action in ("enable", "activate"):
+            success = self.toggle_extension(extension_id, True)
+            if success:
+                msg = f"Extension '{extension_id}' enabled successfully."
+            else:
+                msg = f"Failed to enable extension '{extension_id}'."
+        else:
+            ext_entry = DGX_MARKETPLACE_EXTENSIONS.get(extension_id, {})
+            folder_name = ext_entry.get("folder", extension_id.split(".")[-1]) if ext_entry else extension_id.split(".")[-1]
+            candidate_paths = [
+                os.path.join(self.built_in_dir, folder_name),
+                os.path.join(self.base_dir, "extensions", folder_name),
+            ]
+            ext_path = None
+            for cp in candidate_paths:
+                if os.path.isdir(cp):
+                    ext_path = cp
+                    break
+
+            if ext_path:
+                success = self.install_local_extension(ext_path)
+                if success:
+                    msg = f"Extension '{extension_id}' installed from marketplace."
+                else:
+                    msg = f"Failed to install extension package from {ext_path}."
+            else:
+                if extension_id in self._extensions:
+                    success = self.toggle_extension(extension_id, True)
+                    msg = f"Extension '{extension_id}' activated."
+                else:
+                    success = False
+                    msg = f"Extension '{extension_id}' not found in local marketplace repository."
+
+        _log_si(
+            "MARKETPLACE_EXECUTION",
+            f"Extension recovery outcome: success={success}, message='{msg}'",
+            run_id=run_id,
+            details={"success": success, "message": msg}
+        )
+
+        if not success:
+            self.smartInstallCompleted.emit(tool_name or extension_id, False, msg, retry_action)
+            return False
+
+        # Post-install verification: Verify extension is loaded and active
+        self.reload_extensions()
+        ext_obj = self.get_extension(extension_id)
+        if not ext_obj or not ext_obj.enabled:
+            err = f"Extension '{extension_id}' installed but not active."
+            self.smartInstallCompleted.emit(tool_name or extension_id, False, err, retry_action)
+            return False
+
+        # Now independently retry original operation if requested
+        if retry_action:
+            self.smartInstallProgress.emit(tool_name or extension_id, "retrying", "Retrying original operation...")
+            op_exit = 0
+            op_err = ""
+            if retry_action == "format":
+                op_exit, op_out, op_err = self.retry_formatting_operation(
+                    tool_name=tool_name,
+                    file_path=file_path,
+                    executable="",
+                    verified_path=""
+                )
+            elif retry_action in ("run", "build", "test", "compile"):
+                op_exit, op_out, op_err = self.retry_operation(
+                    operation=retry_action,
+                    command="",
+                    file_path=file_path
+                )
+
+            self.originalOperationRetried.emit(tool_name or extension_id, (op_exit == 0), op_err)
+            if op_exit == 0:
+                full_msg = f"{msg}\nOriginal {retry_action} operation succeeded!"
+                self.smartInstallCompleted.emit(tool_name or extension_id, True, full_msg, retry_action)
+                self.smartInstallPostInstallVerified.emit(tool_name or extension_id, "success", full_msg, retry_action, file_path, "")
+                return True
+            else:
+                full_err = f"{msg}, but original operation failed on retry: {op_err}"
+                self.smartInstallCompleted.emit(tool_name or extension_id, False, full_err, retry_action)
+                return False
+        else:
+            self.smartInstallCompleted.emit(tool_name or extension_id, True, msg, retry_action)
+            return True
+
+    def retry_operation(
+        self,
+        operation: str,
+        command: str = "",
+        file_path: str = "",
+        working_dir: str = "",
+        timeout: int = 30
+    ) -> Tuple[int, str, str]:
+        """
+        Executes a retry of the original failed operation (run, build, test, etc.)
+        and returns (exit_code, stdout, stderr).
+        """
+        cmd = command
+        cwd = working_dir
+        if not cwd and file_path and os.path.exists(file_path):
+            cwd = os.path.dirname(os.path.abspath(file_path))
+        if not cwd:
+            cwd = os.getcwd()
+
+        if not cmd and file_path:
+            ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+            runner = self.get_runner_for_extension(ext)
+            if runner and runner.get("command"):
+                cmd = runner["command"].replace("${filePath}", file_path)
+            elif ext == "py":
+                cmd = f'"{sys.executable}" "{file_path}"'
+            elif ext in ("js", "mjs"):
+                cmd = f'node "{file_path}"'
+            elif ext == "go":
+                cmd = f'go run "{file_path}"'
+            elif ext == "rs":
+                cmd = f'rustc "{file_path}" -o output.exe'
+
+        if not cmd:
+            return 1, "", f"No command available to retry {operation} operation."
+
+        print(f"[SmartInstall] Retrying original operation [{operation}]: {cmd} (cwd: {cwd})")
+        try:
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+            print(f"[SmartInstall] Retry exit code: {proc.returncode}")
+            return proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired:
+            return 124, "", f"Operation timed out after {timeout} seconds."
+        except Exception as e:
+            return 1, "", str(e)
+
+    def _diagnose_code_failure(self, category: str, error_msg: str, file_path: str = "", language: str = "") -> str:
+        """
+        Generates contextual code diagnosis for syntax, runtime, and test errors
+        without attempting to modify files or install tools.
+        """
+        if ExtensionManager._custom_ai_resolver and callable(ExtensionManager._custom_ai_resolver):
+            try:
+                diag_prompt = (
+                    f"Diagnose this {category} error concisely without suggesting tool installations:\n"
+                    f"File: {file_path}\n"
+                    f"Language: {language}\n"
+                    f"Error: {error_msg[:400]}\n"
+                    f"Provide: 1. Root cause. 2. Safe fix in code."
+                )
+                ai_diag = ExtensionManager._custom_ai_resolver(diag_prompt)
+                if ai_diag and ai_diag.strip():
+                    return ai_diag.strip()
+            except Exception:
+                pass
+
+        err_lower = error_msg.lower()
+        if "zerodivisionerror" in err_lower:
+            return "ZeroDivisionError: Division by zero encountered. Validate the divisor value before arithmetic operations."
+        if "indexerror" in err_lower:
+            return "IndexError: Sequence index out of range. Check list/array bounds before accessing elements."
+        if "keyerror" in err_lower:
+            return "KeyError: Key not found in mapping. Check dictionary keys or use .get() with a default value."
+        if "syntaxerror" in err_lower or "indentationerror" in err_lower:
+            return f"SyntaxError in {os.path.basename(file_path) if file_path else 'code'}: Check closing parentheses, indentation, or missing syntax tokens."
+        if "assertionerror" in err_lower or category == "test_failure":
+            return f"Assertion failure during testing: Test condition evaluated to False. Review expected vs actual test values."
+        if "nullpointerexception" in err_lower:
+            return "NullPointerException: Object reference is null. Ensure object is instantiated before dereferencing."
+
+        return f"{category.replace('_', ' ').title()}: {error_msg.strip()[:300]}"
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def diagnose_and_recover_workflow_failure(self, context: dict) -> dict:
+        """
+        AI-driven workflow failure recovery across all DGX Studio workflows.
+        Collects failure context, diagnoses with SmartEngine, and returns actionable proposal.
+        """
+        operation = context.get("operation") or "run"
+        tool_name = context.get("toolName") or context.get("executable") or ""
+        command = context.get("command") or context.get("commandAttempted") or ""
+        exit_code = context.get("exitCode", context.get("exit_code", 1))
+        error_msg = context.get("errorMessage") or context.get("stderr") or context.get("error_message") or ""
+        file_path = context.get("filePath") or context.get("file_path") or ""
+        language = (context.get("language") or context.get("languageId") or "").lower().strip()
+        retry_act = context.get("retryAction") or operation
+        run_id = context.get("runId") or f"sf_{int(time.time()*1000)%1000000}"
+        context["runId"] = run_id
+
+        # Deduplication check
+        fp = f"{operation}:{tool_name}:{command}:{exit_code}:{error_msg[:80]}"
+        now = time.time()
+        if hasattr(self, "_recent_failure_fingerprints"):
+            last_time = self._recent_failure_fingerprints.get(fp, 0)
+            if now - last_time < 5.0:
+                pass
+        else:
+            self._recent_failure_fingerprints = {}
+        self._recent_failure_fingerprints[fp] = now
+
+        # Add diagnostic hints to context without bypassing AI
+        classification = self.classify_failure(
+            operation=operation,
+            error_message=error_msg,
+            stderr=context.get("stderr", ""),
+            stdout=context.get("stdout", ""),
+            exit_code=exit_code,
+            command=command,
+            file_path=file_path,
+            language=language
+        )
+        context["category"] = classification.get("category", "unknown")
+        context["likelyCause"] = classification.get("likely_cause", "")
+
+        # AI-driven recovery resolution
+        proposal = self.resolve_smart_install_context(context)
+        proposal = self._attach_command_recovery_session_if_needed(context, proposal)
+        return proposal
+
+    @Slot("QVariantMap")
+    def start_background_workflow_recovery(self, context: dict):
+        """Dispatches workflow failure diagnosis and recovery to a background worker thread."""
+        def _worker():
+            try:
+                self.diagnose_and_recover_workflow_failure(context)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[SmartInstall] Background workflow recovery error: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(str, str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, result=bool)
+    @Slot(str, str, str, result=bool)
+    def execute_smart_fix(
+        self,
+        fix_type: str,
+        target_id: str,
+        command: str = "",
+        retry_action: str = "",
+        file_path: str = "",
+        run_id: str = ""
+    ) -> bool:
+        """
+        Executes a user-approved Smart Fix action:
+        - "extension_install" / "extension_activate"
+        - "command"
+        - "runtime_config"
+        """
+        if fix_type in ("extension_install", "extension_activate"):
+            action = "activate" if fix_type == "extension_activate" else "install"
+            return self.execute_extension_recovery(target_id, action, target_id, retry_action, file_path)
+        elif fix_type == "runtime_config":
+            if target_id == "java" or "google-java-format" in target_id.lower():
+                compat = find_compatible_jdk(min_version=21)
+                if compat:
+                    self.set_tool_runtime_config(target_id, {
+                        "JAVA_HOME": compat["path"],
+                        "java_path": compat["java_exe"],
+                        "version": compat.get("version", "21+")
+                    })
+                    if retry_action == "format":
+                        op_exit, op_out, op_err = self.retry_formatting_operation(
+                            tool_name=target_id,
+                            file_path=file_path,
+                            executable="",
+                            verified_path=""
+                        )
+                        self.originalOperationRetried.emit(target_id, (op_exit == 0), op_err)
+                        self.smartInstallCompleted.emit(target_id, (op_exit == 0), "Runtime configured.", retry_action)
+                        return op_exit == 0
+            return True
+        else:
+            return self.execute_smart_install_command(target_id, command, target_id, retry_action, file_path)
+
+    # =============================================================================
+    # AI COMMAND PLANNING & EXECUTION TRACKING
+    # =============================================================================
+
+    def _query_ai_backend(self, prompt: str) -> Tuple[bool, str, str]:
+        """
+        Reuses existing AI backend pipeline to query the model.
+        Returns: (success: bool, response_text: str, error_msg: str)
+        """
+        response_text = ""
+        error_msg = ""
+        
+        # 1. Custom AI resolver (used by tests or custom providers)
+        if ExtensionManager._custom_ai_resolver and callable(ExtensionManager._custom_ai_resolver):
+            try:
+                response_text = ExtensionManager._custom_ai_resolver(prompt)
+                if response_text:
+                    return True, response_text, ""
+            except Exception as e:
+                error_msg = str(e)
+                
+        # 2. AIBackend instance
+        if not response_text:
+            try:
+                from AIBackend import AIBackend
+                ai_backend = self.ai_backend or AIBackend.get_instance()
+                if ai_backend:
+                    response_text = ai_backend.ask(prompt)
+                    if response_text:
+                        return True, response_text, ""
+            except Exception as ex:
+                if not error_msg:
+                    error_msg = str(ex)
+                    
+        # 3. ChatGPTClient
+        if not response_text:
+            try:
+                from CustomApi import ChatGPTClient
+                client = ChatGPTClient(headless=True)
+                if hasattr(client, "is_connected") and client.is_connected:
+                    response_text = client.ask(prompt, timeout=15)
+                    if response_text:
+                        return True, response_text, ""
+            except Exception as ex:
+                if not error_msg:
+                    error_msg = str(ex)
+
+        if response_text:
+            return True, response_text, ""
+        return False, "", error_msg or "AI backend returned empty response or is unavailable."
+
+    def _create_fallback_commands(self, proposal: dict, context: dict) -> List[dict]:
+        """
+        Generates safe, deterministic fallback commands when AI planner is offline or unavailable.
+        """
+        cmd_str = proposal.get("command", "")
+        tool_name = context.get("toolName") or context.get("executable") or "tool"
+        v_cmd = proposal.get("verifyCommand") or f"{tool_name} --version"
+        commands = []
+        if v_cmd:
+            commands.append({
+                "command": v_cmd,
+                "purpose": f"Check if {tool_name} is already available and verified",
+                "requires_approval": False,
+                "expected_result": "Version string printed",
+                "failure_handling": "continue"
+            })
+        if cmd_str:
+            commands.append({
+                "command": cmd_str,
+                "purpose": f"Install {tool_name}",
+                "requires_approval": True,
+                "expected_result": "Exit code 0",
+                "failure_handling": "abort"
+            })
+        if v_cmd and cmd_str:
+            commands.append({
+                "command": v_cmd,
+                "purpose": f"Verify {tool_name} after installation",
+                "requires_approval": False,
+                "expected_result": "Version string printed",
+                "failure_handling": "abort"
+            })
+        return commands
+
+    def _build_ai_command_planner_prompt(self, session: RecoverySession, proposal: Optional[dict] = None) -> str:
+        ctx = session.context
+        tool_name = ctx.get("toolName") or ctx.get("executable") or "tool"
+        op = ctx.get("operation", "operation")
+        cat = ctx.get("category", "missing_dependency")
+        err = ctx.get("error_message") or ctx.get("stderr") or ""
+        
+        history_str = ""
+        if session.command_history:
+            history_items = [c.format_result() for c in session.command_history]
+            history_str = "\n\n".join(history_items)
+        else:
+            history_str = "(No commands executed yet)"
+
+        user_decisions_str = ""
+        if session.user_decisions:
+            user_decisions_str = "\n".join([f"- {k}: {v}" for k, v in session.user_decisions.items()])
+        else:
+            user_decisions_str = "(No prior user decisions)"
+
+        prop_info = f"{proposal.get('title', '')} - {proposal.get('explanation', '')}" if proposal else "Recovery strategy in progress"
+
+        prompt = f"""You are DGX Studio's AI Command Planner and Error Recovery Engine.
+Your job is to analyze the operational failure and propose a structured sequence of safe, individual commands to diagnose, install, configure, or verify developer tools and dependencies.
+
+CONTEXT:
+Operation: {op}
+Tool: {tool_name}
+Category: {cat}
+Error: {err}
+Initial Strategy: {prop_info}
+Current OS: {get_current_os()}
+Available Command Budget Remaining: {session.commands_remaining} / {session.maximum_commands}
+
+USER DECISIONS AND CLARIFICATIONS:
+{user_decisions_str}
+
+PREVIOUS EXECUTED COMMANDS AND ACTUAL RESULTS:
+{history_str}
+
+RULES:
+1. One command execution equals one step. Do NOT combine multiple commands using '&&', ';', '|', or shell scripts.
+2. Propose AT MOST 4 commands in a single batch.
+3. Only batch commands that are safe to propose together without assuming unverified outcomes.
+   - Check availability or version first.
+   - Installing a missing tool requires user approval and depends on whether it is actually missing.
+   - Verification depends on the installation result.
+4. Mark 'requires_approval: true' for any command that installs packages, modifies system files, or changes environment settings. Mark 'requires_approval: false' for harmless query/read commands (like --version or which).
+5. If clarification or user choice is needed (e.g. ambiguous toolchain, missing configuration, multiple recovery strategies), set 'needs_user_decision: true' and provide a structured 'decision_request' object:
+   {{
+     "question": "The question to ask the user",
+     "why_necessary": "Why this choice is necessary",
+     "choices": ["Choice 1", "Choice 2"],
+     "allow_custom_answer": true,
+     "resume_key": "parameter_name"
+   }}
+6. If the issue is already resolved (e.g. verified tool is working), set 'recovery_complete: true' and provide 'final_report'.
+7. If recovery cannot proceed with available information or capabilities, set 'cannot_resolve: true' and provide 'final_report'.
+8. If no more commands are needed or can be run, set 'recovery_complete: true' and provide 'final_report'.
+
+RESPONSE FORMAT (JSON ONLY, NO MARKDOWN OUTSIDE JSON):
+{{
+  "plan_changed": true,
+  "proposed_total_steps": 3,
+  "commands": [
+    {{
+      "command": "{tool_name} --version",
+      "purpose": "Check if {tool_name} is already installed on PATH",
+      "requires_approval": false,
+      "expected_result": "Version printed",
+      "failure_handling": "continue"
+    }}
+  ],
+  "needs_user_decision": false,
+  "decision_request": null,
+  "cannot_resolve": false,
+  "recovery_complete": false,
+  "final_report": ""
+}}
+"""
+        return prompt
+
+    def create_recovery_session(self, context: dict, maximum_commands: int = 10) -> RecoverySession:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        session = self._smart_engine.create_session(context, maximum_commands=maximum_commands)
+        self._recovery_sessions[session.session_id] = session
+        self._active_recovery_session_id = session.session_id
+        return session
+
+    def query_ai_command_plan(self, session: RecoverySession, proposal: Optional[dict] = None) -> Tuple[bool, dict, str]:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        prompt = build_smart_prompt(session, session.context)
+        success, response_text, err = self._smart_engine._query_ai(prompt)
+        if not success or not response_text:
+            return False, {}, err or "AI service returned empty response"
+        ok, parsed, p_err = parse_smart_response(response_text, fallback_tool=session.context.get("toolName", ""))
+        return ok, parsed, p_err
+
+    def start_command_recovery_session(
+        self,
+        context: dict,
+        proposal: Optional[dict] = None,
+        maximum_commands: int = 10
+    ) -> RecoverySession:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        session = self.create_recovery_session(context, maximum_commands=maximum_commands)
+        if proposal:
+            if proposal.get("needs_user_decision") or proposal.get("status") == "awaiting_user_decision":
+                session.status = "awaiting_user_decision"
+                session.decision_request = proposal.get("decision_request")
+            elif proposal.get("commands"):
+                session.accept_new_batch(proposal["commands"], proposal.get("proposed_total_steps"))
+                first_cmd = session.active_batch[0] if session.active_batch else None
+                if first_cmd and first_cmd.requires_approval and not first_cmd.approved:
+                    session.status = "awaiting_approval"
+                    session.waiting_for_approval_cmd = first_cmd
+                else:
+                    session.status = "ready"
+            elif proposal.get("cannot_resolve"):
+                session.status = "cannot_resolve"
+                session.final_report = proposal.get("final_report", "Cannot resolve.")
+        self.recoveryPlanUpdated.emit(session.to_dict())
+        return session
+
+    def execute_session_command(
+        self,
+        session_id: str,
+        command_id: str,
+        executor_fn: Optional[Callable] = None
+    ) -> Tuple[bool, str]:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        return self._smart_engine.execute_session_action(session_id, command_id)
+
+    @Slot(str, str, result=bool)
+    def approve_recovery_command(self, session_id: str, command_id: str, executor_fn=None) -> bool:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        return self._smart_engine.approve_action(session_id, command_id)
+
+    @Slot(str, result=bool)
+    def replan_recovery_session(self, session_id: str, executor_fn=None) -> bool:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        return self._smart_engine.replan_session(session_id)
+
+    @Slot(str, str, result=bool)
+    @Slot(str, str, str, result=bool)
+    def submit_user_decision(self, session_id: str, decision: str, key: str = "", executor_fn=None) -> bool:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        return self._smart_engine.submit_user_decision(session_id, decision, key)
+
+    @Slot(str, result=bool)
+    def step_recovery_session(self, session_id: str, executor_fn=None) -> bool:
+        session = self._recovery_sessions.get(session_id)
+        if not session or not session.active_batch:
+            return False
+        first_act = session.active_batch[0]
+        if first_act.requires_approval and not first_act.approved:
+            session.status = "awaiting_approval"
+            session.waiting_for_approval_cmd = first_act
+            self.recoveryPlanUpdated.emit(session.to_dict())
+            return False
+        success, _ = self.execute_session_command(session_id, first_act.action_id, executor_fn=executor_fn)
+        return success
+
+    @Slot(str, result=bool)
+    def execute_recovery_plan(self, session_id: str, executor_fn=None) -> bool:
+        if not hasattr(self, "_smart_engine") or self._smart_engine is None:
+            self._smart_engine = SmartEngine(extension_manager=self)
+            self._recovery_sessions = self._smart_engine._sessions
+        return self._smart_engine.execute_plan(session_id)
+
+    @Slot(str, result=bool)
+    def cancel_recovery_session(self, session_id: str) -> bool:
+        session = self._recovery_sessions.get(session_id)
+        if not session:
+            return False
+        session.status = "cancelled"
+        session.final_report = "Recovery session cancelled by user."
+        self.recoverySessionEnded.emit(session_id, False, session.final_report)
+        self.recoveryPlanUpdated.emit(session.to_dict())
+        return True
+
+    @Slot(str, result="QVariantMap")
+    def get_recovery_session(self, session_id: str) -> dict:
+        """Returns the dictionary representation of a recovery session."""
+        session = self._recovery_sessions.get(session_id) or (self._smart_engine.get_session(session_id) if hasattr(self, "_smart_engine") and self._smart_engine else None)
+        return session.to_dict() if session else {}
+
+    @Slot(result=list)
+    def get_marketplace_extensions(self) -> list:
+        """Returns the list of DGX Studio marketplace catalog extensions."""
+        return list(DGX_MARKETPLACE_EXTENSIONS.values())
+
+
+# =============================================================================
+# DGX STUDIO EXTENSIONS MARKETPLACE CATALOG
+# =============================================================================
+DGX_MARKETPLACE_EXTENSIONS: Dict[str, Dict[str, Any]] = {
+    "dgx.python": {
+        "id": "dgx.python",
+        "name": "Python Language Extension",
+        "version": "1.0.0",
+        "description": "Python language support, interpreter configuration, and PEP 8 formatters (autopep8, black, ruff).",
+        "author": "DGX Studio",
+        "languages": ["python"],
+        "extensions": [".py", ".pyw"],
+        "tools": ["python", "autopep8", "black", "ruff", "pip", "pytest"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "python"
+    },
+    "dgx.cpp": {
+        "id": "dgx.cpp",
+        "name": "C/C++ Language Extension",
+        "version": "1.0.0",
+        "description": "C and C++ language support, compiler integrations (g++, gcc, clang), and clang-format provider.",
+        "author": "DGX Studio",
+        "languages": ["c", "cpp", "c++", "cuda"],
+        "extensions": [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".cu"],
+        "tools": ["clang-format", "g++", "gcc", "clang", "clang++", "make", "cmake"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "cpp"
+    },
+    "dgx.rust": {
+        "id": "dgx.rust",
+        "name": "Rust Language Extension",
+        "version": "1.0.0",
+        "description": "Rust language support, cargo runner, rustc compiler integration, and rustfmt formatter.",
+        "author": "DGX Studio",
+        "languages": ["rust"],
+        "extensions": [".rs"],
+        "tools": ["rustfmt", "rustc", "cargo"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "rust"
+    },
+    "dgx.go": {
+        "id": "dgx.go",
+        "name": "Go Language Extension",
+        "version": "1.0.0",
+        "description": "Go language support, go build/run integration, and gofmt provider.",
+        "author": "DGX Studio",
+        "languages": ["go"],
+        "extensions": [".go"],
+        "tools": ["go", "gofmt"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "go"
+    },
+    "dgx.javascript": {
+        "id": "dgx.javascript",
+        "name": "JavaScript / TypeScript Extension",
+        "version": "1.0.0",
+        "description": "JavaScript & TypeScript runtimes (Node.js, npx tsx) and Prettier code formatting.",
+        "author": "DGX Studio",
+        "languages": ["javascript", "typescript", "jsx", "tsx"],
+        "extensions": [".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"],
+        "tools": ["node", "npx", "npm", "prettier", "tsx"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "javascript"
+    },
+    "dgx.json": {
+        "id": "dgx.json",
+        "name": "JSON Language Extension",
+        "version": "1.0.0",
+        "description": "JSON formatting and validation.",
+        "author": "DGX Studio",
+        "languages": ["json"],
+        "extensions": [".json"],
+        "tools": [],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "json"
+    },
+    "dgx.qml": {
+        "id": "dgx.qml",
+        "name": "QML Language Extension",
+        "version": "1.0.0",
+        "description": "Qt Quick / QML language support and qmlformat.",
+        "author": "DGX Studio",
+        "languages": ["qml"],
+        "extensions": [".qml"],
+        "tools": ["qmlformat", "qmlscene"],
+        "supported_os": ["windows", "macos", "linux"],
+        "supported_arch": ["x86_64", "arm64", "amd64", "x86", "aarch64"],
+        "folder": "qml"
+    }
+}
+
+classify_failure = ExtensionManager.classify_failure
+
+__all__ = [
+    "ExtensionManager",
+    "CommandRecord",
+    "RecoverySession",
+    "validate_ai_plan_response",
+    "classify_failure",
+    "DGX_MARKETPLACE_EXTENSIONS"
+]
+
+

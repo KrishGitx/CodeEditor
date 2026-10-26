@@ -21,6 +21,8 @@ Rectangle {
     property string verifyCommand: ""
     property string sourceKind: "ai" // "ai", "built_in_recipe", "ai_unavailable"
     property string resolutionType: "single_command" // "single_command", "complex_setup", "cannot_resolve"
+    property string actionType: "" // "extension_install", "extension_activate", "command", "runtime_config", "code_diagnosis"
+    property string extensionId: ""
     property string retryAction: ""
     property string targetFilePath: ""
     property string targetLanguageId: ""
@@ -45,6 +47,20 @@ Rectangle {
     property bool originalRetrySucceeded: false
     property string originalRetryError: ""
 
+    // AI Command Planning & Recovery Session properties
+    property var recoveryPlan: []
+    property string recoverySessionId: ""
+    property int recoveryTotalSteps: 0
+    property int recoveryCommandsExecuted: 0
+    property int recoveryCommandsRemaining: 10
+    property string recoveryTotalStepsDisplay: ""
+    property string recoveryStatus: ""
+    property string recoveryFinalReport: ""
+    property var pendingApprovalCommand: null
+    property var userDecisionRequest: null
+    property string selectedDecisionChoice: ""
+    property string customDecisionText: ""
+
     signal confirmed(string toolName, string command, string executable, string retryAction, string filePath, string verifyCommand)
     signal cancelled()
     signal retryRequested(string action, string filePath, string langId)
@@ -56,6 +72,13 @@ Rectangle {
 
     function setDialogState(newState) {
         var oldState = root.dialogState;
+        // Guard: Do not allow transitioning from awaiting_user_decision to cannot_resolve while a user decision request is active
+        if (oldState === "awaiting_user_decision" && newState === "cannot_resolve") {
+            if (root.userDecisionRequest || root.recoveryStatus === "awaiting_user_decision") {
+                console.log("[SmartInstall] Preserved awaiting_user_decision state; ignoring premature transition to cannot_resolve");
+                return;
+            }
+        }
         if (oldState !== newState) {
             root.dialogState = newState;
             console.log("[SmartInstall] Dialog state transition: " + oldState + " -> " + newState);
@@ -110,46 +133,7 @@ Rectangle {
 
         function onSmartInstallResolved(proposal) {
             if (!proposal) return;
-            root.toolName = proposal.toolName || root.toolName;
-            root.toolType = proposal.toolType || root.toolType;
-            root.titleText = proposal.title || ("Install " + root.toolName);
-            root.executableName = proposal.executable || root.executableName;
-            root.descriptionText = proposal.description || proposal.explanation || "";
-            root.diagnosisText = proposal.diagnosis || "";
-            root.explanationText = proposal.explanation || proposal.description || "";
-            root.proposedCommand = proposal.command || "";
-            root.proposedSteps = proposal.steps || [];
-            root.verifyCommand = proposal.verifyCommand || "";
-            root.sourceKind = proposal.source || "ai";
-            root.resolutionType = proposal.resolutionType || "single_command";
-            root.retryAction = proposal.retryAction || root.retryAction;
-            root.targetFilePath = proposal.filePath || root.targetFilePath;
-            root.targetLanguageId = proposal.languageId || root.targetLanguageId;
-            root.officialUrl = proposal.officialUrl || proposal.downloadUrl || "";
-            root.downloadUrl = proposal.downloadUrl || proposal.officialUrl || "";
-            root.actionRequired = proposal.actionRequired || "";
-            root.resumeNote = proposal.resumeNote || "";
-            root.isInstalling = false;
-
-            if (root.sourceKind === "ai_unavailable") {
-                root.failureReason = root.explanationText || "AI provider unavailable";
-                root.setDialogState("ai_unavailable");
-            } else if (root.resolutionType === "manual_installation_required") {
-                root.setDialogState("manual_installation_required");
-            } else if (root.resolutionType === "cannot_resolve") {
-                root.setDialogState("cannot_resolve");
-            } else if (root.resolutionType === "complex_setup") {
-                root.setDialogState("complex_setup");
-            } else if (root.resolutionType === "single_command") {
-                root.setDialogState("single_command");
-            } else {
-                root.setDialogState(root.proposedCommand ? "single_command" : "cannot_resolve");
-            }
-
-            console.log("[SmartInstall] Resolution received");
-            console.log("[SmartInstall] Source:", root.sourceKind);
-            console.log("[SmartInstall] Resolution type:", root.resolutionType);
-            console.log("[SmartInstall] Command availability:", (root.proposedCommand && root.proposedCommand.length > 0));
+            openProposal(proposal);
         }
 
         function onSmartInstallAnalysisFailed(name, reason) {
@@ -228,6 +212,57 @@ Rectangle {
             } else {
                 root.originalRetryError = errorMsg || "Operation failed on retry.";
                 root.setDialogState("retry_failed");
+            }
+        }
+
+        function onRecoveryPlanUpdated(sessionData) {
+            if (!sessionData) return;
+            root.recoverySessionId = sessionData.sessionId || sessionData.session_id || root.recoverySessionId;
+            root.recoveryTotalSteps = sessionData.total_steps || sessionData.totalSteps || root.recoveryTotalSteps;
+            root.recoveryCommandsExecuted = (sessionData.actual_commands_executed !== undefined) ? sessionData.actual_commands_executed : ((sessionData.actualCommandsExecuted !== undefined) ? sessionData.actualCommandsExecuted : root.recoveryCommandsExecuted);
+            root.recoveryCommandsRemaining = (sessionData.commands_remaining !== undefined) ? sessionData.commands_remaining : ((sessionData.commandsRemaining !== undefined) ? sessionData.commandsRemaining : root.recoveryCommandsRemaining);
+            if (sessionData.total_steps_display || sessionData.totalStepsDisplay) {
+                root.recoveryTotalStepsDisplay = sessionData.total_steps_display || sessionData.totalStepsDisplay;
+            }
+            root.recoveryStatus = sessionData.status || root.recoveryStatus;
+            root.recoveryPlan = sessionData.active_batch || sessionData.commands || sessionData.command_history || [];
+            root.pendingApprovalCommand = sessionData.waiting_for_approval_cmd || sessionData.waitingForApprovalCommand || null;
+            root.userDecisionRequest = sessionData.decision_request || sessionData.decisionRequest || null;
+            if (root.userDecisionRequest && (root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice) && !root.selectedDecisionChoice) {
+                root.selectedDecisionChoice = root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice;
+            }
+            if (sessionData.final_report || sessionData.finalReport) {
+                root.recoveryFinalReport = sessionData.final_report || sessionData.finalReport;
+            }
+
+            // Sync dialog state to the authoritative recovery session status
+            if (root.recoveryStatus) {
+                if (root.recoveryStatus === "planning") {
+                    root.setDialogState("analyzing");
+                    root.statusMessage = "AI is formulating recovery plan...";
+                } else {
+                    root.setDialogState(root.recoveryStatus);
+                }
+            }
+        }
+
+        function onRecoveryCommandStarted(sessionId, cmdId, cmd) {
+            root.statusMessage = "Executing " + cmdId + ": " + cmd;
+            root.installLogs += ("[START] " + cmdId + ": " + cmd + "\n");
+        }
+
+        function onRecoveryCommandCompleted(sessionId, cmdId, exitCode, formattedOutput) {
+            root.installLogs += (formattedOutput + "\n\n");
+        }
+
+        function onRecoverySessionEnded(sessionId, success, finalReport) {
+            root.recoveryFinalReport = finalReport || "";
+            if (success) {
+                root.setDialogState("success");
+                root.statusMessage = finalReport || "Recovery session succeeded.";
+            } else {
+                root.setDialogState("failed");
+                root.statusMessage = finalReport || "Recovery session completed.";
             }
         }
     }
@@ -448,7 +483,7 @@ Rectangle {
                     }
                 }
 
-                Item { Layout.fillHeight: true; visible: root.dialogState === "ready" }
+                Item { Layout.fillHeight: true; visible: root.dialogState === "ready" && root.recoverySessionId.length === 0 }
             }
 
             // =================================================================
@@ -457,7 +492,7 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.dialogState === "single_command" || root.dialogState === "complex_setup" || root.dialogState === "cannot_resolve" || root.dialogState === "ai_unavailable"
+                visible: root.dialogState === "single_command" || root.dialogState === "complex_setup" || root.dialogState === "cannot_resolve" || root.dialogState === "ai_unavailable" || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoverySessionId.length > 0)
                 spacing: 10
 
                 // Diagnosis Card
@@ -599,68 +634,118 @@ Rectangle {
                     }
                 }
 
-                // Complex Setup Steps Display
+                // Clean Automated Recovery Plan Card (Steps and budget hidden at backend)
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    visible: root.dialogState === "complex_setup"
-                    spacing: 4
-
-                    Text {
-                        text: "Setup plan (multiple steps required):"
-                        color: theme ? theme.textSecondary : "#cccccc"
-                        font.pixelSize: 11
-                        font.bold: true
-                    }
+                    visible: root.dialogState === "complex_setup" || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoverySessionId.length > 0)
+                    spacing: 8
 
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        radius: 4
+                        radius: 6
                         color: theme ? theme.bgInput : "#0d0d0d"
                         border.color: theme ? theme.borderNormal : "#333333"
                         border.width: 1
 
-                        ScrollView {
+                        ColumnLayout {
                             anchors.fill: parent
-                            anchors.margins: 8
-                            clip: true
+                            anchors.margins: 14
+                            spacing: 12
 
-                            ColumnLayout {
-                                width: parent.width
-                                spacing: 6
+                            RowLayout {
+                                spacing: 8
+                                Rectangle {
+                                    width: 24
+                                    height: 24
+                                    radius: 12
+                                    color: "#38bdf820"
+                                    border.color: "#38bdf8"
+                                    border.width: 1
+                                    VectorIcon {
+                                        anchors.centerIn: parent
+                                        name: "check"
+                                        size: 12
+                                        color: "#38bdf8"
+                                    }
+                                }
+                                Text {
+                                    text: "Automated Recovery Solution Ready"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
 
-                                Repeater {
-                                    model: (root.proposedSteps && root.proposedSteps.length > 0) ? root.proposedSteps : (root.proposedCommand ? root.proposedCommand.split("\n") : [])
-                                    delegate: RowLayout {
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                text: root.explanationText || root.descriptionText || "Smart AI has diagnosed the issue and generated a recovery solution. Click Execute Recovery to apply it automatically."
+                                color: theme ? theme.textSecondary : "#94a3b8"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 34
+                                radius: 4
+                                color: theme ? theme.bgSurface : "#18181b"
+                                border.color: theme ? theme.borderSubtle : "#27272a"
+                                border.width: 1
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 8
+                                    spacing: 8
+                                    VectorIcon {
+                                        name: "settings"
+                                        size: 13
+                                        color: theme ? theme.accent : "#38bdf8"
+                                    }
+                                    Text {
                                         Layout.fillWidth: true
-                                        spacing: 8
-                                        Rectangle {
-                                            width: 18
-                                            height: 18
-                                            radius: 9
-                                            color: (theme ? theme.accent : "#0078d4") + "30"
-                                            Text {
-                                                anchors.centerIn: parent
-                                                text: (index + 1)
-                                                color: theme ? theme.accent : "#38bdf8"
-                                                font.pixelSize: 10
-                                                font.bold: true
-                                            }
-                                        }
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: modelData
-                                            color: theme ? theme.textPrimary : "#e2e8f0"
-                                            font.pixelSize: 11
-                                            font.family: theme ? theme.fontFamilyMono : "monospace"
-                                            wrapMode: Text.WordWrap
-                                        }
+                                        text: "Actions execute automatically in sequence. Any errors are diagnosed directly by AI."
+                                        color: theme ? theme.textMuted : "#71717a"
+                                        font.pixelSize: 10
                                     }
                                 }
                             }
                         }
                     }
+
+                                // Final Report Box
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: root.recoveryFinalReport.length > 0
+                                    color: "#10b98115"
+                                    radius: 4
+                                    border.color: "#10b98160"
+                                    border.width: 1
+                                    Layout.topMargin: 8
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        spacing: 4
+
+                                        Text {
+                                            text: "FINAL RECOVERY REPORT"
+                                            color: "#10b981"
+                                            font.bold: true
+                                            font.pixelSize: 11
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: root.recoveryFinalReport
+                                            color: theme ? theme.textPrimary : "#e2e8f0"
+                                            font.pixelSize: 11
+                                            wrapMode: Text.WordWrap
+                                        }
+                                    }
+                                }
                 }
 
                 // Cannot Resolve / AI Unavailable Message Box
@@ -717,6 +802,289 @@ Rectangle {
                 }
 
                 Item { Layout.fillHeight: true; visible: root.dialogState === "single_command" }
+            }
+
+            // =================================================================
+            // 3b. STATE: AWAITING USER DECISION (Generic Interactive Clarification)
+            // =================================================================
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: root.dialogState === "awaiting_user_decision"
+                spacing: 10
+
+                // Header / Question Card
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: userDecCol.implicitHeight + 20
+                    radius: 6
+                    color: theme ? theme.bgPanel : "#141414"
+                    border.color: theme ? theme.accent : "#0284c7"
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: userDecCol
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            VectorIcon {
+                                name: "question"
+                                size: 16
+                                color: theme ? theme.accent : "#38bdf8"
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: (root.userDecisionRequest && root.userDecisionRequest.question) ? root.userDecisionRequest.question : (root.titleText || "Clarification Required")
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 12
+                                font.bold: true
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Rectangle {
+                                height: 18
+                                width: decisionBadgeText.implicitWidth + 12
+                                radius: 9
+                                color: "#0284c725"
+                                border.color: "#0284c7"
+                                border.width: 1
+
+                                Text {
+                                    id: decisionBadgeText
+                                    anchors.centerIn: parent
+                                    text: "User Decision"
+                                    color: "#38bdf8"
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: (root.userDecisionRequest && (root.userDecisionRequest.why_necessary || root.userDecisionRequest.whyNecessary)) ? (root.userDecisionRequest.why_necessary || root.userDecisionRequest.whyNecessary) : (root.explanationText || root.diagnosisText || "Please choose one of the available options to resume automated recovery.")
+                            color: theme ? theme.textSecondary : "#94a3b8"
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                // Choices Selection Area
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 4
+                    color: theme ? theme.bgInput : "#0d0d0d"
+                    border.color: theme ? theme.borderNormal : "#333333"
+                    border.width: 1
+
+                    ScrollView {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        clip: true
+
+                        ColumnLayout {
+                            width: parent.width
+                            spacing: 8
+
+                            Text {
+                                text: "Select an option:"
+                                color: theme ? theme.textSecondary : "#94a3b8"
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+
+                            Repeater {
+                                model: (root.userDecisionRequest && (root.userDecisionRequest.choices || root.userDecisionRequest.options)) ? (root.userDecisionRequest.choices || root.userDecisionRequest.options) : []
+                                delegate: Rectangle {
+                                    Layout.fillWidth: true
+                                    height: 36
+                                    radius: 4
+                                    color: {
+                                        var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                        if (root.selectedDecisionChoice === optVal) {
+                                            return theme ? theme.bgSurfaceActive : "#1e3a5f";
+                                        }
+                                        return choiceMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#18181b") : (theme ? theme.bgPanel : "#141414");
+                                    }
+                                    border.color: {
+                                        var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                        return (root.selectedDecisionChoice === optVal) ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.borderSubtle : "#27272a");
+                                    }
+                                    border.width: 1
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        spacing: 10
+
+                                        Rectangle {
+                                            width: 14
+                                            height: 14
+                                            radius: 7
+                                            border.color: {
+                                                var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                                return (root.selectedDecisionChoice === optVal) ? (theme ? theme.accent : "#38bdf8") : "#71717a";
+                                            }
+                                            border.width: 2
+                                            color: "transparent"
+
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 6
+                                                height: 6
+                                                radius: 3
+                                                color: theme ? theme.accent : "#38bdf8"
+                                                visible: {
+                                                    var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                                    return root.selectedDecisionChoice === optVal;
+                                                }
+                                            }
+                                        }
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: (typeof modelData === "object" && modelData !== null) ? (modelData.label || modelData.value || "") : String(modelData)
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 11
+                                            font.bold: {
+                                                var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                                return root.selectedDecisionChoice === optVal;
+                                            }
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: choiceMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            var optVal = (typeof modelData === "object" && modelData !== null) ? (modelData.value || modelData.label || "") : String(modelData);
+                                            root.selectedDecisionChoice = optVal;
+                                            root.customDecisionText = "";
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Optional Custom Answer Input
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+                                visible: (root.userDecisionRequest && (root.userDecisionRequest.allow_custom_answer || root.userDecisionRequest.allowCustomAnswer)) !== false
+
+                                Text {
+                                    text: "Or enter custom answer / configuration:"
+                                    color: theme ? theme.textMuted : "#71717a"
+                                    font.pixelSize: 10
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: 32
+                                    radius: 4
+                                    color: theme ? theme.bgSurface : "#18181b"
+                                    border.color: customInput.activeFocus ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.borderSubtle : "#3f3f46")
+                                    border.width: 1
+
+                                    TextInput {
+                                        id: customInput
+                                        anchors.fill: parent
+                                        anchors.margins: 6
+                                        color: theme ? theme.textBright : "#ffffff"
+                                        font.pixelSize: 11
+                                        text: root.customDecisionText
+                                        onTextChanged: {
+                                            root.customDecisionText = text;
+                                            if (text.length > 0) {
+                                                root.selectedDecisionChoice = "";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =================================================================
+            // 3c. STATE: LIMIT REACHED / CANCELLED
+            // =================================================================
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: root.dialogState === "limit_reached" || root.dialogState === "cancelled"
+                spacing: 12
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 40
+                    radius: 4
+                    color: (root.dialogState === "limit_reached") ? "#ef444420" : "#6b728020"
+                    border.color: (root.dialogState === "limit_reached") ? "#ef4444" : "#6b7280"
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 8
+
+                        VectorIcon {
+                            name: (root.dialogState === "limit_reached") ? "error" : "close"
+                            size: 16
+                            color: (root.dialogState === "limit_reached") ? "#ef4444" : "#9ca3af"
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: (root.dialogState === "limit_reached") ? "Command Budget Exhausted" : "Recovery Session Cancelled"
+                            color: (root.dialogState === "limit_reached") ? "#ef4444" : "#e5e7eb"
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    radius: 4
+                    color: theme ? theme.bgInput : "#0d0d0d"
+                    border.color: theme ? theme.borderNormal : "#333333"
+                    border.width: 1
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 8
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.recoveryFinalReport || ((root.dialogState === "limit_reached") ? "Execution halted because the maximum command budget was reached. This prevents infinite recovery loops." : "The recovery session was stopped by user request.")
+                            color: theme ? theme.textSecondary : "#94a3b8"
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            visible: root.recoverySessionId.length > 0
+                            text: "Commands executed: " + root.recoveryCommandsExecuted + " / " + (root.recoveryCommandsExecuted + root.recoveryCommandsRemaining)
+                            color: theme ? theme.textMuted : "#71717a"
+                            font.pixelSize: 10
+                        }
+
+                        Item { Layout.fillHeight: true }
+                    }
+                }
             }
 
             // =================================================================
@@ -1482,6 +1850,9 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
+                            if (root.recoverySessionId.length > 0 && typeof extensionManager !== "undefined" && extensionManager) {
+                                extensionManager.cancel_recovery_session(root.recoverySessionId);
+                            }
                             root.isOpen = false;
                             root.cancelled();
                         }
@@ -1644,11 +2015,11 @@ Rectangle {
                     height: 28
                     radius: 3
                     color: finishMa.containsMouse ? "#16a34a" : (theme ? theme.success : "#10b981")
-                    visible: root.dialogState === "success" || root.dialogState === "retry_failed"
+                    visible: root.dialogState === "success" || root.dialogState === "completed" || root.dialogState === "retry_failed" || root.dialogState === "limit_reached" || root.dialogState === "cancelled"
 
                     Text {
                         anchors.centerIn: parent
-                        text: "Finish"
+                        text: (root.dialogState === "limit_reached" || root.dialogState === "cancelled") ? "Close" : "Finish"
                         color: "#ffffff"
                         font.pixelSize: 11
                         font.bold: true
@@ -1665,9 +2036,59 @@ Rectangle {
                     }
                 }
 
-                // Primary Install Action Button (Install / Approve Setup / Retry Install)
+                // User Decision Submit Button
                 Rectangle {
-                    width: (root.dialogState === "complex_setup") ? 130 : 100
+                    width: 140
+                    height: 28
+                    radius: 3
+                    color: submitDecisionMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4")
+                    visible: root.dialogState === "awaiting_user_decision"
+                    enabled: (root.selectedDecisionChoice.length > 0) || (root.customDecisionText.trim().length > 0)
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        VectorIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "check"
+                            size: 11
+                            color: "#ffffff"
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Confirm & Continue"
+                            color: "#ffffff"
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                    }
+
+                    MouseArea {
+                        id: submitDecisionMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            var answer = root.customDecisionText.trim() ? root.customDecisionText.trim() : root.selectedDecisionChoice;
+                            if (!answer) return;
+                            var rKey = "user_choice";
+                            if (root.userDecisionRequest && (root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey)) {
+                                rKey = root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey;
+                            }
+                            root.setDialogState("analyzing");
+                            root.statusMessage = "AI is replanning recovery with your selection...";
+                            if (typeof extensionManager !== "undefined" && extensionManager && root.recoverySessionId) {
+                                extensionManager.submit_user_decision(root.recoverySessionId, answer, rKey);
+                            }
+                        }
+                    }
+                }
+
+                // Primary Install Action Button (Install / Approve Setup / Retry Install / Recovery Step)
+                Rectangle {
+                    width: (root.recoverySessionId.length > 0) ? 140 : ((root.dialogState === "complex_setup") ? 130 : 100)
                     height: 28
                     radius: 3
                     color: {
@@ -1676,8 +2097,8 @@ Rectangle {
                         }
                         return confirmMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4");
                     }
-                    enabled: (root.dialogState === "failed") || (!root.isInstalling && root.dialogState !== "retrying" && root.dialogState !== "post_install_analyzing" && (root.proposedCommand.length > 0 || (root.proposedSteps && root.proposedSteps.length > 0)))
-                    visible: (root.dialogState === "single_command" && root.proposedCommand.length > 0) || (root.dialogState === "complex_setup") || (root.dialogState === "failed")
+                    enabled: (root.dialogState === "failed") || (!root.isInstalling && root.dialogState !== "retrying" && root.dialogState !== "post_install_analyzing" && (root.proposedCommand.length > 0 || (root.proposedSteps && root.proposedSteps.length > 0) || root.recoverySessionId.length > 0))
+                    visible: (root.dialogState === "single_command" && root.proposedCommand.length > 0) || (root.dialogState === "complex_setup") || (root.dialogState === "failed") || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoveryPlan.length > 0) || (root.recoverySessionId.length > 0 && root.recoveryPlan.length > 0)
 
                     Row {
                         anchors.centerIn: parent
@@ -1695,7 +2116,13 @@ Rectangle {
                             text: {
                                 if (root.dialogState === "post_install_analyzing") return "Verifying...";
                                 if (root.dialogState === "retrying") return "Retrying...";
-                                if (root.isInstalling) return "Installing...";
+                                if (root.isInstalling) return "Executing...";
+                                if (root.recoverySessionId.length > 0) {
+                                    return "Execute Recovery";
+                                }
+                                if (root.resolutionType === "extension_activate" || root.actionType === "extension_activate") return "Enable Extension";
+                                if (root.resolutionType === "extension_install" || root.actionType === "extension_install") return "Install Extension";
+                                if (root.dialogState === "fix_available") return "Apply Fix";
                                 if (root.dialogState === "failed") return "Retry Install";
                                 if (root.dialogState === "complex_setup") return "Approve Setup";
                                 return "Install";
@@ -1715,8 +2142,20 @@ Rectangle {
                         onClicked: {
                             if (root.isInstalling) return;
 
+                            if (root.recoverySessionId.length > 0 && typeof extensionManager !== "undefined" && extensionManager) {
+                                root.isInstalling = true;
+                                root.setDialogState("installing");
+                                root.installLogs = "Starting automated recovery execution...\n";
+                                extensionManager.execute_recovery_plan(root.recoverySessionId);
+                                return;
+                            }
+
                             var execCmd = root.proposedCommand;
-                            if (!execCmd && root.proposedSteps && root.proposedSteps.length > 0) {
+                            if (!execCmd && (root.resolutionType === "extension_install" || root.actionType === "extension_install")) {
+                                execCmd = "dgx:extension install " + (root.extensionId || root.toolName);
+                            } else if (!execCmd && (root.resolutionType === "extension_activate" || root.actionType === "extension_activate")) {
+                                execCmd = "dgx:extension enable " + (root.extensionId || root.toolName);
+                            } else if (!execCmd && root.proposedSteps && root.proposedSteps.length > 0) {
                                 execCmd = root.proposedSteps.join(" && ");
                             }
                             if (!execCmd) return;
@@ -1775,7 +2214,7 @@ Rectangle {
 
     function openProposal(proposal) {
         if (!proposal) return;
-        if (!proposal.resolutionType && !proposal.source) {
+        if (!proposal.resolutionType && !proposal.source && !proposal.sessionId && !proposal.session_id && !proposal.status) {
             openContext(proposal);
             return;
         }
@@ -1791,12 +2230,47 @@ Rectangle {
         root.verifyCommand = proposal.verifyCommand || "";
         root.sourceKind = proposal.source || "recipe";
         root.resolutionType = proposal.resolutionType || "single_command";
+        root.actionType = proposal.actionType || "";
+        root.extensionId = proposal.extensionId || "";
         root.retryAction = proposal.retryAction || "";
         root.targetFilePath = proposal.filePath || "";
         root.targetLanguageId = proposal.languageId || "";
+        root.officialUrl = proposal.officialUrl || proposal.downloadUrl || "";
+        root.downloadUrl = proposal.downloadUrl || proposal.officialUrl || "";
+        root.actionRequired = proposal.actionRequired || "";
+        root.resumeNote = proposal.resumeNote || "";
         root.isInstalling = false;
         root.statusMessage = "";
         root.installLogs = "";
+
+        if (proposal.sessionId || proposal.session_id) {
+            root.recoverySessionId = proposal.sessionId || proposal.session_id;
+            root.recoveryPlan = proposal.commands || [];
+            root.recoveryTotalSteps = proposal.total_steps || proposal.totalSteps || 0;
+            root.recoveryTotalStepsDisplay = proposal.total_steps_display || proposal.totalStepsDisplay || "";
+            root.recoveryCommandsRemaining = proposal.commands_remaining || proposal.commandsRemaining || 10;
+        } else {
+            root.recoverySessionId = "";
+            root.recoveryPlan = [];
+            root.recoveryTotalSteps = 0;
+            root.recoveryTotalStepsDisplay = "";
+            root.recoveryCommandsRemaining = 10;
+        }
+
+        root.userDecisionRequest = proposal.decision_request || proposal.decisionRequest || null;
+        if (!root.userDecisionRequest && (proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision || proposal.options || proposal.choices)) {
+            root.userDecisionRequest = {
+                question: proposal.title || "Clarification Required",
+                why_necessary: proposal.explanation || proposal.diagnosis || "",
+                choices: proposal.options || proposal.choices || [],
+                allow_custom_answer: true,
+                resume_key: proposal.resume_key || proposal.resumeKey || "user_choice"
+            };
+        }
+        if (root.userDecisionRequest && (root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice)) {
+            root.selectedDecisionChoice = root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice;
+        }
+
         root.isOpen = true;
 
         console.log("[SmartInstall] Entry point opened");
@@ -1804,17 +2278,43 @@ Rectangle {
         console.log("[SmartInstall] Resolution type:", root.resolutionType);
         console.log("[SmartInstall] Command availability:", (root.proposedCommand && root.proposedCommand.length > 0));
 
-        if (root.sourceKind === "ai_unavailable") {
+        if (proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision || root.userDecisionRequest || root.dialogState === "awaiting_user_decision") {
+            root.setDialogState("awaiting_user_decision");
+        } else if (proposal.status === "awaiting_approval") {
+            root.setDialogState("awaiting_approval");
+        } else if (proposal.status === "ready") {
+            root.setDialogState("ready");
+        } else if (proposal.status === "executing") {
+            root.setDialogState("executing");
+        } else if (proposal.status === "verifying") {
+            root.setDialogState("verifying");
+        } else if (proposal.status === "completed") {
+            root.setDialogState("completed");
+        } else if (proposal.status === "cannot_resolve") {
+            root.setDialogState("cannot_resolve");
+        } else if (proposal.status === "failed") {
+            root.setDialogState("failed");
+        } else if (proposal.status === "limit_reached") {
+            root.setDialogState("limit_reached");
+        } else if (proposal.status === "cancelled") {
+            root.setDialogState("cancelled");
+        } else if (proposal.status === "success") {
+            root.setDialogState("success");
+        } else if (root.sourceKind === "ai_unavailable") {
             root.failureReason = root.explanationText || "AI provider unavailable";
             root.setDialogState("ai_unavailable");
         } else if (root.resolutionType === "cannot_resolve") {
             root.setDialogState("cannot_resolve");
         } else if (root.resolutionType === "complex_setup") {
             root.setDialogState("complex_setup");
-        } else if (root.resolutionType === "single_command") {
+        } else if (root.resolutionType === "single_command" || root.resolutionType === "extension_install" || root.resolutionType === "extension_activate" || root.actionType === "extension_install" || root.actionType === "extension_activate") {
             root.setDialogState("single_command");
         } else {
-            root.setDialogState(root.proposedCommand ? "single_command" : "cannot_resolve");
+            if (root.dialogState === "awaiting_user_decision" && (root.userDecisionRequest || root.recoveryStatus === "awaiting_user_decision")) {
+                // Keep awaiting_user_decision
+            } else {
+                root.setDialogState(root.proposedCommand ? "single_command" : "cannot_resolve");
+            }
         }
     }
 }
