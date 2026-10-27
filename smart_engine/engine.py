@@ -109,7 +109,10 @@ class SmartEngine:
             if check == "file_exists":
                 exists = os.path.exists(path)
                 return exists, f"File {path} exists: {exists}", "", (0 if exists else 1)
-            return True, f"Diagnostic {check} evaluated", "", 0
+            cmd = action.parameters.get("command", "")
+            if cmd:
+                return _handle_command(action, context)
+            return False, "", f"Unsupported diagnostic probe '{check}'. Use concrete shell commands with action_type 'command'.", 1
 
         self.action_registry.register_handler("command", _handle_command)
         self.action_registry.register_handler("config", _handle_config)
@@ -256,7 +259,13 @@ class SmartEngine:
         proposal["languageId"] = context.get("language") or context.get("languageId", "")
         proposal["retryAction"] = context.get("retryAction", "run")
 
-        if proposal.get("needs_user_decision") or proposal.get("decision_request") or proposal.get("status") == "awaiting_user_decision":
+        has_decision = bool(
+            proposal.get("decision_request") and
+            isinstance(proposal["decision_request"], dict) and
+            proposal["decision_request"].get("needed") is not False and
+            (proposal["decision_request"].get("choices") or proposal["decision_request"].get("options") or proposal["decision_request"].get("question"))
+        )
+        if has_decision and (proposal.get("needs_user_decision") or proposal.get("status") == "awaiting_user_decision"):
             session.status = "awaiting_user_decision"
             session.decision_request = proposal.get("decision_request")
             proposal["status"] = "awaiting_user_decision"
@@ -354,7 +363,13 @@ class SmartEngine:
                 self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
             return False
 
-        if proposal.get("needs_user_decision") or proposal.get("decision_request"):
+        has_decision = bool(
+            proposal.get("decision_request") and
+            isinstance(proposal["decision_request"], dict) and
+            proposal["decision_request"].get("needed") is not False and
+            (proposal["decision_request"].get("choices") or proposal["decision_request"].get("options") or proposal["decision_request"].get("question"))
+        )
+        if has_decision and (proposal.get("needs_user_decision") or proposal.get("status") == "awaiting_user_decision"):
             session.status = "awaiting_user_decision"
             session.decision_request = proposal.get("decision_request")
             if proposal.get("commands"):
@@ -526,6 +541,13 @@ class SmartEngine:
             if session.pending_queue:
                 session.promote_next_batch()
 
+        formatted_res = action.format_result()
+        if self.extension_manager:
+            if hasattr(self.extension_manager, "recoveryCommandCompleted"):
+                self.extension_manager.recoveryCommandCompleted.emit(session_id, action.action_id, exit_code, formatted_res)
+            if hasattr(self.extension_manager, "recoveryPlanUpdated"):
+                self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
+
         # Update session status
         if action.status == "succeeded":
             if session.active_batch:
@@ -542,18 +564,13 @@ class SmartEngine:
                 session.final_report = f"All {session.actual_commands_executed} recovery steps completed successfully."
                 if self.extension_manager and hasattr(self.extension_manager, "recoverySessionEnded"):
                     self.extension_manager.recoverySessionEnded.emit(session_id, True, session.final_report)
+                if self.extension_manager and hasattr(self.extension_manager, "recoveryPlanUpdated"):
+                    self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
         else:
             if action.failure_handling == "continue" and session.active_batch:
                 session.status = "ready"
             else:
                 session.status = "failed"
                 session.final_report = f"Action {action.action_id} failed with exit code {exit_code}: {stderr or stdout}"
-
-        formatted_res = action.format_result()
-        if self.extension_manager:
-            if hasattr(self.extension_manager, "recoveryCommandCompleted"):
-                self.extension_manager.recoveryCommandCompleted.emit(session_id, action.action_id, exit_code, formatted_res)
-            if hasattr(self.extension_manager, "recoveryPlanUpdated"):
-                self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
 
         return (action.status == "succeeded"), formatted_res

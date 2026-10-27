@@ -227,7 +227,16 @@ Rectangle {
             root.recoveryStatus = sessionData.status || root.recoveryStatus;
             root.recoveryPlan = sessionData.active_batch || sessionData.commands || sessionData.command_history || [];
             root.pendingApprovalCommand = sessionData.waiting_for_approval_cmd || sessionData.waitingForApprovalCommand || null;
-            root.userDecisionRequest = sessionData.decision_request || sessionData.decisionRequest || null;
+            var rawDec = sessionData.decision_request || sessionData.decisionRequest || null;
+            var hasChoices = rawDec && ((rawDec.choices && rawDec.choices.length > 0) || (rawDec.options && rawDec.options.length > 0));
+            var hasQuestion = rawDec && rawDec.question && String(rawDec.question).trim().length > 0 && !String(rawDec.question).startsWith("<question");
+            var isExplicitlyNeeded = rawDec && rawDec.needed !== false;
+            if (rawDec && isExplicitlyNeeded && (hasChoices || hasQuestion)) {
+                root.userDecisionRequest = rawDec;
+            } else {
+                root.userDecisionRequest = null;
+            }
+
             if (root.userDecisionRequest && (root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice) && !root.selectedDecisionChoice) {
                 root.selectedDecisionChoice = root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice;
             }
@@ -240,6 +249,11 @@ Rectangle {
                 if (root.recoveryStatus === "planning") {
                     root.setDialogState("analyzing");
                     root.statusMessage = "AI is formulating recovery plan...";
+                } else if (root.recoveryStatus === "executing" || root.recoveryStatus === "verifying") {
+                    root.isInstalling = true;
+                    root.setDialogState(root.recoveryStatus);
+                } else if (root.recoveryStatus === "awaiting_user_decision" && root.userDecisionRequest === null) {
+                    root.setDialogState(root.recoveryPlan.length > 0 ? "ready" : "cannot_resolve");
                 } else {
                     root.setDialogState(root.recoveryStatus);
                 }
@@ -247,15 +261,16 @@ Rectangle {
         }
 
         function onRecoveryCommandStarted(sessionId, cmdId, cmd) {
-            root.statusMessage = "Executing " + cmdId + ": " + cmd;
-            root.installLogs += ("[START] " + cmdId + ": " + cmd + "\n");
+            root.statusMessage = "Executing: " + cmd;
+            root.installLogs += ("$ " + cmd + "\n");
         }
 
         function onRecoveryCommandCompleted(sessionId, cmdId, exitCode, formattedOutput) {
-            root.installLogs += (formattedOutput + "\n\n");
+            root.installLogs += (formattedOutput.trim() + "\n\n");
         }
 
         function onRecoverySessionEnded(sessionId, success, finalReport) {
+            root.isInstalling = false;
             root.recoveryFinalReport = finalReport || "";
             if (success) {
                 root.setDialogState("success");
@@ -306,14 +321,14 @@ Rectangle {
                     VectorIcon {
                         anchors.centerIn: parent
                         name: {
-                            if (root.dialogState === "success") return "check";
+                            if (root.dialogState === "success" || root.dialogState === "completed") return "check";
                             if (root.dialogState === "failed" || root.dialogState === "ai_unavailable") return "close";
                             if (root.dialogState === "cannot_resolve" || root.dialogState === "manual_installation_required" || root.dialogState === "retry_failed") return "alert";
                             return "download";
                         }
                         size: 16
                         color: {
-                            if (root.dialogState === "success") return "#10b981";
+                            if (root.dialogState === "success" || root.dialogState === "completed") return "#10b981";
                             if (root.dialogState === "failed" || root.dialogState === "ai_unavailable") return "#ef4444";
                             if (root.dialogState === "cannot_resolve" || root.dialogState === "manual_installation_required" || root.dialogState === "retry_failed") return "#f59e0b";
                             if (root.dialogState === "fix_available") return "#a855f7";
@@ -328,7 +343,7 @@ Rectangle {
 
                     Text {
                         text: {
-                            if (root.dialogState === "success") return "Installation Successful";
+                            if (root.dialogState === "success" || root.dialogState === "completed") return "Recovery Completed Successfully";
                             if (root.dialogState === "retry_failed") return "Tool Verified, Operation Failed";
                             if (root.dialogState === "manual_installation_required") return "Manual Installation Required";
                             if (root.dialogState === "fix_available") return "AI Suggested Fix";
@@ -349,7 +364,7 @@ Rectangle {
 
                     Text {
                         text: {
-                            if (root.dialogState === "success") return "Tool verified and environment refreshed. Original operation completed.";
+                            if (root.dialogState === "success" || root.dialogState === "completed") return root.recoveryFinalReport || root.statusMessage || "Tool verified and environment refreshed. Original operation completed.";
                             if (root.dialogState === "retry_failed") return "The tool was installed, but the original operation could not be completed.";
                             if (root.dialogState === "manual_installation_required") return "This installation requires manual setup or administrator privileges.";
                             if (root.dialogState === "fix_available") return "AI identified a safe corrective command for the reported error.";
@@ -492,7 +507,7 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.dialogState === "single_command" || root.dialogState === "complex_setup" || root.dialogState === "cannot_resolve" || root.dialogState === "ai_unavailable" || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoverySessionId.length > 0)
+                visible: !root.isInstalling && (root.dialogState === "single_command" || root.dialogState === "complex_setup" || root.dialogState === "cannot_resolve" || root.dialogState === "ai_unavailable" || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoverySessionId.length > 0))
                 spacing: 10
 
                 // Diagnosis Card
@@ -810,7 +825,7 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.dialogState === "awaiting_user_decision"
+                visible: !root.isInstalling && root.dialogState === "awaiting_user_decision" && root.userDecisionRequest !== null
                 spacing: 10
 
                 // Header / Question Card
@@ -1602,7 +1617,7 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.dialogState === "installing" || root.dialogState === "post_install_analyzing" || root.dialogState === "success" || root.dialogState === "failed"
+                visible: root.dialogState === "installing" || root.dialogState === "executing" || root.dialogState === "verifying" || root.dialogState === "post_install_analyzing" || root.dialogState === "success" || root.dialogState === "completed" || root.dialogState === "failed" || root.isInstalling
                 spacing: 8
 
                 // Status banner
@@ -1611,12 +1626,12 @@ Rectangle {
                     height: 38
                     radius: 4
                     color: {
-                        if (root.dialogState === "success") return "#10b98120";
+                        if (root.dialogState === "success" || root.dialogState === "completed") return "#10b98120";
                         if (root.dialogState === "failed") return "#ef444420";
                         return (theme ? theme.accent : "#0078d4") + "20";
                     }
                     border.color: {
-                        if (root.dialogState === "success") return "#10b981";
+                        if (root.dialogState === "success" || root.dialogState === "completed") return "#10b981";
                         if (root.dialogState === "failed") return "#ef4444";
                         return theme ? theme.accent : "#0078d4";
                     }
@@ -1628,20 +1643,22 @@ Rectangle {
                         spacing: 8
 
                         VectorIcon {
-                            name: (root.dialogState === "success") ? "check" : ((root.dialogState === "failed") ? "close" : "download")
+                            name: (root.dialogState === "success" || root.dialogState === "completed") ? "check" : ((root.dialogState === "failed") ? "close" : "download")
                             size: 14
-                            color: (root.dialogState === "success") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.accent : "#0078d4"))
+                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.accent : "#0078d4"))
                         }
 
                         Text {
                             Layout.fillWidth: true
                             text: {
-                                if (root.dialogState === "success") return "Installation, verification & operation completed successfully!";
+                                if (root.dialogState === "success" || root.dialogState === "completed") return root.recoveryFinalReport || root.statusMessage || "Installation, verification & operation completed successfully!";
                                 if (root.dialogState === "post_install_analyzing") return "AI is inspecting real execution results...";
                                 if (root.dialogState === "failed") return "Installation or Verification Failed.";
-                                return "Executing approved setup...";
+                                if (root.dialogState === "verifying") return "Verifying execution...";
+                                if (root.dialogState === "executing") return "Executing command...";
+                                return "Executing automated recovery...";
                             }
-                            color: (root.dialogState === "success") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.textBright : "#ffffff"))
+                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.textBright : "#ffffff"))
                             font.pixelSize: 11
                             font.bold: true
                         }
@@ -2036,59 +2053,9 @@ Rectangle {
                     }
                 }
 
-                // User Decision Submit Button
+                // Unified Primary Action Button ("Proceed")
                 Rectangle {
-                    width: 140
-                    height: 28
-                    radius: 3
-                    color: submitDecisionMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4")
-                    visible: root.dialogState === "awaiting_user_decision"
-                    enabled: (root.selectedDecisionChoice.length > 0) || (root.customDecisionText.trim().length > 0)
-
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 6
-
-                        VectorIcon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: "check"
-                            size: 11
-                            color: "#ffffff"
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "Confirm & Continue"
-                            color: "#ffffff"
-                            font.pixelSize: 11
-                            font.bold: true
-                        }
-                    }
-
-                    MouseArea {
-                        id: submitDecisionMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            var answer = root.customDecisionText.trim() ? root.customDecisionText.trim() : root.selectedDecisionChoice;
-                            if (!answer) return;
-                            var rKey = "user_choice";
-                            if (root.userDecisionRequest && (root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey)) {
-                                rKey = root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey;
-                            }
-                            root.setDialogState("analyzing");
-                            root.statusMessage = "AI is replanning recovery with your selection...";
-                            if (typeof extensionManager !== "undefined" && extensionManager && root.recoverySessionId) {
-                                extensionManager.submit_user_decision(root.recoverySessionId, answer, rKey);
-                            }
-                        }
-                    }
-                }
-
-                // Primary Install Action Button (Install / Approve Setup / Retry Install / Recovery Step)
-                Rectangle {
-                    width: (root.recoverySessionId.length > 0) ? 140 : ((root.dialogState === "complex_setup") ? 130 : 100)
+                    width: 110
                     height: 28
                     radius: 3
                     color: {
@@ -2097,8 +2064,23 @@ Rectangle {
                         }
                         return confirmMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4");
                     }
-                    enabled: (root.dialogState === "failed") || (!root.isInstalling && root.dialogState !== "retrying" && root.dialogState !== "post_install_analyzing" && (root.proposedCommand.length > 0 || (root.proposedSteps && root.proposedSteps.length > 0) || root.recoverySessionId.length > 0))
-                    visible: (root.dialogState === "single_command" && root.proposedCommand.length > 0) || (root.dialogState === "complex_setup") || (root.dialogState === "failed") || ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoveryPlan.length > 0) || (root.recoverySessionId.length > 0 && root.recoveryPlan.length > 0)
+                    enabled: {
+                        if (root.isInstalling || root.dialogState === "retrying" || root.dialogState === "post_install_analyzing") return false;
+                        if (root.dialogState === "awaiting_user_decision") {
+                            return (root.selectedDecisionChoice.length > 0) || (root.customDecisionText.trim().length > 0);
+                        }
+                        if (root.dialogState === "failed") return true;
+                        return (root.proposedCommand.length > 0 || (root.proposedSteps && root.proposedSteps.length > 0) || root.recoverySessionId.length > 0);
+                    }
+                    visible: {
+                        if (root.dialogState === "analyzing") return false;
+                        if (root.dialogState === "awaiting_user_decision") return true;
+                        return (root.dialogState === "single_command" && root.proposedCommand.length > 0) ||
+                               (root.dialogState === "complex_setup") ||
+                               (root.dialogState === "failed") ||
+                               ((root.dialogState === "ready" || root.dialogState === "awaiting_approval") && root.recoveryPlan.length > 0) ||
+                               (root.recoverySessionId.length > 0 && root.recoveryPlan.length > 0);
+                    }
 
                     Row {
                         anchors.centerIn: parent
@@ -2106,7 +2088,7 @@ Rectangle {
 
                         VectorIcon {
                             anchors.verticalCenter: parent.verticalCenter
-                            name: "download"
+                            name: root.isInstalling ? "refresh" : "arrow-right"
                             size: 11
                             color: "#ffffff"
                         }
@@ -2117,15 +2099,7 @@ Rectangle {
                                 if (root.dialogState === "post_install_analyzing") return "Verifying...";
                                 if (root.dialogState === "retrying") return "Retrying...";
                                 if (root.isInstalling) return "Executing...";
-                                if (root.recoverySessionId.length > 0) {
-                                    return "Execute Recovery";
-                                }
-                                if (root.resolutionType === "extension_activate" || root.actionType === "extension_activate") return "Enable Extension";
-                                if (root.resolutionType === "extension_install" || root.actionType === "extension_install") return "Install Extension";
-                                if (root.dialogState === "fix_available") return "Apply Fix";
-                                if (root.dialogState === "failed") return "Retry Install";
-                                if (root.dialogState === "complex_setup") return "Approve Setup";
-                                return "Install";
+                                return "Proceed";
                             }
                             color: "#ffffff"
                             font.pixelSize: 11
@@ -2142,10 +2116,28 @@ Rectangle {
                         onClicked: {
                             if (root.isInstalling) return;
 
+                            if (root.dialogState === "awaiting_user_decision") {
+                                var answer = root.customDecisionText.trim() ? root.customDecisionText.trim() : root.selectedDecisionChoice;
+                                if (!answer) return;
+                                var rKey = "user_choice";
+                                if (root.userDecisionRequest && (root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey)) {
+                                    rKey = root.userDecisionRequest.resume_key || root.userDecisionRequest.resumeKey;
+                                }
+                                root.isInstalling = true;
+                                root.setDialogState("installing");
+                                root.statusMessage = "Executing option: " + answer;
+                                root.installLogs = "$ Selected: " + answer + "\n";
+                                if (typeof extensionManager !== "undefined" && extensionManager && root.recoverySessionId) {
+                                    extensionManager.submit_user_decision(root.recoverySessionId, answer, rKey);
+                                    extensionManager.execute_recovery_plan(root.recoverySessionId);
+                                }
+                                return;
+                            }
+
                             if (root.recoverySessionId.length > 0 && typeof extensionManager !== "undefined" && extensionManager) {
                                 root.isInstalling = true;
                                 root.setDialogState("installing");
-                                root.installLogs = "Starting automated recovery execution...\n";
+                                root.installLogs = "Starting execution...\n";
                                 extensionManager.execute_recovery_plan(root.recoverySessionId);
                                 return;
                             }
@@ -2163,7 +2155,7 @@ Rectangle {
                             console.log("[SmartInstall] User approved install");
                             root.isInstalling = true;
                             root.setDialogState("installing");
-                            root.installLogs = "Starting installation for " + root.toolName + "...\n";
+                            root.installLogs = "$ " + execCmd + "\n";
                             if (typeof extensionManager !== "undefined" && extensionManager) {
                                 extensionManager.execute_smart_install_command(
                                     root.toolName,
@@ -2257,18 +2249,29 @@ Rectangle {
             root.recoveryCommandsRemaining = 10;
         }
 
-        root.userDecisionRequest = proposal.decision_request || proposal.decisionRequest || null;
-        if (!root.userDecisionRequest && (proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision || proposal.options || proposal.choices)) {
+        var rawDec = proposal.decision_request || proposal.decisionRequest || null;
+        var hasChoices = rawDec && ((rawDec.choices && rawDec.choices.length > 0) || (rawDec.options && rawDec.options.length > 0));
+        var hasQuestion = rawDec && rawDec.question && String(rawDec.question).trim().length > 0 && !String(rawDec.question).startsWith("<question");
+        var isExplicitlyNeeded = rawDec && rawDec.needed !== false;
+
+        if (rawDec && isExplicitlyNeeded && (hasChoices || hasQuestion)) {
+            root.userDecisionRequest = rawDec;
+        } else if ((proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision) && ((proposal.choices && proposal.choices.length > 0) || (proposal.options && proposal.options.length > 0))) {
             root.userDecisionRequest = {
                 question: proposal.title || "Clarification Required",
                 why_necessary: proposal.explanation || proposal.diagnosis || "",
-                choices: proposal.options || proposal.choices || [],
+                choices: proposal.choices || proposal.options || [],
                 allow_custom_answer: true,
                 resume_key: proposal.resume_key || proposal.resumeKey || "user_choice"
             };
+        } else {
+            root.userDecisionRequest = null;
         }
+
         if (root.userDecisionRequest && (root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice)) {
             root.selectedDecisionChoice = root.userDecisionRequest.default_choice || root.userDecisionRequest.defaultChoice;
+        } else {
+            root.selectedDecisionChoice = "";
         }
 
         root.isOpen = true;
@@ -2278,7 +2281,7 @@ Rectangle {
         console.log("[SmartInstall] Resolution type:", root.resolutionType);
         console.log("[SmartInstall] Command availability:", (root.proposedCommand && root.proposedCommand.length > 0));
 
-        if (proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision || root.userDecisionRequest || root.dialogState === "awaiting_user_decision") {
+        if ((proposal.status === "awaiting_user_decision" || proposal.needs_user_decision || proposal.needsUserDecision) && root.userDecisionRequest !== null) {
             root.setDialogState("awaiting_user_decision");
         } else if (proposal.status === "awaiting_approval") {
             root.setDialogState("awaiting_approval");

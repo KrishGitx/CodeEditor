@@ -20,12 +20,10 @@ Your responsibility is to understand a user's intended task, diagnose problems u
 - If relevant information is missing, determine whether it can be obtained through available diagnostics or whether you need to ask the user.
 - Distinguish observed facts from hypotheses. Never present an unverified hypothesis as an established fact.
 
-### 2. Diagnose Before Proposing Changes
+### 2. Concrete Resolution Over Speculation
 - Understand what the user was attempting to accomplish, what failed, what the actual output indicates, and what conditions may have caused the failure.
-- Consider alternative explanations when the evidence is ambiguous.
-- Prefer the smallest effective, reversible solution that addresses the underlying cause.
-- Do not assume that installing software is the correct answer to every failure. Often configuring an existing tool, updating a setting, or selecting an installed toolchain is the correct resolution.
-- Do not propose unnecessary installations, configuration changes, or destructive operations.
+- When an installation or configuration is required to resolve a missing runner or tool, emit concrete installation commands using package managers available on the system (e.g. winget on Windows, pip in Python).
+- Do not stop at abstract diagnostic speculation. Every recovery plan must lead to concrete, executable installation or configuration steps that resolve the user's workflow failure.
 
 ### 3. Use Actual Capabilities
 - Use only the tools, extensions, actions, and execution interfaces described in the supplied capability context.
@@ -33,12 +31,18 @@ Your responsibility is to understand a user's intended task, diagnose problems u
 - When information about the environment is unknown, identify what evidence is needed to resolve that uncertainty.
 - Do not claim to have inspected a file, executed an action, or modified a project unless the application has supplied evidence that this occurred.
 
-### 4. Plan Concrete Extensible Actions
-- When the available information is sufficient, propose an ordered recovery plan using supported action types:
+### 4. Plan Concrete Resolution Actions
+- Every recovery plan MUST propose concrete, actionable steps to resolve the workflow failure.
+- When resolving a missing runner, executable, compiler, or package:
+  - You MUST emit concrete executable shell commands to install or configure the capability (e.g. `winget install SQLite.SQLite`, `pip install <package>`, `npm install -g <package>`).
+  - Use the package managers verified in the environment (e.g. winget on Windows, pip in Python).
+- Supported action types:
   - "command": Execute a single safe shell command (parameters: {"command": "<exact command>"}). One command per action. Do NOT combine multiple commands using '&&', ';', '|', or multi-line scripts.
   - "config": Update runtime environment or project configuration (parameters: {"env_var": "<key>", "value": "<val>"} or {"config_key": "<key>", "config_value": "<val>"}).
   - "extension": Manage a DGX extension (parameters: {"operation": "install"|"enable"|"reload", "extension_id": "<id>"}).
-  - "diagnostic": Run a non-destructive file or environment probe (parameters: {"check": "<probe_name>", "path": "<file>"}).
+- DO NOT emit abstract, placeholder, or invented "diagnostic" check names (e.g. "discover_sql_runners" or "check_sqlite_runtime_and_executable").
+- If you need to verify or probe a tool or runtime, use a real executable shell command via "command" (e.g., `<tool> --version`, `where <tool>`, or `python -c "<import_or_check>"`).
+- CRITICAL: Never declare completion ("completion.verified": true) without actually installing or configuring the missing tool/runner that caused the failure. An inspection alone does NOT solve the failure.
 - Propose at most 4 actions in a single batch.
 - Each action must have a clear purpose, required parameters, expected result, and verification condition.
 - Mark 'requires_approval: true' for any action that installs software, modifies system files, or changes configuration.
@@ -254,36 +258,62 @@ def parse_smart_response(
 
     # 1. Normalize decision request
     decision_req = data.get("decision_request") or data.get("decisionRequest")
-    needs_user_dec = bool(data.get("needs_user_decision", data.get("needsUserDecision", False))) or data.get("status") == "awaiting_user_decision"
-    
-    if not decision_req and (needs_user_dec or "question" in data or "choices" in data or "options" in data):
-        q = data.get("question") or data.get("title") or ""
-        if q:
+    raw_needs = bool(data.get("needs_user_decision", data.get("needsUserDecision", False))) or data.get("status") == "awaiting_user_decision"
+
+    is_decision_active = False
+    if decision_req and isinstance(decision_req, dict):
+        is_needed = decision_req.get("needed")
+        q = str(decision_req.get("question") or "").strip()
+        choices = decision_req.get("choices") or decision_req.get("options") or []
+        if not isinstance(choices, list):
+            choices = []
+        if q.startswith("<question") or q.lower() in ("none", "null", "n/a", ""):
+            q = ""
+
+        # If needed is explicitly False, or if neither question nor choices are provided, disable decision request
+        if is_needed is False or (not q and not choices):
+            decision_req = None
+            is_decision_active = False
+        else:
+            is_decision_active = True
+            decision_req["question"] = q
+            decision_req["choices"] = choices
+            decision_req["options"] = choices
+            if "why_necessary" in decision_req and "whyNecessary" not in decision_req:
+                decision_req["whyNecessary"] = decision_req["why_necessary"]
+            if "resume_key" in decision_req and "resumeKey" not in decision_req:
+                decision_req["resumeKey"] = decision_req["resume_key"]
+            if "allow_custom_answer" in decision_req and "allowCustomAnswer" not in decision_req:
+                decision_req["allowCustomAnswer"] = decision_req["allow_custom_answer"]
+    elif raw_needs or "question" in data or "choices" in data or "options" in data:
+        q = str(data.get("question") or data.get("title") or "").strip()
+        choices = data.get("choices", data.get("options", []))
+        if not isinstance(choices, list):
+            choices = []
+        if q.startswith("<question") or q.lower() in ("none", "null", "n/a", ""):
+            q = ""
+        if q or choices:
             decision_req = {
                 "question": q,
                 "why_necessary": data.get("why_necessary", data.get("whyNecessary", data.get("explanation", data.get("diagnosis", "")))),
                 "whyNecessary": data.get("why_necessary", data.get("whyNecessary", data.get("explanation", data.get("diagnosis", "")))),
-                "choices": data.get("choices", data.get("options", [])),
-                "options": data.get("choices", data.get("options", [])),
+                "choices": choices,
+                "options": choices,
                 "allow_custom_answer": bool(data.get("allow_custom_answer", data.get("allowCustomAnswer", True))),
                 "allowCustomAnswer": bool(data.get("allow_custom_answer", data.get("allowCustomAnswer", True))),
                 "resume_key": data.get("resume_key", data.get("resumeKey", "user_choice")),
                 "resumeKey": data.get("resume_key", data.get("resumeKey", "user_choice")),
                 "default_choice": data.get("default_choice", data.get("defaultChoice", ""))
             }
-            needs_user_dec = True
-    elif decision_req and isinstance(decision_req, dict):
-        # Check if decision_request is active
-        if decision_req.get("needed", True) or decision_req.get("question"):
-            needs_user_dec = True
-            if "why_necessary" in decision_req and "whyNecessary" not in decision_req:
-                decision_req["whyNecessary"] = decision_req["why_necessary"]
-            if "choices" in decision_req and "options" not in decision_req:
-                decision_req["options"] = decision_req["choices"]
-            if "resume_key" in decision_req and "resumeKey" not in decision_req:
-                decision_req["resumeKey"] = decision_req["resume_key"]
-            if "allow_custom_answer" in decision_req and "allowCustomAnswer" not in decision_req:
-                decision_req["allowCustomAnswer"] = decision_req["allow_custom_answer"]
+            is_decision_active = True
+        else:
+            decision_req = None
+            is_decision_active = False
+    else:
+        decision_req = None
+        is_decision_active = False
+
+    needs_user_dec = is_decision_active
 
     # 2. Normalize actions / commands
     raw_actions = []
@@ -336,7 +366,7 @@ def parse_smart_response(
 
     # 3. Determine authoritative status
     status = data.get("status", "")
-    if needs_user_dec or (decision_req and decision_req.get("question")):
+    if is_decision_active:
         status = "awaiting_user_decision"
     elif data.get("cannot_resolve") or data.get("blocker", {}).get("is_blocked"):
         status = "cannot_resolve"
@@ -344,6 +374,8 @@ def parse_smart_response(
         status = "completed"
     elif validated_actions:
         status = "ready"
+    elif status == "awaiting_user_decision" and not is_decision_active:
+        status = "ready" if validated_actions else "cannot_resolve"
     elif not status:
         status = "cannot_resolve"
 

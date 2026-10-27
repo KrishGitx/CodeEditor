@@ -219,7 +219,13 @@ class SmartSafetyGuard:
                 return False, "Extension action requires 'operation' and 'extension_id' parameters."
             return True, "Valid extension action"
         elif action.action_type == "diagnostic":
-            return True, "Valid diagnostic action"
+            check = action.parameters.get("check", "")
+            cmd = action.parameters.get("command", "")
+            if check == "file_exists" and action.parameters.get("path"):
+                return True, "Valid diagnostic file check"
+            if cmd:
+                return SmartSafetyGuard.validate_command_safety(cmd, tool_name)
+            return False, f"Diagnostic probe '{check}' is not supported. Use concrete shell commands with action_type 'command' to inspect or verify tools."
         return False, f"Unsupported action type: '{action.action_type}'"
 
 
