@@ -1463,6 +1463,7 @@ class ExtensionManager(QObject):
         self.state_file = os.path.join(os.path.expanduser("~"), ".dgx", "disabled_extensions.json")
         self.custom_paths_file = os.path.join(os.path.expanduser("~"), ".dgx", "custom_formatter_paths.json")
         self.tool_runtimes_file = os.path.join(os.path.expanduser("~"), ".dgx", "tool_runtimes.json")
+        self.custom_runners_file = os.path.join(os.path.expanduser("~"), ".dgx", "custom_runners.json")
 
         os.makedirs(self.built_in_dir, exist_ok=True)
         os.makedirs(self.user_extensions_dir, exist_ok=True)
@@ -1470,6 +1471,7 @@ class ExtensionManager(QObject):
         self._disabled_ids = self._load_disabled_state()
         self._custom_paths = self._load_custom_paths()
         self._tool_runtime_configs = self._load_tool_runtimes()
+        self._custom_runners = self._load_custom_runners()
         self._installing_formatters = set()
         self._installing_tools = set()
         self._extensions: Dict[str, Extension] = {}
@@ -1572,6 +1574,26 @@ class ExtensionManager(QObject):
         except Exception as e:
             print(f"[ExtensionManager] Notice saving {self.tool_runtimes_file}: {e}")
 
+    def _load_custom_runners(self) -> dict:
+        if hasattr(self, "custom_runners_file") and os.path.isfile(self.custom_runners_file):
+            try:
+                with open(self.custom_runners_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as e:
+                print(f"[ExtensionManager] Notice reading {self.custom_runners_file}: {e}")
+        return {}
+
+    def _save_custom_runners(self):
+        if not hasattr(self, "custom_runners_file"):
+            return
+        try:
+            with open(self.custom_runners_file, "w", encoding="utf-8") as f:
+                json.dump(self._custom_runners, f, indent=2)
+        except Exception as e:
+            print(f"[ExtensionManager] Notice saving {self.custom_runners_file}: {e}")
+
     def get_tool_runtime_config(self, tool_name: str) -> Optional[Dict[str, Any]]:
         if not tool_name or not hasattr(self, "_tool_runtime_configs"):
             return None
@@ -1653,6 +1675,11 @@ class ExtensionManager(QObject):
                 self._register_declarative_contributes(ext)
                 if ext.main and not ext.activated:
                     self.activate_extension(ext.id)
+
+        # 3. Merge dynamically registered custom runners (e.g. from Smart Install)
+        if hasattr(self, "_custom_runners"):
+            for r_ext, r_spec in self._custom_runners.items():
+                self._contributed_runners[r_ext] = r_spec
 
         print(f"[ExtensionManager] Loaded {len(self._extensions)} extensions: {list(self._extensions.keys())}")
         self.extensionsChanged.emit()
@@ -1776,14 +1803,20 @@ class ExtensionManager(QObject):
         if ext:
             ext.formatter = spec
 
+    @Slot(str, str, "QVariantMap")
     def register_extension_runner(self, ext_id: str, ext: str, spec: dict):
         clean_ext = ext.lower().lstrip(".")
-        self._contributed_runners[clean_ext] = {
+        runner_entry = {
             "extension": clean_ext,
             "command": spec.get("command", ""),
             "name": spec.get("name", f"{ext_id} Runner"),
             "extension_id": ext_id
         }
+        self._contributed_runners[clean_ext] = runner_entry
+        if not hasattr(self, "_custom_runners"):
+            self._custom_runners = {}
+        self._custom_runners[clean_ext] = runner_entry
+        self._save_custom_runners()
 
     def register_extension_file_icon(self, ext_id: str, ext: str, spec: dict):
         item = dict(spec)

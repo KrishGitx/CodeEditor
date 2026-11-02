@@ -254,6 +254,8 @@ Rectangle {
                     root.setDialogState(root.recoveryStatus);
                 } else if (root.recoveryStatus === "awaiting_user_decision" && root.userDecisionRequest === null) {
                     root.setDialogState(root.recoveryPlan.length > 0 ? "ready" : "cannot_resolve");
+                } else if (root.recoveryStatus === "awaiting_approval" && root.isInstalling) {
+                    root.setDialogState("executing");
                 } else {
                     root.setDialogState(root.recoveryStatus);
                 }
@@ -311,11 +313,11 @@ Rectangle {
                     height: 34
                     radius: 17
                     color: {
-                        if (root.dialogState === "success") return "#10b98125";
-                        if (root.dialogState === "failed" || root.dialogState === "ai_unavailable") return "#ef444425";
-                        if (root.dialogState === "cannot_resolve" || root.dialogState === "manual_installation_required" || root.dialogState === "retry_failed") return "#f59e0b25";
-                        if (root.dialogState === "fix_available") return "#a855f725";
-                        return (theme ? theme.accent : "#0078d4") + "25";
+                        if (root.dialogState === "success" || root.dialogState === "completed") return "#064e3b35";
+                        if (root.dialogState === "failed" || root.dialogState === "ai_unavailable") return "#7f1d1d35";
+                        if (root.dialogState === "cannot_resolve" || root.dialogState === "manual_installation_required" || root.dialogState === "retry_failed") return "#78350f35";
+                        if (root.dialogState === "fix_available") return "#581c8735";
+                        return "#0284c725";
                     }
 
                     VectorIcon {
@@ -332,7 +334,7 @@ Rectangle {
                             if (root.dialogState === "failed" || root.dialogState === "ai_unavailable") return "#ef4444";
                             if (root.dialogState === "cannot_resolve" || root.dialogState === "manual_installation_required" || root.dialogState === "retry_failed") return "#f59e0b";
                             if (root.dialogState === "fix_available") return "#a855f7";
-                            return theme ? theme.accent : "#0078d4";
+                            return "#38bdf8";
                         }
                     }
                 }
@@ -422,7 +424,7 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.dialogState === "ready" || root.dialogState === "analyzing"
+                visible: (root.dialogState === "ready" && root.recoveryPlan.length === 0 && root.recoverySessionId.length === 0) || root.dialogState === "analyzing"
                 spacing: 16
 
                 Rectangle {
@@ -733,7 +735,7 @@ Rectangle {
                                 // Final Report Box
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    visible: root.recoveryFinalReport.length > 0
+                                    visible: (root.dialogState === "completed" || root.dialogState === "success") && root.recoveryFinalReport.length > 0
                                     color: "#10b98115"
                                     radius: 4
                                     border.color: "#10b98160"
@@ -1626,14 +1628,14 @@ Rectangle {
                     height: 38
                     radius: 4
                     color: {
-                        if (root.dialogState === "success" || root.dialogState === "completed") return "#10b98120";
-                        if (root.dialogState === "failed") return "#ef444420";
-                        return (theme ? theme.accent : "#0078d4") + "20";
+                        if (root.dialogState === "success" || root.dialogState === "completed") return "#064e3b35";
+                        if (root.dialogState === "failed") return "#7f1d1d35";
+                        return "#0284c718";
                     }
                     border.color: {
-                        if (root.dialogState === "success" || root.dialogState === "completed") return "#10b981";
-                        if (root.dialogState === "failed") return "#ef4444";
-                        return theme ? theme.accent : "#0078d4";
+                        if (root.dialogState === "success" || root.dialogState === "completed") return "#10b98180";
+                        if (root.dialogState === "failed") return "#ef444480";
+                        return "#0284c760";
                     }
                     border.width: 1
 
@@ -1645,7 +1647,7 @@ Rectangle {
                         VectorIcon {
                             name: (root.dialogState === "success" || root.dialogState === "completed") ? "check" : ((root.dialogState === "failed") ? "close" : "download")
                             size: 14
-                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.accent : "#0078d4"))
+                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : "#38bdf8")
                         }
 
                         Text {
@@ -1658,7 +1660,7 @@ Rectangle {
                                 if (root.dialogState === "executing") return "Executing command...";
                                 return "Executing automated recovery...";
                             }
-                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#10b981" : ((root.dialogState === "failed") ? "#ef4444" : (theme ? theme.textBright : "#ffffff"))
+                            color: (root.dialogState === "success" || root.dialogState === "completed") ? "#34d399" : ((root.dialogState === "failed") ? "#f87171" : (theme ? theme.textBright : "#ffffff"))
                             font.pixelSize: 11
                             font.bold: true
                         }
@@ -1915,13 +1917,13 @@ Rectangle {
                     }
                 }
 
-                // Analyze with AI Button (shown in 'ready' state)
+                // Analyze with AI Button (hidden - single unified Proceed button used)
                 Rectangle {
                     width: 120
                     height: 28
                     radius: 3
                     color: analyzeMa.containsMouse ? (theme ? theme.accentHover : "#006cbd") : (theme ? theme.accent : "#0078d4")
-                    visible: root.dialogState === "ready"
+                    visible: false
 
                     Text {
                         anchors.centerIn: parent
@@ -2193,6 +2195,7 @@ Rectangle {
         root.targetLanguageId = context.language || context.languageId || "";
         root.isInstalling = false;
         root.statusMessage = "";
+        root.recoveryFinalReport = "";
         root.installLogs = "";
         root.isOpen = true;
 
@@ -2233,6 +2236,7 @@ Rectangle {
         root.resumeNote = proposal.resumeNote || "";
         root.isInstalling = false;
         root.statusMessage = "";
+        root.recoveryFinalReport = "";
         root.installLogs = "";
 
         if (proposal.sessionId || proposal.session_id) {

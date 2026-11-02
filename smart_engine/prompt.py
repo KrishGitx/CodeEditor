@@ -31,18 +31,23 @@ Your responsibility is to understand a user's intended task, diagnose problems u
 - When information about the environment is unknown, identify what evidence is needed to resolve that uncertainty.
 - Do not claim to have inspected a file, executed an action, or modified a project unless the application has supplied evidence that this occurred.
 
-### 4. Plan Concrete Resolution Actions
-- Every recovery plan MUST propose concrete, actionable steps to resolve the workflow failure.
-- When resolving a missing runner, executable, compiler, or package:
-  - You MUST emit concrete executable shell commands to install or configure the capability (e.g. `winget install SQLite.SQLite`, `pip install <package>`, `npm install -g <package>`).
-  - Use the package managers verified in the environment (e.g. winget on Windows, pip in Python).
+### 4. Dynamic Verification and Runner Configuration Loop (Zero Hardcoding)
+- Nothing is hardcoded. Every recovery step is guided dynamically by you:
+  1. Verify First: Propose a command to verify if the required CLI tool, compiler, or runtime is present on the system (e.g. `<tool> --version`, `where <tool>`).
+  2. Install if Missing: If verification output shows the tool does not exist or failed, propose the concrete package manager installation command (e.g. `winget install <id>`, `pip install <package>`).
+  3. Configure Runner in Extension: When the tool is verified or installed, check if a runner is configured for this file extension. If not configured, supply the "runner_config" block so DGX Studio dynamically registers it:
+     "runner_config": {
+       "extension": "<file extension without dot, e.g. sql, lua, zig>",
+       "name": "<friendly runner name, e.g. SQLite, LuaJIT>",
+       "command": "<command template to execute the file using '${filePath}'>"
+     }
+  4. Verify Execution: Once configured, emit a verification step to test running the file or tool.
+  5. Completion: Once all steps succeed and the tool and runner are operational, return status "completed" with "completion.verified": true and a final report summary.
 - Supported action types:
   - "command": Execute a single safe shell command (parameters: {"command": "<exact command>"}). One command per action. Do NOT combine multiple commands using '&&', ';', '|', or multi-line scripts.
   - "config": Update runtime environment or project configuration (parameters: {"env_var": "<key>", "value": "<val>"} or {"config_key": "<key>", "config_value": "<val>"}).
   - "extension": Manage a DGX extension (parameters: {"operation": "install"|"enable"|"reload", "extension_id": "<id>"}).
-- DO NOT emit abstract, placeholder, or invented "diagnostic" check names (e.g. "discover_sql_runners" or "check_sqlite_runtime_and_executable").
-- If you need to verify or probe a tool or runtime, use a real executable shell command via "command" (e.g., `<tool> --version`, `where <tool>`, or `python -c "<import_or_check>"`).
-- CRITICAL: Never declare completion ("completion.verified": true) without actually installing or configuring the missing tool/runner that caused the failure. An inspection alone does NOT solve the failure.
+- DO NOT emit abstract, placeholder, or invented "diagnostic" check names. Use real executable shell commands.
 - Propose at most 4 actions in a single batch.
 - Each action must have a clear purpose, required parameters, expected result, and verification condition.
 - Mark 'requires_approval: true' for any action that installs software, modifies system files, or changes configuration.
@@ -204,6 +209,11 @@ RESPONSE CONTRACT (JSON ONLY, NO COMMENTARY OUTSIDE JSON):
   "completion": {{
     "verified": false,
     "final_report": ""
+  }},
+  "runner_config": {{
+    "extension": "<file extension without dot or null>",
+    "name": "<friendly runner name or null>",
+    "command": "<command template using '${{filePath}}' or null>"
   }},
   "blocker": {{
     "is_blocked": false,
@@ -416,6 +426,17 @@ def parse_smart_response(
         "cannot_resolve": (status == "cannot_resolve"),
         "recovery_complete": (status == "completed"),
         "final_report": data.get("final_report") or data.get("completion", {}).get("final_report", ""),
+        "runner_config": (
+            {
+                "extension": str((data.get("runner_config") or data.get("completion", {}).get("runner_config", {})).get("extension", "")).lower().lstrip("."),
+                "name": str((data.get("runner_config") or data.get("completion", {}).get("runner_config", {})).get("name", "Custom Runner")),
+                "command": str((data.get("runner_config") or data.get("completion", {}).get("runner_config", {})).get("command", "")).strip()
+            }
+            if ((data.get("runner_config") or (isinstance(data.get("completion"), dict) and data["completion"].get("runner_config"))) and
+                isinstance((data.get("runner_config") or data["completion"].get("runner_config")), dict) and
+                (data.get("runner_config") or data["completion"].get("runner_config")).get("command"))
+            else None
+        ),
         "source": "ai",
         "resolutionType": "awaiting_user_decision" if needs_user_dec else ("single_command" if first_cmd else status)
     }

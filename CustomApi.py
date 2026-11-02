@@ -43,25 +43,46 @@ class ChatGPTClient:
             nonlocal playwright, browser, context, page
             try:
                 from playwright.sync_api import sync_playwright
-                playwright = sync_playwright().start()
-                browser = playwright.chromium.launch(
-                    headless=self.headless,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox"
-                    ]
-                )
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-                    viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                    timezone_id="Asia/Kolkata"
-                )
-                page = context.new_page()
-                page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
-                time.sleep(1.5)
-                dismiss_modals(page)
+                if not playwright:
+                    playwright = sync_playwright().start()
+                if not browser:
+                    browser = playwright.chromium.launch(
+                        headless=self.headless,
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-extensions",
+                            "--disable-gpu",
+                            "--disable-background-networking",
+                            "--disable-default-apps",
+                            "--disable-sync",
+                            "--blink-settings=imagesEnabled=false",
+                        ]
+                    )
+                if not context:
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+                        viewport={"width": 1920, "height": 1080},
+                        locale="en-US",
+                        timezone_id="Asia/Kolkata"
+                    )
+                if not page or page.is_closed():
+                    page = context.new_page()
+                    # Block images, fonts, and media to dramatically cut page load time and memory usage
+                    def _route_filter(route):
+                        if route.request.resource_type in ("image", "media", "font", "imageset"):
+                            route.abort()
+                        else:
+                            route.continue_()
+                    try:
+                        page.route("**/*", _route_filter)
+                    except Exception:
+                        pass
+                    page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(0.5)
+                    dismiss_modals(page)
                 self.is_connected = True
                 print("[CustomApi] Successfully connected to ChatGPT service.")
                 return True
@@ -151,6 +172,12 @@ class ChatGPTClient:
                 pass
             return None
 
+        # Proactively warm browser connection in the background so the first request has zero cold-start delay
+        try:
+            init_browser()
+        except Exception as prewarm_err:
+            print(f"[CustomApi] Background warm-up notice: {prewarm_err}")
+
         # Main task loop on dedicated thread
         while True:
             task = self._task_queue.get()
@@ -172,7 +199,7 @@ class ChatGPTClient:
                                 new_chat_btn.click()
                             else:
                                 page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=15000)
-                            time.sleep(1.0)
+                            time.sleep(0.5)
                             dismiss_modals(page)
                         except Exception as e:
                             print(f"[CustomApi] Reset conversation notice: {e}")
@@ -195,7 +222,7 @@ class ChatGPTClient:
                         textbox = get_active_textbox(page)
                         if textbox:
                             break
-                        time.sleep(0.2)
+                        time.sleep(0.15)
 
                     if not textbox:
                         raise RuntimeError("Chat input textbox not found or busy.")
@@ -223,7 +250,7 @@ class ChatGPTClient:
                             textbox.evaluate('(el, text) => { el.innerText = text; el.dispatchEvent(new Event("input", { bubbles: true })); }', prompt)
                         except Exception:
                             textbox.type(prompt)
-                    time.sleep(0.2)
+                    time.sleep(0.1)
                     textbox.press("Enter")
 
                     try:
@@ -239,8 +266,8 @@ class ChatGPTClient:
                     last_reported_len = 0
                     full_response = ""
 
-                    for _ in range(150):  # up to 45 seconds polling
-                        time.sleep(0.3)
+                    for _ in range(300):  # up to 45 seconds polling with 0.15s interval
+                        time.sleep(0.15)
                         dismiss_modals(page)
 
                         messages = page.locator('[data-message-role="assistant"], [data-message-author-role="assistant"]')
@@ -309,9 +336,15 @@ class ChatGPTClient:
                             stop_btn = page.locator('button[data-testid="stop-button"], button[aria-label="Stop generating"]')
                             is_generating = stop_btn.count() > 0 and stop_btn.first.is_visible()
 
-                            if not is_generating and stable_cycles >= 4:
-                                full_response = current
-                                break
+                            send_btn = page.locator('button[data-testid="send-button"], button[aria-label="Send prompt"], button[data-testid="fruitjuice-send-button"]').first
+                            send_ready = send_btn.count() > 0 and send_btn.is_enabled()
+
+                            if not is_generating and len(current) > 0:
+                                if send_ready or stable_cycles >= 2:
+                                    full_response = current
+                                    break
+
+                            previous = current
 
                             previous = current
 

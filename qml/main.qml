@@ -730,10 +730,7 @@ Window {
         var extRunner = (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_runner_for_extension) ? extensionManager.get_runner_for_extension(ext) : null;
         if (extRunner && extRunner.command) {
             cmd = extRunner.command.replace(/\$\{filePath\}/g, rawPath);
-            var tokens = extRunner.command.trim().split(/\s+/);
-            if (tokens.length > 0 && !tokens[0].includes("${")) {
-                requiredDep = tokens[0].replace(/^["']|["']$/g, '');
-            }
+            requiredDep = extRunner.executable || "";
             depType = "runner";
         } else if (ext === "py" || ext === "pyw") {
             requiredDep = "python";

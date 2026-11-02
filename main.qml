@@ -565,9 +565,10 @@ Window {
         mainWindow.terminalVisible = true;
         var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
         var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
-        var cmd = "";
-
-        if (ext === "py" || ext === "pyw") {
+        var extRunner = (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_runner_for_extension) ? extensionManager.get_runner_for_extension(ext) : null;
+        if (extRunner && extRunner.command) {
+            cmd = extRunner.command.replace(/\$\{filePath\}/g, rawPath);
+        } else if (ext === "py" || ext === "pyw") {
             cmd = 'python "' + rawPath + '"';
         } else if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") {
             cmd = 'g++ -std=c++17 "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';

@@ -40,6 +40,7 @@ class RecoverySession:
         
         self.decision_request: Optional[dict] = None
         self.user_decisions: Dict[str, Any] = {}
+        self.runner_config: Optional[dict] = None
 
     @property
     def commands_remaining(self) -> int:
@@ -188,5 +189,7 @@ class RecoverySession:
             "finalReport": self.final_report or "",
             "final_diagnosis": self.final_diagnosis or {},
             "finalDiagnosis": self.final_diagnosis or {},
+            "runner_config": self.runner_config,
+            "runnerConfig": self.runner_config,
             "context": self.context
         }

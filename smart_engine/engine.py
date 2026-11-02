@@ -259,6 +259,9 @@ class SmartEngine:
         proposal["languageId"] = context.get("language") or context.get("languageId", "")
         proposal["retryAction"] = context.get("retryAction", "run")
 
+        if proposal.get("runner_config"):
+            session.runner_config = proposal["runner_config"]
+
         has_decision = bool(
             proposal.get("decision_request") and
             isinstance(proposal["decision_request"], dict) and
@@ -284,7 +287,14 @@ class SmartEngine:
             proposal["commands_remaining"] = session.commands_remaining
         elif proposal.get("recovery_complete"):
             session.status = "completed"
+            session.final_report = proposal.get("final_report", "Recovery completed successfully.")
             proposal["status"] = "completed"
+            if session.runner_config and self.extension_manager:
+                r_ext = session.runner_config.get("extension")
+                if r_ext and hasattr(self.extension_manager, "register_extension_runner"):
+                    self.extension_manager.register_extension_runner("smart_install", r_ext, session.runner_config)
+            if self.extension_manager and hasattr(self.extension_manager, "recoverySessionEnded"):
+                self.extension_manager.recoverySessionEnded.emit(session.session_id, True, session.final_report)
         else:
             session.status = "cannot_resolve"
             proposal["status"] = "cannot_resolve"
@@ -323,7 +333,18 @@ class SmartEngine:
         print(f"[SmartInstall] [{session_id}] [USER_DECISION] User provided choice for '{key}': '{decision}'")
 
         # Resume session via replanning
-        return self.replan_session(session_id)
+        replan_ok = self.replan_session(session_id)
+        if replan_ok:
+            if session.status in ("ready", "awaiting_approval") and session.active_batch:
+                for act in session.active_batch:
+                    act.approved = True
+                for act in session.pending_queue:
+                    act.approved = True
+                session.waiting_for_approval_cmd = None
+                session.status = "ready"
+                if self.extension_manager and hasattr(self.extension_manager, "recoveryPlanUpdated"):
+                    self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
+        return replan_ok
 
     def replan_session(self, session_id: str) -> bool:
         """Re-queries AI with accumulated command results, user answers, and budget."""
@@ -363,6 +384,9 @@ class SmartEngine:
                 self.extension_manager.recoveryPlanUpdated.emit(session.to_dict())
             return False
 
+        if proposal.get("runner_config"):
+            session.runner_config = proposal["runner_config"]
+
         has_decision = bool(
             proposal.get("decision_request") and
             isinstance(proposal["decision_request"], dict) and
@@ -380,6 +404,12 @@ class SmartEngine:
         elif proposal.get("recovery_complete"):
             session.status = "completed"
             session.final_report = proposal.get("final_report", "Recovery completed successfully.")
+            if session.runner_config and self.extension_manager:
+                r_ext = session.runner_config.get("extension")
+                if r_ext and hasattr(self.extension_manager, "register_extension_runner"):
+                    self.extension_manager.register_extension_runner("smart_install", r_ext, session.runner_config)
+            if self.extension_manager and hasattr(self.extension_manager, "recoverySessionEnded"):
+                self.extension_manager.recoverySessionEnded.emit(session.session_id, True, session.final_report)
         elif proposal.get("commands"):
             session.replan(proposal["commands"], proposal.get("proposed_total_steps"))
             first_cmd = session.active_batch[0] if session.active_batch else None
@@ -412,10 +442,14 @@ class SmartEngine:
         for act in session.pending_queue:
             act.approved = True
         session.waiting_for_approval_cmd = None
+        if session.status == "awaiting_approval":
+            session.status = "ready"
 
-        while session.active_batch and session.status in ("ready", "planning", "executing", "verifying"):
+        while session.active_batch and session.status in ("ready", "planning", "executing", "verifying", "awaiting_approval"):
             act = session.active_batch[0]
             act.approved = True
+            if session.status == "awaiting_approval":
+                session.status = "ready"
 
             success, formatted_res = self.execute_session_action(session_id, act.action_id)
 
@@ -435,12 +469,18 @@ class SmartEngine:
                     return True
 
                 # If AI provided a new corrective plan, approve actions and continue execution
-                if session.status in ("ready", "planning") and session.active_batch:
+                if session.status in ("ready", "planning", "awaiting_approval") and session.active_batch:
                     for new_act in session.active_batch:
                         new_act.approved = True
+                    for new_act in session.pending_queue:
+                        new_act.approved = True
+                    session.waiting_for_approval_cmd = None
+                    session.status = "ready"
                     continue
                 else:
                     return session.status in ("completed", "succeeded")
+
+        return session.status in ("completed", "succeeded")
 
         return session.status in ("completed", "succeeded")
 
@@ -562,6 +602,14 @@ class SmartEngine:
             else:
                 session.status = "completed"
                 session.final_report = f"All {session.actual_commands_executed} recovery steps completed successfully."
+
+                # Dynamically register runner with ExtensionManager if provided by AI
+                if session.runner_config and self.extension_manager:
+                    r_ext = session.runner_config.get("extension")
+                    if r_ext and hasattr(self.extension_manager, "register_extension_runner"):
+                        self.extension_manager.register_extension_runner("smart_install", r_ext, session.runner_config)
+                        print(f"[SmartInstall] Dynamically registered runner for .{r_ext}: {session.runner_config.get('command')}")
+
                 if self.extension_manager and hasattr(self.extension_manager, "recoverySessionEnded"):
                     self.extension_manager.recoverySessionEnded.emit(session_id, True, session.final_report)
                 if self.extension_manager and hasattr(self.extension_manager, "recoveryPlanUpdated"):
