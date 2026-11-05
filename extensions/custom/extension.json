@@ -1,0 +1,9 @@
+{
+  "id": "user.my_first_extension",
+  "name": "My Custom Extension",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "My first pure-Python DGX extension.",
+  "main": "main.py",
+  "categories": ["Tools", "Productivity"]
+}

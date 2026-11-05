@@ -39,8 +39,9 @@ Your responsibility is to understand a user's intended task, diagnose problems u
      "runner_config": {
        "extension": "<file extension without dot, e.g. sql, lua, zig>",
        "name": "<friendly runner name, e.g. SQLite, LuaJIT>",
-       "command": "<command template to execute the file using '${filePath}'>"
+       "command": "<non-interactive command template, e.g. 'Get-Content \"${filePath}\" | sqlite3 -header -column'>"
      }
+  - IMPORTANT: Runner commands must execute non-interactively without opening a REPL shell. For SQL with SQLite, always use 'Get-Content "${filePath}" | sqlite3 -header -column' (passing a script directly to 'sqlite3 "file.sql"' opens the file as an interactive database and hangs).
   4. Verify Execution: Once configured, emit a verification step to test running the file or tool.
   5. Completion: Once all steps succeed and the tool and runner are operational, return status "completed" with "completion.verified": true and a final report summary.
 - Supported action types:

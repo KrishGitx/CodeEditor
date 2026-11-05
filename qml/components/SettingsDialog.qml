@@ -20,22 +20,35 @@ Rectangle {
     signal closeRequested()
     signal themeSelected(string themeName)
     signal extensionsRequested()
+    signal openAsTabRequested()
+    signal openAsPopupRequested()
 
-    width: 760
-    height: 560
-    radius: theme ? theme.radiusMd : 6
-    color: theme ? theme.bgPopup : "#252526"
+    property bool isTabMode: false
+
+    width: isTabMode ? undefined : 760
+    height: isTabMode ? undefined : 560
+    radius: isTabMode ? 0 : (theme ? theme.radiusMd : 6)
+    color: isTabMode ? (theme ? theme.bgEditor : "#1e1e1e") : (theme ? theme.bgPopup : "#252526")
     border.color: theme ? theme.borderNormal : "#333333"
-    border.width: 1
+    border.width: isTabMode ? 0 : 1
 
     property var categories: [
         { name: "General", icon: "settings" },
         { name: "Appearance", icon: "sparkles" },
         { name: "Editor", icon: "file" },
-        { name: "Terminal", icon: "code" },
         { name: "Shortcuts", icon: "keyboard" },
-        { name: "Radial Menu", icon: "zen" }
+        { name: "Radial Menu", icon: "zen" },
+        { name: "Extensions", icon: "puzzle" }
     ]
+
+    function matchesShortcutFilter(t, s, sc) {
+        if (!shortcutSearchInput || !shortcutSearchInput.text || shortcutSearchInput.text.trim() === "") return true;
+        var q = shortcutSearchInput.text.toLowerCase().trim();
+        if (t && t.toLowerCase().indexOf(q) !== -1) return true;
+        if (s && s.toLowerCase().indexOf(q) !== -1) return true;
+        if (sc && sc.toLowerCase().indexOf(q) !== -1) return true;
+        return false;
+    }
 
     property var radialConfigItems: []
     property var customActions: []
@@ -194,19 +207,26 @@ Rectangle {
     onVisibleChanged: {
         if (visible) {
             loadRadialConfig();
+            if (theme && theme.refreshAvailableThemes) {
+                theme.refreshAvailableThemes();
+            }
         }
     }
 
-    property var themeList: [
-        { id: "obsidian", name: "Obsidian Dark", color: "#181818" },
-        { id: "midnight", name: "Midnight Navy", color: "#0f131a" },
-        { id: "dracula", name: "Dracula", color: "#282a36" },
-        { id: "nord", name: "Nord Arctic", color: "#2e3440" },
-        { id: "monokai", name: "Monokai Pro", color: "#272822" },
-        { id: "light", name: "Clean Light", color: "#f8f9fa" },
-        { id: "paper", name: "Paper Warm", color: "#f5f2eb" },
-        { id: "glass", name: "Frosted Glass", color: "#141822" }
-    ]
+    property var themeList: (theme && theme.availableThemes && theme.availableThemes.length > 0)
+        ? theme.availableThemes
+        : (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_available_themes
+            ? settingsBackend.get_available_themes()
+            : [
+                { id: "obsidian", name: "Obsidian Dark", color: "#181818" },
+                { id: "midnight", name: "Midnight Navy", color: "#0f131a" },
+                { id: "dracula", name: "Dracula", color: "#282a36" },
+                { id: "nord", name: "Nord Arctic", color: "#2e3440" },
+                { id: "monokai", name: "Monokai Pro", color: "#272822" },
+                { id: "light", name: "Clean Light", color: "#f8f9fa" },
+                { id: "paper", name: "Paper Warm", color: "#f5f2eb" },
+                { id: "glass", name: "Frosted Glass", color: "#141822" }
+            ])
 
     ColumnLayout {
         anchors.fill: parent
@@ -272,11 +292,12 @@ Rectangle {
             // Draggable Header Area
             MouseArea {
                 anchors.fill: parent
-                anchors.rightMargin: 44
-                drag.target: root
+                anchors.rightMargin: 40
+                drag.target: root.isTabMode ? null : root
                 drag.axis: Drag.XAndYAxis
-                cursorShape: Qt.SizeAllCursor
+                cursorShape: root.isTabMode ? Qt.ArrowCursor : Qt.SizeAllCursor
                 acceptedButtons: Qt.LeftButton
+                enabled: !root.isTabMode
                 z: 5
             }
         }
@@ -288,73 +309,85 @@ Rectangle {
             color: theme ? theme.borderSubtle : "#282828"
         }
 
-        // 1.5 Interactive Search Bar
+        // 1.5 Interactive Inset Search Bar
         Rectangle {
             Layout.fillWidth: true
             height: 42
-            color: theme ? theme.bgSidebar : "#1b1b1d"
+            color: theme ? theme.bgSidebar : "#181818"
             border.color: theme ? theme.borderSubtle : "#282828"
             border.width: 1
 
-            RowLayout {
+            Rectangle {
                 anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                spacing: 10
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 7
+                anchors.bottomMargin: 7
+                radius: 4
+                color: theme ? theme.bgSurface : "#252526"
+                border.color: searchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#333333")
+                border.width: 1
 
-                VectorIcon {
-                    name: "search"
-                    size: 12
-                    color: searchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
-                }
-
-                TextInput {
-                    id: searchInput
-                    Layout.fillWidth: true
-                    text: root.searchQuery
-                    color: theme ? theme.textBright : "#ffffff"
-                    font.pixelSize: 12
-                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                    selectByMouse: true
-                    clip: true
-
-                    Text {
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        text: "Search settings, themes, AI, shortcuts, runner..."
-                        color: theme ? theme.textMuted : "#656565"
-                        font.pixelSize: 12
-                        font.italic: true
-                        visible: !searchInput.text && !searchInput.activeFocus
-                    }
-
-                    onTextChanged: {
-                        root.searchQuery = text;
-                    }
-                }
-
-                Rectangle {
-                    width: 20
-                    height: 20
-                    radius: 10
-                    color: clearSearchMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-                    visible: root.searchQuery.length > 0
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
 
                     VectorIcon {
-                        anchors.centerIn: parent
-                        name: "close"
-                        size: 8
-                        color: theme ? theme.textSecondary : "#858585"
+                        name: "search"
+                        size: 11
+                        color: searchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
                     }
 
-                    MouseArea {
-                        id: clearSearchMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            searchInput.text = "";
-                            root.searchQuery = "";
+                    TextInput {
+                        id: searchInput
+                        Layout.fillWidth: true
+                        text: root.searchQuery
+                        color: theme ? theme.textBright : "#ffffff"
+                        font.pixelSize: 11
+                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                        selectByMouse: true
+                        clip: true
+
+                        Text {
+                            anchors.fill: parent
+                            verticalAlignment: Text.AlignVCenter
+                            text: "Search settings, themes, shortcuts..."
+                            color: theme ? theme.textMuted : "#656565"
+                            font.pixelSize: 11
+                            font.italic: true
+                            visible: !searchInput.text && !searchInput.activeFocus
+                        }
+
+                        onTextChanged: {
+                            root.searchQuery = text;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 18
+                        height: 18
+                        radius: 9
+                        color: clearSearchMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+                        visible: root.searchQuery.length > 0
+
+                        VectorIcon {
+                            anchors.centerIn: parent
+                            name: "close"
+                            size: 8
+                            color: theme ? theme.textSecondary : "#858585"
+                        }
+
+                        MouseArea {
+                            id: clearSearchMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                searchInput.text = "";
+                                root.searchQuery = "";
+                            }
                         }
                     }
                 }
@@ -381,9 +414,22 @@ Rectangle {
 
                     delegate: Rectangle {
                         width: parent ? parent.width : 154
-                        height: 36
+                        height: 34
                         radius: theme ? theme.radiusSm : 4
-                        color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.bgSelected : "#04395e") : (catMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+                        color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.bgSurfaceActive : "#37373d") : (catMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
+
+                        // Active category accent indicator strip
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.topMargin: 4
+                            anchors.bottomMargin: 4
+                            width: 3
+                            radius: 1.5
+                            color: theme ? theme.accent : "#0078d4"
+                            visible: (root.searchQuery.length === 0 && index === root.activeCategoryIndex)
+                        }
 
                         RowLayout {
                             anchors.fill: parent
@@ -394,7 +440,7 @@ Rectangle {
                             VectorIcon {
                                 name: modelData.icon
                                 size: 13
-                                color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585")
+                                color: (root.searchQuery.length === 0 && index === root.activeCategoryIndex) ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textSecondary : "#858585")
                             }
 
                             Text {
@@ -638,7 +684,7 @@ Rectangle {
                                         width: (parent.width - 10) / 2
                                         height: 44
                                         radius: theme ? theme.radiusSm : 4
-                                        color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.bgSelected : "#04395e") : (themeItemMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgSurface : "#252526"))
+                                        color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.bgSurfaceActive : "#37373d") : (themeItemMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgSurface : "#252526"))
                                         border.color: (theme && theme.currentTheme === modelData.id) ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
                                         border.width: 1
 
@@ -954,59 +1000,7 @@ Rectangle {
                         }
                     }
 
-                    // =========================================================
-                    // 3. TERMINAL TAB
-                    // =========================================================
-                    ScrollView {
-                        id: terminalScroll
-                        clip: true
-                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                        Column {
-                            width: Math.max(380, terminalScroll.availableWidth)
-                            spacing: 14
-
-                            Text {
-                                text: "Terminal Settings"
-                                color: theme ? theme.textBright : "#ffffff"
-                                font.pixelSize: 15
-                                font.bold: true
-                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                            }
-
-                            Item { width: 1; height: 6 }
-
-                            Rectangle {
-                                width: parent.width
-                                height: 64
-                                radius: theme ? theme.radiusSm : 4
-                                color: theme ? theme.bgSurface : "#252526"
-                                border.color: theme ? theme.borderSubtle : "#282828"
-                                border.width: 1
-
-                                Column {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 16
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: 4
-
-                                    Text {
-                                        text: "Integrated Terminal: PowerShell / Windows Shell"
-                                        color: theme ? theme.textPrimary : "#cccccc"
-                                        font.pixelSize: 12
-                                        font.bold: true
-                                    }
-
-                                    Text {
-                                        text: "Shortcut: Ctrl+` | Split terminal with Split button"
-                                        color: theme ? theme.textMuted : "#656565"
-                                        font.pixelSize: 11
-                                    }
-                                }
-                            }
-                        }
-                    }
 
                     // =========================================================
                     // 4. SHORTCUTS TAB
@@ -1081,6 +1075,70 @@ Rectangle {
                                 font.pixelSize: 11
                             }
 
+                            // Interactive Shortcuts Search Bar
+                            Rectangle {
+                                width: parent.width
+                                height: 32
+                                radius: theme ? theme.radiusSm : 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: shortcutSearchInput.activeFocus ? (theme ? theme.borderFocus : "#0078d4") : (theme ? theme.borderSubtle : "#333333")
+                                border.width: 1
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 8
+                                    anchors.rightMargin: 8
+                                    spacing: 6
+
+                                    VectorIcon {
+                                        name: "search"
+                                        size: 13
+                                        color: theme ? theme.textMuted : "#656565"
+                                    }
+
+                                    TextInput {
+                                        id: shortcutSearchInput
+                                        Layout.fillWidth: true
+                                        color: theme ? theme.textBright : "#ffffff"
+                                        font.pixelSize: 12
+                                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                        selectByMouse: true
+                                        clip: true
+
+                                        Text {
+                                            text: "Search shortcuts by name, key, or category..."
+                                            color: theme ? theme.textMuted : "#656565"
+                                            font.pixelSize: 12
+                                            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                            visible: !shortcutSearchInput.text && !shortcutSearchInput.activeFocus
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        width: 16
+                                        height: 16
+                                        radius: 8
+                                        visible: shortcutSearchInput.text.length > 0
+                                        color: clearScSearchMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#37373d") : "transparent"
+
+                                        VectorIcon {
+                                            anchors.centerIn: parent
+                                            name: "close"
+                                            size: 8
+                                            color: theme ? theme.textMuted : "#656565"
+                                        }
+
+                                        MouseArea {
+                                            id: clearScSearchMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: shortcutSearchInput.text = ""
+                                        }
+                                    }
+                                }
+                            }
+
                             Item { width: 1; height: 4 }
 
                             // Navigation Shortcuts Section Header
@@ -1089,6 +1147,8 @@ Rectangle {
                                 color: theme ? theme.accent : "#38bdf8"
                                 font.pixelSize: 12
                                 font.bold: true
+                                visible: !shortcutSearchInput.text || shortcutSearchInput.text.trim() === ""
+                                height: visible ? implicitHeight : 0
                             }
 
                             ShortcutSettingRow {
@@ -1139,6 +1199,8 @@ Rectangle {
                                 color: theme ? theme.accent : "#38bdf8"
                                 font.pixelSize: 12
                                 font.bold: true
+                                visible: !shortcutSearchInput.text || shortcutSearchInput.text.trim() === ""
+                                height: visible ? implicitHeight : 0
                             }
 
                             ShortcutSettingRow {
@@ -1848,6 +1910,177 @@ Rectangle {
                     }
 
                     // =========================================================
+                    // 5. EXTENSIONS SETTINGS TAB
+                    // =========================================================
+                    ScrollView {
+                        id: extensionsSettingsScroll
+                        clip: true
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        Column {
+                            width: Math.max(380, extensionsSettingsScroll.availableWidth)
+                            spacing: 14
+
+                            Text {
+                                text: "Extension Settings"
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                            }
+
+                            Text {
+                                text: "Configuration settings contributed by active Python extensions."
+                                color: theme ? theme.textSecondary : "#858585"
+                                font.pixelSize: 12
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                            }
+
+                            Item { width: 1; height: 4 }
+
+                            // Empty State when no custom settings are registered
+                            Rectangle {
+                                width: parent.width
+                                height: 70
+                                radius: 4
+                                color: theme ? theme.bgSurface : "#252526"
+                                border.color: theme ? theme.borderSubtle : "#333333"
+                                visible: !extensionManager || !extensionManager.customSettings || extensionManager.customSettings.length === 0
+
+                                RowLayout {
+                                    anchors.centerIn: parent
+                                    spacing: 10
+                                    VectorIcon {
+                                        name: "puzzle"
+                                        size: 16
+                                        color: theme ? theme.textMuted : "#656565"
+                                    }
+                                    Text {
+                                        text: "No extension settings registered yet. When a Python extension calls api.settings, its controls appear here."
+                                        color: theme ? theme.textMuted : "#656565"
+                                        font.pixelSize: 11
+                                        font.italic: true
+                                    }
+                                }
+                            }
+
+                            // Dynamic Settings Contributed by Extensions
+                            Repeater {
+                                model: (typeof extensionManager !== "undefined" && extensionManager && extensionManager.customSettings) ? extensionManager.customSettings : []
+                                delegate: Rectangle {
+                                    width: parent.width
+                                    height: modelData.type === "slider" ? 64 : 52
+                                    radius: theme ? theme.radiusSm : 4
+                                    color: theme ? theme.bgSurface : "#252526"
+                                    border.color: theme ? theme.borderSubtle : "#282828"
+                                    border.width: 1
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 16
+                                        anchors.rightMargin: 16
+                                        spacing: 12
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            Text {
+                                                text: modelData.title || modelData.key
+                                                color: theme ? theme.textBright : "#ffffff"
+                                                font.pixelSize: 12
+                                                font.bold: true
+                                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                            }
+                                            Text {
+                                                text: modelData.subtitle || ("Contributed by: " + (modelData.extension_id || ""))
+                                                color: theme ? theme.textSecondary : "#858585"
+                                                font.pixelSize: 11
+                                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+
+                                        // 1. Boolean Toggle Switch
+                                        Rectangle {
+                                            visible: modelData.type === "boolean"
+                                            width: 36
+                                            height: 20
+                                            radius: 10
+                                            color: modelData.value ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#444444")
+                                            Behavior on color { ColorAnimation { duration: 120 } }
+
+                                            Rectangle {
+                                                width: 16
+                                                height: 16
+                                                radius: 8
+                                                color: "#ffffff"
+                                                y: 2
+                                                x: modelData.value ? 18 : 2
+                                                Behavior on x { NumberAnimation { duration: 120 } }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    extensionManager.setCustomSetting(modelData.extension_id, modelData.key, !modelData.value);
+                                                }
+                                            }
+                                        }
+
+                                        // 2. Slider
+                                        RowLayout {
+                                            visible: modelData.type === "slider"
+                                            spacing: 8
+                                            Slider {
+                                                from: modelData.min_value !== undefined ? modelData.min_value : 0
+                                                to: modelData.max_value !== undefined ? modelData.max_value : 100
+                                                value: modelData.value !== undefined ? modelData.value : (modelData.default || 50)
+                                                onMoved: extensionManager.setCustomSetting(modelData.extension_id, modelData.key, value)
+                                            }
+                                            Text {
+                                                text: "" + Math.round(modelData.value || 0)
+                                                font.pixelSize: 11
+                                                font.bold: true
+                                                color: theme ? theme.textBright : "#ffffff"
+                                            }
+                                        }
+
+                                        // 3. Dropdown Selector
+                                        ComboBox {
+                                            visible: modelData.type === "select"
+                                            model: modelData.options || []
+                                            currentIndex: Math.max(0, model.indexOf(modelData.value || ""))
+                                            onActivated: extensionManager.setCustomSetting(modelData.extension_id, modelData.key, currentText)
+                                        }
+
+                                        // 4. String Input
+                                        Rectangle {
+                                            visible: modelData.type === "string"
+                                            width: 160
+                                            height: 28
+                                            radius: 4
+                                            color: theme ? theme.bgPanel : "#181818"
+                                            border.color: theme ? theme.borderNormal : "#333333"
+
+                                            TextInput {
+                                                anchors.fill: parent
+                                                anchors.margins: 6
+                                                verticalAlignment: Text.AlignVCenter
+                                                text: "" + (modelData.value !== undefined ? modelData.value : "")
+                                                color: theme ? theme.textBright : "#ffffff"
+                                                font.pixelSize: 11
+                                                onAccepted: extensionManager.setCustomSetting(modelData.extension_id, modelData.key, text)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
                     // 6. SEARCH RESULTS TAB
                     // =========================================================
                     ScrollView {
@@ -2357,7 +2590,8 @@ Rectangle {
         property bool isRecording: false
         signal shortcutChanged(string val)
 
-        height: 52
+        visible: (root.activeCategoryIndex === 3 && typeof shortcutSearchInput !== "undefined" && shortcutSearchInput && shortcutSearchInput.text.trim().length > 0) ? root.matchesShortcutFilter(title, subtitle, currentShortcut) : true
+        height: visible ? 52 : 0
         radius: theme ? theme.radiusSm : 4
         color: scRow.isRecording ? (theme ? theme.bgSurfaceActive : "#2a2d3e") : (theme ? theme.bgSurface : "#252526")
         border.color: scRow.isRecording ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#282828")

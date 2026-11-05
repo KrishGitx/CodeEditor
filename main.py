@@ -1,15 +1,39 @@
 import sys
 import os
+import queue
 from pathlib import Path
 
 # Add current directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QTextCursor
+# Reconfigure Windows stdout/stderr to UTF-8 to prevent 'charmap' crashes on Unicode emojis (e.g. 😎, 🔥)
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+from PySide6.QtGui import QGuiApplication, QSurfaceFormat, QTextCursor, QKeySequence
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread, QEvent, QFileSystemWatcher, QTimer
+from PySide6.QtCore import Qt, QObject, Slot, Signal, QThread, QEvent, QFileSystemWatcher, QTimer, qInstallMessageHandler
 from PySide6.QtQuick import QQuickTextDocument
 from PySide6.QtQuickControls2 import QQuickStyle
+
+def _safe_qt_message_handler(mode, context, message):
+    try:
+        sys.stderr.write(str(message) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        try:
+            sys.stderr.write(str(message).encode("ascii", errors="replace").decode("ascii") + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+qInstallMessageHandler(_safe_qt_message_handler)
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 import subprocess
@@ -45,6 +69,28 @@ except Exception:
 # ==============================================================================
 # GLOBAL CONTEXT MENU FILTER (Blocks Native OS QMenu from Popping Up)
 # ==============================================================================
+class GlobalExtensionShortcutFilter(QObject):
+    def __init__(self, extension_manager):
+        super().__init__()
+        self.extension_manager = extension_manager
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key not in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Key_Meta):
+                try:
+                    modifiers = event.modifiers()
+                    seq = QKeySequence(modifiers.value | key).toString()
+                    if seq and hasattr(self.extension_manager, "_custom_shortcuts"):
+                        if seq in self.extension_manager._custom_shortcuts:
+                            if self.extension_manager.dispatch_shortcut(seq):
+                                event.accept()
+                                return True
+                except Exception:
+                    pass
+        return super().eventFilter(obj, event)
+
+
 class GlobalContextMenuFilter(QObject):
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.ContextMenu:
@@ -99,6 +145,39 @@ class LSPReaderWorker(QThread):
                 break
 
 
+class LSPWriterWorker(QThread):
+    """
+    Non-blocking background thread for LSP stdin writes.
+    Prevents large document didChange / completion payloads from blocking the Qt GUI thread.
+    """
+    def __init__(self, process):
+        super().__init__()
+        self.process = process
+        self.queue = queue.Queue()
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                item = self.queue.get(timeout=0.1)
+                if item is None:
+                    break
+                if self.process and self.process.poll() is None and self.process.stdin:
+                    self.process.stdin.write(item)
+                    self.process.stdin.flush()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                pass
+
+    def send(self, data: bytes):
+        self.queue.put(data)
+
+    def stop(self):
+        self.running = False
+        self.queue.put(None)
+
+
 import bisect
 
 # ==============================================================================
@@ -113,20 +192,41 @@ class BackingDocument:
     """
     def __init__(self, text=""):
         self.set_text(text)
-        self.saved_text = text
+        self.saved_text = text or ""
         self.is_modified = False
 
     def set_text(self, text):
-        self.text = text or ""
-        self.lines = self.text.split("\n")
+        self._text = text or ""
+        self.lines = self._text.split("\n")
         self.total_lines = len(self.lines)
-        self.line_offsets = [0]
-        curr = 0
-        for l in self.lines:
-            curr += len(l) + 1  # include \n
-            self.line_offsets.append(curr)
-        self.total_chars = len(self.text)
-        self.is_modified = (self.text != getattr(self, "saved_text", self.text))
+        self._line_offsets = None
+        self.total_chars = len(self._text)
+        self.is_modified = (self._text != getattr(self, "saved_text", self._text))
+
+    @property
+    def text(self):
+        if self._text is None:
+            self._text = "\n".join(self.lines)
+        return self._text
+
+    @text.setter
+    def text(self, val):
+        self._text = val
+
+    @property
+    def line_offsets(self):
+        if self._line_offsets is None:
+            offsets = [0]
+            curr = 0
+            for l in self.lines:
+                curr += len(l) + 1
+                offsets.append(curr)
+            self._line_offsets = offsets
+        return self._line_offsets
+
+    @line_offsets.setter
+    def line_offsets(self, val):
+        self._line_offsets = val
 
     def get_slice(self, start_line, end_line):
         """Returns slice of text from start_line to end_line (inclusive, 0-indexed)."""
@@ -142,15 +242,11 @@ class BackingDocument:
         s_line = max(0, min(start_line, self.total_lines))
         e_line = max(s_line, min(end_line + 1, self.total_lines))
         self.lines[s_line:e_line] = new_slice_lines
-        self.text = "\n".join(self.lines)
         self.total_lines = len(self.lines)
-        self.line_offsets = [0]
-        curr = 0
-        for l in self.lines:
-            curr += len(l) + 1
-            self.line_offsets.append(curr)
-        self.total_chars = len(self.text)
-        self.is_modified = (self.text != getattr(self, "saved_text", ""))
+        self._text = None  # Invalidate cached text, recomputed lazily when saving or searching
+        self._line_offsets = None  # Invalidate offsets, recomputed lazily on demand
+        self.total_chars = -1
+        self.is_modified = True
 
     def mark_saved(self):
         self.saved_text = self.text
@@ -159,14 +255,16 @@ class BackingDocument:
     def line_to_char_offset(self, line_num):
         if line_num < 0:
             return 0
-        if line_num >= len(self.line_offsets):
-            return self.total_chars
-        return self.line_offsets[line_num]
+        offsets = self.line_offsets
+        if line_num >= len(offsets):
+            return len(self.text)
+        return offsets[line_num]
 
     def char_offset_to_line(self, char_pos):
-        idx = bisect.bisect_right(self.line_offsets, char_pos) - 1
+        offsets = self.line_offsets
+        idx = bisect.bisect_right(offsets, char_pos) - 1
         idx = max(0, min(idx, self.total_lines - 1))
-        col = char_pos - self.line_offsets[idx]
+        col = char_pos - offsets[idx]
         return idx, col
 
     def global_search(self, query, case_sensitive=False, is_regex=False):
@@ -176,7 +274,8 @@ class BackingDocument:
         flags = 0 if case_sensitive else re.IGNORECASE
         pattern = query if is_regex else re.escape(query)
         try:
-            for m in re.finditer(pattern, self.text, flags):
+            full_txt = self.text
+            for m in re.finditer(pattern, full_txt, flags):
                 start = m.start()
                 end = m.end()
                 s_line, s_col = self.char_offset_to_line(start)
@@ -234,6 +333,7 @@ class EditorBackend(QObject):
         self.formatter_manager = FormatterManager(self.extension_manager)
         self.extension_manager.editor_backend = self
         self.extension_manager.set_formatter_manager(self.formatter_manager)
+        self.extension_manager._editor_context_provider = self.get_editor_context_for_extensions
         self.backing_docs = {}  # Normalized key -> BackingDocument
 
         # Filesystem Watcher for external filesystem change detection
@@ -391,6 +491,12 @@ class EditorBackend(QObject):
         if self.highlighter and hasattr(self.highlighter, "update_visible_range"):
             self.highlighter.update_visible_range(start_line, end_line)
 
+    @Slot()
+    def rehighlight_current(self):
+        if self.highlighter:
+            self.highlighter.formatted_blocks.clear()
+            self.highlighter.rehighlight()
+
     @Slot(result=bool)
     @Slot(QObject, result=bool)
     def is_document_modified(self, qml_text_area=None):
@@ -533,9 +639,28 @@ class EditorBackend(QObject):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        # Look for pylsp in local venv or system PATH
-        venv_pylsp = Path(__file__).parent / ".qtcreator" / "Python_3_14_3venv" / "Scripts" / "pylsp.exe"
-        server_path = str(venv_pylsp) if venv_pylsp.exists() else "pylsp"
+        # Look for pylsp dynamically in virtualenvs, python scripts, or system PATH
+        candidates = []
+        py_scripts = Path(sys.executable).parent
+        candidates.append(py_scripts / ("pylsp.exe" if os.name == "nt" else "pylsp"))
+        candidates.append(py_scripts / "Scripts" / ("pylsp.exe" if os.name == "nt" else "pylsp"))
+        qtcreator_dir = Path(__file__).parent / ".qtcreator"
+        if qtcreator_dir.exists():
+            candidates.extend(qtcreator_dir.glob("*venv*/Scripts/pylsp.exe"))
+            candidates.extend(qtcreator_dir.glob("*venv*/bin/pylsp"))
+        for venv_name in (".venv", "venv", "env"):
+            vdir = Path(__file__).parent / venv_name
+            if vdir.exists():
+                candidates.append(vdir / "Scripts" / ("pylsp.exe" if os.name == "nt" else "pylsp"))
+                candidates.append(vdir / "bin" / "pylsp")
+
+        server_path = None
+        for cand in candidates:
+            if cand.exists():
+                server_path = str(cand)
+                break
+        if not server_path:
+            server_path = shutil.which("pylsp") or "pylsp"
 
         try:
             self.lsp_process = subprocess.Popen(
@@ -548,6 +673,9 @@ class EditorBackend(QObject):
                 self.reader_thread = LSPReaderWorker(self.lsp_process)
                 self.reader_thread.message_received.connect(self.handle_lsp_message)
                 self.reader_thread.start()
+
+                self.writer_thread = LSPWriterWorker(self.lsp_process)
+                self.writer_thread.start()
 
                 root_uri = Path(self.folder_path).as_uri()
                 self.send_lsp_request("initialize", {
@@ -566,6 +694,11 @@ class EditorBackend(QObject):
             print("LSP could not be started:", e)
 
     def stop_lsp_server(self):
+        if hasattr(self, "writer_thread") and self.writer_thread:
+            try:
+                self.writer_thread.stop()
+            except Exception:
+                pass
         if self.lsp_process:
             try:
                 self.lsp_process.terminate()
@@ -582,8 +715,11 @@ class EditorBackend(QObject):
             js = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": dic}
             json_string = json.dumps(js)
             header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
-            self.lsp_process.stdin.write(header.encode('utf-8'))
-            self.lsp_process.stdin.flush()
+            if hasattr(self, "writer_thread") and self.writer_thread and self.writer_thread.isRunning():
+                self.writer_thread.send(header.encode('utf-8'))
+            else:
+                self.lsp_process.stdin.write(header.encode('utf-8'))
+                self.lsp_process.stdin.flush()
             return req_id
         except Exception as e:
             print("LSP request error:", e)
@@ -596,8 +732,11 @@ class EditorBackend(QObject):
             js = {"jsonrpc": "2.0", "method": method, "params": dic}
             json_string = json.dumps(js)
             header = f"Content-Length: {len(json_string)}\r\n\r\n{json_string}"
-            self.lsp_process.stdin.write(header.encode('utf-8'))
-            self.lsp_process.stdin.flush()
+            if hasattr(self, "writer_thread") and self.writer_thread and self.writer_thread.isRunning():
+                self.writer_thread.send(header.encode('utf-8'))
+            else:
+                self.lsp_process.stdin.write(header.encode('utf-8'))
+                self.lsp_process.stdin.flush()
         except Exception as e:
             print("LSP notification error:", e)
 
@@ -628,6 +767,18 @@ class EditorBackend(QObject):
             "contentChanges": [{"text": full_text}]
         }
         self.send_lsp_notification("textDocument/didChange", payload)
+        if hasattr(self, "extension_manager") and self.extension_manager:
+            self.extension_manager.notify_editor_change(filepath, full_text)
+
+
+    def get_editor_context_for_extensions(self):
+        doc = self._get_backing_doc(self._norm_key(self.active_file_path))
+        text = doc.text if doc else ""
+        return {
+            "path": self.active_file_path or "",
+            "language": self.active_language or "text",
+            "text": text
+        }
 
     @Slot(str, int, int)
     @Slot(str, int, int, str)
@@ -780,6 +931,9 @@ class EditorBackend(QObject):
 
             self.current_file = clean_path
             self.fileSaved.emit(clean_path, True)
+            if hasattr(self, "extension_manager") and self.extension_manager:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda p=clean_path: self.extension_manager.notify_editor_save(p))
             print(f"File saved successfully: {clean_path}")
 
         except (OSError, UnicodeError) as e:
@@ -1971,12 +2125,15 @@ if __name__ == "__main__":
 
     # Initialize backend singleton services
     backend = EditorBackend()
+    shortcut_filter = GlobalExtensionShortcutFilter(backend.extension_manager)
+    app.installEventFilter(shortcut_filter)
     musicPlayer = MusicPlayer()
     aiBackend = AIBackend()
     terminalBackend = TerminalBackend()
     settingsBackend = SettingsBackend()
     backend.settings_backend = settingsBackend
     backend.extension_manager.ai_backend = aiBackend
+    backend.extension_manager._terminal_backend = terminalBackend
 
     # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)

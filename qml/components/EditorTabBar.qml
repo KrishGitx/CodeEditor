@@ -87,7 +87,7 @@ Rectangle {
 
                         // File Icon
                         VectorIcon {
-                            name: (model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file")
+                            name: (model.isSettings || model.languageId === "settings") ? "settings" : ((model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file"))
                             size: 11
                             color: index === root.activeIndex ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
                         }

@@ -11,6 +11,27 @@ import re
 from typing import Optional, Callable
 from PySide6.QtCore import QObject, Signal, Slot
 
+# Reconfigure Windows stdout/stderr to UTF-8 to prevent 'charmap' crashes on Unicode emojis (e.g. 😎, 🔥)
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def _safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except Exception:
+        try:
+            safe_args = [str(a).encode("ascii", errors="replace").decode("ascii") for a in args]
+            print(*safe_args, **kwargs)
+        except Exception:
+            pass
+
 # Attempt to import CustomApi
 try:
     from CustomApi import ChatGPTClient
@@ -58,22 +79,28 @@ class AIWorkerThread(threading.Thread):
 
             # 2. Live CustomApi.py ChatGPT client (Production path)
             if custom_api_available:
+                response = None
                 try:
                     client = ChatGPTClient(headless=True)
                     response = client.ask(
                         self.prompt,
                         chunk_callback=lambda c: self.callback_chunk(c) if not self.cancelled else None
                     )
-                    if response and not self.cancelled:
-                        self.callback_done(clean_ai_text(response))
-                        return
-                    elif not response and not self.cancelled:
-                        raise RuntimeError("No response returned from ChatGPT service.")
                 except Exception as api_err:
-                    print(f"[AIBackend] CustomApi query error: {api_err}")
+                    _safe_print(f"[AIBackend] CustomApi query error: {api_err}")
                     if not self.cancelled:
                         self.callback_error(f"ChatGPT service error: {api_err}")
                         return
+
+                if response and not self.cancelled:
+                    try:
+                        self.callback_done(clean_ai_text(response))
+                    except Exception as done_err:
+                        _safe_print(f"[AIBackend] Callback done error: {done_err}")
+                    return
+                elif not response and not self.cancelled:
+                    self.callback_error("No response returned from ChatGPT service.")
+                    return
 
             if self.cancelled:
                 return
@@ -220,11 +247,11 @@ class AIBackend(QObject):
         # Stage 2 Diagnostic: Exact final prompt sent to AI
         p_first20 = worker_prompt[:20] if worker_prompt else ""
         p_last20 = worker_prompt[-20:] if len(worker_prompt or "") > 20 else worker_prompt or ""
-        print("[AI_DIAGNOSTIC_STAGE_2] === EXACT FINAL PROMPT SENT TO AI ===")
-        print(f"[AI_DIAGNOSTIC_STAGE_2] Length: {len(worker_prompt or '')}")
-        print(f"[AI_DIAGNOSTIC_STAGE_2] First 20 chars: {repr(p_first20)}")
-        print(f"[AI_DIAGNOSTIC_STAGE_2] Last 20 chars: {repr(p_last20)}")
-        print(f"[AI_DIAGNOSTIC_STAGE_2] Full prompt (with whitespace visible): {repr(worker_prompt or '')}")
+        _safe_print("[AI_DIAGNOSTIC_STAGE_2] === EXACT FINAL PROMPT SENT TO AI ===")
+        _safe_print(f"[AI_DIAGNOSTIC_STAGE_2] Length: {len(worker_prompt or '')}")
+        _safe_print(f"[AI_DIAGNOSTIC_STAGE_2] First 20 chars: {repr(p_first20)}")
+        _safe_print(f"[AI_DIAGNOSTIC_STAGE_2] Last 20 chars: {repr(p_last20)}")
+        _safe_print(f"[AI_DIAGNOSTIC_STAGE_2] Full prompt (with whitespace visible): {repr(worker_prompt or '')}")
 
         # Emit user message for UI display - ONLY user visible prompt, NEVER internal instruction
         self.messageReceived.emit(f"user_{self.current_msg_id}", "user", display_prompt)
@@ -238,11 +265,11 @@ class AIBackend(QObject):
             # Stage 3 Diagnostic: Complete raw AI response before parsing
             r_first20 = (full_text or "")[:20]
             r_last20 = (full_text or "")[-20:] if len(full_text or "") > 20 else (full_text or "")
-            print("[AI_DIAGNOSTIC_STAGE_3] === COMPLETE RAW AI RESPONSE BEFORE PARSING ===")
-            print(f"[AI_DIAGNOSTIC_STAGE_3] Length: {len(full_text or '')}")
-            print(f"[AI_DIAGNOSTIC_STAGE_3] First 20 chars: {repr(r_first20)}")
-            print(f"[AI_DIAGNOSTIC_STAGE_3] Last 20 chars: {repr(r_last20)}")
-            print(f"[AI_DIAGNOSTIC_STAGE_3] Full raw response (with whitespace visible): {repr(full_text or '')}")
+            _safe_print("[AI_DIAGNOSTIC_STAGE_3] === COMPLETE RAW AI RESPONSE BEFORE PARSING ===")
+            _safe_print(f"[AI_DIAGNOSTIC_STAGE_3] Length: {len(full_text or '')}")
+            _safe_print(f"[AI_DIAGNOSTIC_STAGE_3] First 20 chars: {repr(r_first20)}")
+            _safe_print(f"[AI_DIAGNOSTIC_STAGE_3] Last 20 chars: {repr(r_last20)}")
+            _safe_print(f"[AI_DIAGNOSTIC_STAGE_3] Full raw response (with whitespace visible): {repr(full_text or '')}")
 
             cleaned = clean_ai_text(full_text)
             if cleaned and cleaned.strip():

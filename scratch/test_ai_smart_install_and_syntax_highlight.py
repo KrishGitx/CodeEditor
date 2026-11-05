@@ -91,9 +91,10 @@ def test_smart_install_command_safety():
         "npm install -g prettier",
         "cargo install ripgrep",
         "winget install --id GoLang.Go",
-        "brew install clang-format",
         "rustup component add rustfmt"
     ]
+    if sys.platform != "win32":
+        valid_cmds.append("brew install clang-format")
     for cmd in valid_cmds:
         is_safe, msg = ext_mgr.validate_command_safety(cmd)
         assert is_safe, f"Safe command incorrectly rejected: {cmd} ({msg})"

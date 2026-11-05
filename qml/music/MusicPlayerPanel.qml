@@ -12,7 +12,7 @@ Rectangle {
     property string currentVideoId: ""
     property string currentCoverUrl: ""
     property real currentVolume: 0.8
-    property string viewMode: "player" // "player" or "search"
+    property string viewMode: "search" // "player" or "search"
     property string activeCategory: "search" // "search", "liked", "recommended"
     property bool showInfoCard: false
     property bool isCurrentLiked: false
@@ -223,7 +223,7 @@ Rectangle {
             if (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.coverUrl) {
                 root.currentCoverUrl = musicPlayer.coverUrl;
             } else {
-                root.currentCoverUrl = "https://img.youtube.com/vi/" + videoId + "/hqdefault.jpg";
+                root.currentCoverUrl = "";
             }
         }
 
@@ -984,7 +984,7 @@ Rectangle {
 
                                         Image {
                                             anchors.fill: parent
-                                            source: (model.coverUrl && model.coverUrl.length > 0) ? model.coverUrl : ("https://img.youtube.com/vi/" + model.videoId + "/hqdefault.jpg")
+                                            source: (model.coverUrl && model.coverUrl.length > 0) ? model.coverUrl : ""
                                             fillMode: Image.PreserveAspectCrop
                                             asynchronous: true
                                             cache: true

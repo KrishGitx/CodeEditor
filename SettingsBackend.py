@@ -311,3 +311,76 @@ class SettingsBackend(QObject):
         except Exception as e:
             print(f"[SettingsBackend] Error saving custom actions: {e}")
 
+    def _get_theme_dirs(self):
+        dirs = []
+        app_themes = Path(__file__).parent / "themes"
+        if app_themes.exists() and app_themes.is_dir():
+            dirs.append(app_themes)
+        user_themes = self.config_dir / "themes"
+        if user_themes.exists() and user_themes.is_dir():
+            dirs.append(user_themes)
+        return dirs
+
+    @Slot(result=list)
+    def get_available_themes(self):
+        themes = []
+        seen_ids = set()
+        for tdir in self._get_theme_dirs():
+            try:
+                for file_path in sorted(tdir.glob("*.json")):
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        tid = str(data.get("id", file_path.stem)).lower()
+                        if tid in seen_ids:
+                            continue
+                        seen_ids.add(tid)
+                        themes.append({
+                            "id": tid,
+                            "name": str(data.get("name", file_path.stem.capitalize())),
+                            "color": str(data.get("color", data.get("bgRoot", "#181818"))),
+                            "type": str(data.get("type", "dark"))
+                        })
+                    except Exception as err:
+                        print(f"[SettingsBackend] Error reading theme file {file_path}: {err}")
+            except Exception as e:
+                print(f"[SettingsBackend] Error listing themes in {tdir}: {e}")
+        return themes
+
+    @Slot(str, result=str)
+    def get_theme_data(self, name: str):
+        if not name:
+            name = "obsidian"
+        target_name = name.lower().strip()
+        for tdir in self._get_theme_dirs():
+            direct_file = tdir / f"{target_name}.json"
+            if direct_file.exists():
+                try:
+                    with open(direct_file, "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception as err:
+                    print(f"[SettingsBackend] Error reading {direct_file}: {err}")
+            # Case-insensitive search
+            try:
+                for file_path in tdir.glob("*.json"):
+                    if file_path.stem.lower() == target_name:
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                return f.read()
+                        except Exception as err:
+                            print(f"[SettingsBackend] Error reading {file_path}: {err}")
+            except Exception:
+                pass
+
+        # Fallback to obsidian.json if not found
+        for tdir in self._get_theme_dirs():
+            fallback_file = tdir / "obsidian.json"
+            if fallback_file.exists():
+                try:
+                    with open(fallback_file, "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception:
+                    pass
+        return "{}"
+
+

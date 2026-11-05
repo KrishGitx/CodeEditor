@@ -176,7 +176,7 @@ class MusicPlayer(QObject):
                 "artist": artist or (self._current_artist if self._current_video == video_id else "Artist"),
                 "duration": dur_sec,
                 "durationText": dur_text,
-                "coverUrl": cover_url or (f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"),
+                "coverUrl": cover_url or "",
                 "likedAt": time.time()
             }
             self._liked_songs.insert(0, item)
@@ -229,7 +229,7 @@ class MusicPlayer(QObject):
                                 seen_ids.add(vid)
                                 dur_sec = self._parse_duration(song.get("duration_seconds") or song.get("duration"))
                                 thumbnails = song.get("thumbnails", [])
-                                cover_url = thumbnails[-1]["url"] if thumbnails else f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+                                cover_url = thumbnails[-1]["url"] if thumbnails else ""
                                 artists_list = song.get("artists", [])
                                 item = {
                                     "title": song.get("title", "Unknown Title"),
@@ -285,7 +285,7 @@ class MusicPlayer(QObject):
                     if vid:
                         dur_sec = self._parse_duration(song.get("duration_seconds") or song.get("duration"))
                         thumbnails = song.get("thumbnails", [])
-                        cover_url = thumbnails[-1]["url"] if thumbnails else f"https://img.youtube.com/vi/{vid}/hqdefault.jpg"
+                        cover_url = thumbnails[-1]["url"] if thumbnails else ""
                         item = {
                             "title": title,
                             "artist": artist,
@@ -317,12 +317,12 @@ class MusicPlayer(QObject):
             self._current_title = song.get("title", "Streaming Track")
             self._current_artist = song.get("artist", "Artist")
             self._current_duration = song.get("duration", 210)
-            self._current_cover_url = song.get("coverUrl", f"https://img.youtube.com/vi/{videoId}/hqdefault.jpg")
+            self._current_cover_url = song.get("coverUrl", "")
         else:
             self._current_title = f"Track {videoId[:8]}"
             self._current_artist = "YouTube Music"
             self._current_duration = 210
-            self._current_cover_url = f"https://img.youtube.com/vi/{videoId}/hqdefault.jpg"
+            self._current_cover_url = ""
 
         self.currentSongChanged.emit(self._current_title, self._current_artist, videoId, self._current_duration)
         self.coverUrlChanged.emit(self._current_cover_url)

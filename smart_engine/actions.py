@@ -141,7 +141,7 @@ class SmartSafetyGuard:
             r":\(\)\s*\{\s*:\|:&\s*\};:",
             r">\s*/dev/sd",
             r"\bdrop\s+database\b",
-            r"\bchmod\s+-[a-zA-Z]*R\s+777\s+/",
+            r"\bchmod\s+-[a-zA-Z]*[rR]\s+777\s+/",
         ]
         for pat in destructive_patterns:
             if re.search(pat, cmd_clean):

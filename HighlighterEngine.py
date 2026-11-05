@@ -9,149 +9,62 @@ from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
 from PySide6.QtCore import QTimer
 import os
 import re
+import json
+import collections
 
-THEMES = {
-    "obsidian": {
-        "background": "#12141a",
-        "foreground": "#e8ecf4",
-        "keywords": "#c678dd",
-        "functions": "#61afef",
-        "strings": "#98c379",
-        "numbers": "#d19a66",
-        "comments": "#5c6478",
-        "types": "#e5c07b",
-        "operators": "#56b6c2",
-        "preprocessor": "#e06c75",
-        "current_line": "#181b24",
-        "selection": "#264f78"
-    },
-    "dark": {
-        "background": "#12141a",
-        "foreground": "#e8ecf4",
-        "keywords": "#c678dd",
-        "functions": "#61afef",
-        "strings": "#98c379",
-        "numbers": "#d19a66",
-        "comments": "#5c6478",
-        "types": "#e5c07b",
-        "operators": "#56b6c2",
-        "preprocessor": "#e06c75",
-        "current_line": "#181b24",
-        "selection": "#264f78"
-    },
-    "midnight": {
-        "background": "#090d18",
-        "foreground": "#c8d3f5",
-        "keywords": "#9d7cd8",
-        "functions": "#7aa2f7",
-        "strings": "#73daca",
-        "numbers": "#ff9e64",
-        "comments": "#4e567a",
-        "types": "#2ac3de",
-        "operators": "#bb9af7",
-        "preprocessor": "#f7768e",
-        "current_line": "#0d1222",
-        "selection": "#28366a"
-    },
-    "dracula": {
-        "background": "#1e1f29",
-        "foreground": "#f8f8f2",
-        "keywords": "#ff79c6",
-        "functions": "#50fa7b",
-        "strings": "#f1fa8c",
-        "numbers": "#bd93f9",
-        "comments": "#6272a4",
-        "types": "#8be9fd",
-        "operators": "#ff79c6",
-        "preprocessor": "#ffb86c",
-        "current_line": "#24253a",
-        "selection": "#44475a"
-    },
-    "nord": {
-        "background": "#242933",
-        "foreground": "#eceff4",
-        "keywords": "#81a1c1",
-        "functions": "#88c0d0",
-        "strings": "#a3be8c",
-        "numbers": "#b48ead",
-        "comments": "#6b7c96",
-        "types": "#8fbcbb",
-        "operators": "#81a1c1",
-        "preprocessor": "#bf616a",
-        "current_line": "#2a3040",
-        "selection": "#3b4b68"
-    },
-    "monokai": {
-        "background": "#272822",
-        "foreground": "#f8f8f2",
-        "keywords": "#f92672",
-        "functions": "#a6e22e",
-        "strings": "#e6db74",
-        "numbers": "#ae81ff",
-        "comments": "#75715e",
-        "types": "#66d9ef",
-        "operators": "#f92672",
-        "preprocessor": "#fd971f",
-        "current_line": "#2e2f28",
-        "selection": "#494a3e"
-    },
-    "light": {
-        "background": "#ffffff",
-        "foreground": "#1a1d2b",
-        "keywords": "#7c3aed",
-        "functions": "#2563eb",
-        "strings": "#059669",
-        "numbers": "#d97706",
-        "comments": "#8895ad",
-        "types": "#0891b2",
-        "operators": "#475569",
-        "preprocessor": "#dc2626",
-        "current_line": "#f5f7fb",
-        "selection": "#add6ff"
-    },
-    "paper": {
-        "background": "#faf8f4",
-        "foreground": "#2c2820",
-        "keywords": "#8b5a2b",
-        "functions": "#2e6b4f",
-        "strings": "#6b5b3a",
-        "numbers": "#8b4513",
-        "comments": "#9a9288",
-        "types": "#2f6b6b",
-        "operators": "#5a4e3c",
-        "preprocessor": "#a04040",
-        "current_line": "#f2efe8",
-        "selection": "#d5c8a8"
-    },
-    "glass": {
-        "background": "#10131b",
-        "foreground": "#f0f4fc",
-        "keywords": "#c084fc",
-        "functions": "#60a5fa",
-        "strings": "#4ade80",
-        "numbers": "#fb923c",
-        "comments": "#607090",
-        "types": "#38bdf8",
-        "operators": "#818cf8",
-        "preprocessor": "#f87171",
-        "current_line": "#18204030",
-        "selection": "#305880"
-    },
-    "transparent": {
-        "background": "#10131b",
-        "foreground": "#f0f4fc",
-        "keywords": "#c084fc",
-        "functions": "#60a5fa",
-        "strings": "#4ade80",
-        "numbers": "#fb923c",
-        "comments": "#607090",
-        "types": "#38bdf8",
-        "operators": "#818cf8",
-        "preprocessor": "#f87171",
-        "current_line": "#18204030",
-        "selection": "#305880"
-    }
-}
+def load_themes():
+    themes = {}
+    theme_dirs = [
+        os.path.join(os.path.dirname(__file__), "themes"),
+        os.path.join(os.path.expanduser("~"), ".dgx_studio", "themes")
+    ]
+    for tdir in theme_dirs:
+        if not os.path.isdir(tdir):
+            continue
+        try:
+            for fname in os.listdir(tdir):
+                if not fname.endswith(".json"):
+                    continue
+                fpath = os.path.join(tdir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    tid = str(data.get("id", os.path.splitext(fname)[0])).lower()
+                    theme_entry = {
+                        "background": data.get("background", data.get("bgEditor", "#12141a")),
+                        "foreground": data.get("foreground", data.get("textPrimary", "#e8ecf4")),
+                        "keywords": data.get("keywords", data.get("synKeyword", "#c678dd")),
+                        "functions": data.get("functions", data.get("synFunction", "#61afef")),
+                        "strings": data.get("strings", data.get("synString", "#98c379")),
+                        "numbers": data.get("numbers", data.get("synNumber", "#d19a66")),
+                        "comments": data.get("comments", data.get("synComment", "#5c6478")),
+                        "types": data.get("types", data.get("synType", "#e5c07b")),
+                        "operators": data.get("operators", data.get("accent", "#56b6c2")),
+                        "preprocessor": data.get("preprocessor", data.get("error", "#e06c75")),
+                        "current_line": data.get("current_line", data.get("synCurrentLine", "#181b24")),
+                        "selection": data.get("selection", data.get("synSelection", "#264f78"))
+                    }
+                    themes[tid] = theme_entry
+                except Exception as err:
+                    print(f"[HighlighterEngine] Error loading theme file {fpath}: {err}")
+        except Exception as e:
+            print(f"[HighlighterEngine] Error scanning theme dir {tdir}: {e}")
+
+    # Aliases
+    if "obsidian" in themes:
+        themes["dark"] = themes["obsidian"]
+    elif themes:
+        first_theme = next(iter(themes.values()))
+        themes["dark"] = first_theme
+        themes["obsidian"] = first_theme
+    return themes
+
+THEMES = load_themes()
+
+def reload_themes():
+    global THEMES
+    THEMES = load_themes()
+
 
 EXT_TO_LANG = {
     ".py": "python",
@@ -224,7 +137,8 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         self.buffer_size = 60
         self.formatted_blocks = set()
 
-        self._pending_blocks_queue = []
+        self._pending_blocks_queue = collections.deque()
+        self._pending_blocks_set = set()
         self._slice_timer = QTimer()
         self._slice_timer.setInterval(12)
         self._slice_timer.timeout.connect(self._process_slice_queue)
@@ -247,8 +161,12 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         self.formatted_blocks.clear()
 
         total_blocks = doc.blockCount() if doc else 0
-        self.viewport_start = 0
-        self.viewport_end = min(total_blocks, visible_lines + self.buffer_size)
+        if total_blocks <= 1000:
+            self.viewport_start = 0
+            self.viewport_end = total_blocks
+        else:
+            self.viewport_start = 0
+            self.viewport_end = min(total_blocks, visible_lines + self.buffer_size)
 
         self.setDocument(doc)
         print("[Timing] First visible syntax highlight complete", flush=True)
@@ -262,8 +180,13 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             return
 
         total_blocks = doc.blockCount()
-        w_start = max(0, start_line - self.buffer_size)
-        w_end = min(total_blocks - 1, end_line + self.buffer_size + 40)
+        if total_blocks <= 1000:
+            self.viewport_start = 0
+            self.viewport_end = total_blocks
+            return
+
+        w_start = min(total_blocks - 1, max(0, start_line - self.buffer_size))
+        w_end = min(total_blocks - 1, max(w_start, end_line + self.buffer_size + 40))
 
         self.viewport_start = w_start
         self.viewport_end = w_end
@@ -276,9 +199,9 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         buf_blocks = [b for b in new_blocks if b < start_line or b > end_line]
         sorted_blocks = vp_blocks + buf_blocks
 
-        existing_set = set(self._pending_blocks_queue)
         for b in sorted_blocks:
-            if b not in existing_set:
+            if b not in self._pending_blocks_set:
+                self._pending_blocks_set.add(b)
                 self._pending_blocks_queue.append(b)
 
         if not self._slice_timer.isActive():
@@ -287,12 +210,14 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
     def _process_slice_queue(self):
         doc = self.document()
         if not doc or not self._pending_blocks_queue:
+            self._pending_blocks_set.clear()
             self._slice_timer.stop()
             return
 
         count = 0
         while self._pending_blocks_queue and count < self._batch_slice_size:
-            b_num = self._pending_blocks_queue.pop(0)
+            b_num = self._pending_blocks_queue.popleft()
+            self._pending_blocks_set.discard(b_num)
             if b_num not in self.formatted_blocks:
                 block = doc.findBlockByNumber(b_num)
                 if block.isValid():
@@ -300,6 +225,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
                 count += 1
 
         if not self._pending_blocks_queue:
+            self._pending_blocks_set.clear()
             self._slice_timer.stop()
 
     def set_language_for_file(self, file_path, explicit_lang=None, force_rehighlight=True):
@@ -598,7 +524,9 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
             return
 
         b_num = self.currentBlock().blockNumber()
-        in_window = True
+        doc = self.document()
+        total_blocks = doc.blockCount() if doc else 0
+        in_window = (total_blocks <= 1000) or (self.viewport_start <= b_num <= self.viewport_end)
 
         state = self.previousBlockState()
         if state <= 0:

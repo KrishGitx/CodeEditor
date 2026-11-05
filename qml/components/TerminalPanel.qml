@@ -55,6 +55,25 @@ Rectangle {
         return root.secTerminalBuffer;
     }
 
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function formatTerminalHistory(raw) {
+        if (!raw) return "";
+        var esc = escapeHtml(raw);
+        var purple = (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7";
+        var styled = esc.replace(/(PS [^&\r\n]+&gt;)/g, '<span style="color: ' + purple + '; font-weight: bold;">$1</span>');
+        return "<pre style='margin: 0; padding: 0; font-family: inherit; font-size: inherit; white-space: pre-wrap; word-wrap: break-word; color: " + (theme ? theme.textPrimary : "#cccccc") + ";'>" + styled + "</pre>";
+    }
+
+    readonly property string formattedHistory: formatTerminalHistory(displayedHistory)
+    readonly property string secFormattedHistory: formatTerminalHistory(secDisplayedHistory)
+
     ListModel {
         id: problemsModel
     }
@@ -537,8 +556,8 @@ Rectangle {
                                         font.pixelSize: 12
                                         font.family: theme ? theme.fontFamilyMono : "monospace"
                                         wrapMode: TextEdit.Wrap
-                                        text: root.displayedHistory
-                                        textFormat: TextEdit.PlainText
+                                        text: root.formattedHistory
+                                        textFormat: TextEdit.RichText
 
                                         TapHandler {
                                             onTapped: activeTerminalInput.forceActiveFocus()
@@ -552,8 +571,9 @@ Rectangle {
 
                                         Text {
                                             text: root.realPrompt
-                                            color: theme ? theme.accent : "#0078d4"
+                                            color: (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7"
                                             font.pixelSize: 12
+                                            font.bold: true
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
                                         }
 
@@ -716,8 +736,8 @@ Rectangle {
                                         font.pixelSize: 12
                                         font.family: theme ? theme.fontFamilyMono : "monospace"
                                         wrapMode: TextEdit.Wrap
-                                        text: root.secDisplayedHistory
-                                        textFormat: TextEdit.PlainText
+                                        text: root.secFormattedHistory
+                                        textFormat: TextEdit.RichText
                                     }
 
                                     RowLayout {
@@ -726,8 +746,9 @@ Rectangle {
 
                                         Text {
                                             text: root.secRealPrompt
-                                            color: theme ? theme.accent : "#0078d4"
+                                            color: (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7"
                                             font.pixelSize: 12
+                                            font.bold: true
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
                                         }
 

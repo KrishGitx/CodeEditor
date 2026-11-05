@@ -30,18 +30,22 @@ Rectangle {
 
     function setTabAndText(tabKey, text) {
         activeTabKey = tabKey || "default";
-        if (text && text.length > 0) {
+        var hasValidText = (text !== undefined && text !== null && typeof text === "string" && text.length > 0);
+        if (hasValidText) {
             documentText = text;
         }
-        if (tabCache[activeTabKey]) {
+
+        // Only use cache if it actually contains populated lines
+        if (tabCache[activeTabKey] && tabCache[activeTabKey].lines && tabCache[activeTabKey].lines.length > 0) {
             var cached = tabCache[activeTabKey];
             currentLines = cached.lines;
             if (cached.totalLineCount > 1) {
                 totalLineCount = cached.totalLineCount;
             }
             minimapCanvas.requestPaint();
-        } else if (text && text.length > 0) {
-            parseDebounceTimer.restart();
+        } else if (hasValidText) {
+            // Build cache immediately so the minimap code text appears with zero perceptible delay
+            rebuildCache();
         }
     }
 
@@ -51,27 +55,31 @@ Rectangle {
         var key = root.activeTabKey || "default";
 
         if (!text || text.length === 0) {
-            if (!tabCache[key] || tabCache[key].lines.length === 0) {
-                currentLines = [];
-                totalLineCount = Math.max(1, root.totalLineCount);
-                tabCache[key] = { lines: [], totalLineCount: totalLineCount };
+            // If we already have valid lines for this key, preserve them instead of clobbering with empty array
+            if (tabCache[key] && tabCache[key].lines && tabCache[key].lines.length > 0) {
+                currentLines = tabCache[key].lines;
+                totalLineCount = Math.max(root.totalLineCount, tabCache[key].totalLineCount);
                 minimapCanvas.requestPaint();
+                return;
             }
+            currentLines = [];
+            totalLineCount = Math.max(1, root.totalLineCount);
+            minimapCanvas.requestPaint();
             console.log("[Timing] Minimap generation complete");
             return;
         }
 
         var rawLines = text.split("\n");
         var docLines = rawLines.length;
-        totalLineCount = Math.max(root.totalLineCount, docLines);
+        totalLineCount = Math.max(1, docLines);
 
-        var linesData = [];
+        var linesData = new Array(docLines);
         var maxCharsPerLine = 45;
 
         for (var i = 0; i < docLines; i++) {
             var line = rawLines[i];
             if (!line || line.length === 0) {
-                linesData.push(null);
+                linesData[i] = null;
                 continue;
             }
 
@@ -83,7 +91,7 @@ Rectangle {
 
             var trimmed = line.substring(indent, Math.min(len, indent + maxCharsPerLine));
             if (trimmed.length === 0) {
-                linesData.push(null);
+                linesData[i] = null;
                 continue;
             }
 
@@ -109,31 +117,50 @@ Rectangle {
                 }
             }
 
-            linesData.push({
+            linesData[i] = {
                 indent: Math.min(24, indent),
                 text: trimmed,
                 colorType: colorType
-            });
+            };
         }
 
         currentLines = linesData;
         tabCache[key] = { lines: linesData, totalLineCount: totalLineCount };
-        minimapCanvas.requestPaint();
+        if (minimapCanvas.available) {
+            minimapCanvas.requestPaint();
+        }
         console.log("[Timing] Minimap generation complete");
     }
 
     Timer {
         id: parseDebounceTimer
-        interval: 100
+        interval: 80
         repeat: false
         onTriggered: root.rebuildCache()
     }
 
-    onDocumentTextChanged: parseDebounceTimer.restart()
+    onDocumentTextChanged: {
+        if (!currentLines || currentLines.length === 0) {
+            root.rebuildCache();
+        } else {
+            parseDebounceTimer.restart();
+        }
+    }
 
     Canvas {
         id: minimapCanvas
         anchors.fill: parent
+
+        onAvailableChanged: {
+            if (available) requestPaint();
+        }
+
+        Connections {
+            target: root
+            function onCurrentLinesChanged() {
+                if (minimapCanvas.available) minimapCanvas.requestPaint();
+            }
+        }
 
         onPaint: {
             var ctx = getContext("2d");
@@ -182,8 +209,24 @@ Rectangle {
 
     onScrollRatioChanged: paintDebounceTimer.restart()
     onVisibleRatioChanged: paintDebounceTimer.restart()
-    onWidthChanged: minimapCanvas.requestPaint()
-    onHeightChanged: minimapCanvas.requestPaint()
+    onWidthChanged: {
+        if (width > 0 && height > 0) {
+            if ((!currentLines || currentLines.length === 0) && documentText && documentText.length > 0) {
+                rebuildCache();
+            } else {
+                minimapCanvas.requestPaint();
+            }
+        }
+    }
+    onHeightChanged: {
+        if (width > 0 && height > 0) {
+            if ((!currentLines || currentLines.length === 0) && documentText && documentText.length > 0) {
+                rebuildCache();
+            } else {
+                minimapCanvas.requestPaint();
+            }
+        }
+    }
 
     // Viewport Range Indicator Box
     Rectangle {
@@ -205,14 +248,9 @@ Rectangle {
             var totalH = root.needsMinimapScroll ? root.height : Math.min(root.height, root.totalMinimapDocHeight);
             return Math.max(18, Math.min(totalH, root.visibleRatio * totalH));
         }
-        color: (typeof theme !== "undefined" && theme && theme.accentMuted) ? theme.accentMuted : "#38bdf818"
-        border.color: (typeof theme !== "undefined" && theme && theme.accent) ? theme.accent : "#38bdf8"
+        color: mapArea.containsMouse || mapArea.pressed ? Qt.rgba(1.0, 1.0, 1.0, 0.16) : Qt.rgba(1.0, 1.0, 1.0, 0.08)
+        border.color: mapArea.containsMouse || mapArea.pressed ? Qt.rgba(1.0, 1.0, 1.0, 0.35) : Qt.rgba(1.0, 1.0, 1.0, 0.18)
         border.width: 1
-        opacity: mapArea.containsMouse || mapArea.pressed ? 0.9 : 0.55
-
-        Behavior on opacity {
-            NumberAnimation { duration: 80 }
-        }
     }
 
     MouseArea {

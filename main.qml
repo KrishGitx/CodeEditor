@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQml.Models 2.15
 import QtQuick.Window 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Controls 2.15
@@ -43,8 +44,8 @@ Window {
     // Visibility States
     property bool explorerVisible: true
     property bool rightPanelVisible: true
-    property bool terminalVisible: true
-    property bool aiVisible: true
+    property bool terminalVisible: false
+    property bool aiVisible: false
     property bool musicVisible: true
     property bool zenMode: false
     property bool whiteboardVisible: false
@@ -316,7 +317,7 @@ Window {
                         }
                     }
                     onOpenFolderRequested: openFolderDialog.open()
-                    onNewFolderRequested: openFolderDialog.open()
+                    // onNewFolderRequested handled directly by ExplorerPanel
                     onRefreshRequested: {
                         if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
                             backend.open_Workspace(explorerPanel.workspacePath);
@@ -504,23 +505,78 @@ Window {
     Rectangle {
         id: settingsOverlay
         anchors.fill: parent
-        color: "#00000066"
+        color: Qt.rgba(0, 0, 0, 0.70)
         visible: false
         z: 210
+        opacity: visible ? 1.0 : 0.0
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+        }
 
         MouseArea {
             anchors.fill: parent
             onClicked: settingsOverlay.visible = false
         }
 
+        Rectangle {
+            x: settingsDialog.x - 6
+            y: settingsDialog.y - 6
+            width: settingsDialog.width + 12
+            height: settingsDialog.height + 12
+            radius: settingsDialog.radius + 6
+            color: "transparent"
+            border.color: "#00000066"
+            border.width: 6
+            visible: settingsOverlay.visible
+        }
+
         SettingsDialog {
+            id: settingsDialog
             anchors.centerIn: parent
+            scale: settingsOverlay.visible ? 1.0 : 0.98
+
+            Behavior on scale {
+                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+            }
 
             onCloseRequested: settingsOverlay.visible = false
             onThemeSelected: function(tName) {
                 theme.setTheme(tName);
             }
         }
+    }
+
+    // Dynamic Extension Custom Popup Host
+
+    // Dynamic Pure-Python Extension Shortcuts
+    Instantiator {
+        model: (typeof extensionManager !== "undefined" && extensionManager && extensionManager.registeredShortcuts) ? extensionManager.registeredShortcuts : []
+        delegate: Shortcut {
+            sequence: modelData
+            context: Qt.ApplicationShortcut
+            onActivated: {
+                if (typeof extensionManager !== "undefined" && extensionManager) {
+                    extensionManager.dispatch_shortcut(modelData);
+                }
+            }
+        }
+    }
+    DynamicPopupHost {
+        id: dynamicPopupHost
+        z: 9995
+        anchors.fill: parent
+        onCloseRequested: {
+            if (typeof extensionManager !== "undefined" && extensionManager) {
+                extensionManager.closeActivePopup();
+            }
+        }
+    }
+
+    // Dynamic Particle Effects Emitter Overlay
+    ParticleEmitterOverlay {
+        id: particleEmitterOverlay
+        anchors.fill: parent
     }
 
     // =========================================================================

@@ -34,6 +34,18 @@ Rectangle {
 
     color: theme ? theme.bgSidebar : "#181818"
 
+
+    // F2 Shortcut for inline rename in Explorer
+    Shortcut {
+        sequence: "F2"
+        enabled: root.visible && Boolean(root.selectedFilePath) && (typeof editorArea === "undefined" || !editorArea || !editorArea.codeTextArea || !editorArea.codeTextArea.activeFocus)
+        onActivated: {
+            if (root.selectedFilePath) {
+                root.startInlineRename(root.selectedFilePath);
+            }
+        }
+    }
+
     ListModel {
         id: fileTreeModel
     }
@@ -88,7 +100,6 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             root.startNewFile();
-                            root.newFileRequested();
                         }
                     }
                 }
@@ -117,7 +128,6 @@ Rectangle {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             root.startNewFolder();
-                            root.newFolderRequested();
                         }
                     }
                 }
@@ -169,16 +179,26 @@ Rectangle {
                     anchors.fill: parent
                     model: fileTreeModel
                     boundsBehavior: Flickable.StopAtBounds
+                    focus: true
+                    Keys.onPressed: function(event) {
+                        if (event.key === Qt.Key_F2) {
+                            if (root.selectedFilePath) {
+                                root.startInlineRename(root.selectedFilePath);
+                                event.accepted = true;
+                                return;
+                            }
+                        }
+                    }
 
                     delegate: Rectangle {
                         id: itemRow
                         width: Math.max(fileListView.width, contentRow.width + 16)
-                        readonly property bool isInlineEditing: root.editingFilePath !== "" && root.editingFilePath === model.fullPath
+                        readonly property bool isInlineEditing: root.editingFilePath !== "" && (root.editingFilePath === model.fullPath || root.editingFilePath.replace(/\\/g, "/") === model.fullPath.replace(/\\/g, "/"))
                         readonly property bool isRowVisible: isInlineEditing || root.isItemVisible(model.parentFullPath, root.collapseVersion)
                         visible: isRowVisible
                         height: isRowVisible ? 22 : 0
 
-                        readonly property bool isSelected: !itemRow.isInlineEditing && root.selectedFilePath === model.fullPath
+                        readonly property bool isSelected: !itemRow.isInlineEditing && (root.selectedFilePath === model.fullPath || root.selectedFilePath.replace(/\\/g, "/") === model.fullPath.replace(/\\/g, "/"))
                         readonly property bool isFolder: model.type === "Folder"
                         readonly property bool isCollapsed: isFolder && (root.collapsedFolders[model.fullPath.replace(/\\/g, "/")] === true)
                         readonly property bool isCut: root.cutPaths[model.fullPath.replace(/\\/g, "/")] === true
@@ -448,6 +468,7 @@ Rectangle {
                             onClicked: function(mouse) {
                                 if (dragInitiated) return;
                                 root.selectedFilePath = model.fullPath;
+                                fileListView.forceActiveFocus();
                                 if (mouse.button === Qt.RightButton) {
                                     contextMenuPopup.openAt(mouse.x, mouse.y, model.fullPath, model.name, model.type, model.parentFullPath, itemRow);
                                 } else {
@@ -684,9 +705,9 @@ Rectangle {
                 }
             }
 
-            // New File (Folder only)
+            // New File
             Rectangle {
-                visible: contextMenuPopup.targetType === "Folder"
+                visible: true
                 Layout.fillWidth: true
                 height: 24
                 radius: 2
@@ -709,7 +730,8 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         contextMenuPopup.close();
-                        root.startNewFile(contextMenuPopup.targetPath);
+                        var targetDir = (contextMenuPopup.targetType === "Folder") ? contextMenuPopup.targetPath : contextMenuPopup.targetParentPath;
+                        root.startNewFile(targetDir);
                     }
                 }
             }
@@ -1358,15 +1380,11 @@ Rectangle {
             });
         }
 
-        // 3. Mark for editing & selected
+        // 3. Mark for editing & selected (User names the file before opening)
+        root.isCreatingFile = true;
         root.editingFilePath = candidatePath;
         root.selectedFilePath = candidatePath;
         fileListView.positionViewAtIndex(insertIdx, ListView.Contain);
-
-        // 4. Open in editor
-        if (typeof backend !== "undefined" && backend && backend.open_file) {
-            backend.open_file(candidatePath);
-        }
     }
 
     function startNewFolder(customDir) {
@@ -1419,12 +1437,20 @@ Rectangle {
 
     function startInlineRename(fPath) {
         if (!fPath) return;
-        root.editingFilePath = fPath;
-        root.selectedFilePath = fPath;
+        var norm = fPath.replace(/\\/g, "/");
+        root.editingFilePath = norm;
+        root.selectedFilePath = norm;
+        for (var i = 0; i < fileTreeModel.count; i++) {
+            if (fileTreeModel.get(i).fullPath === norm) {
+                fileListView.positionViewAtIndex(i, ListView.Contain);
+                break;
+            }
+        }
     }
 
     function cancelInlineEdit(targetFullPath) {
         var pathToDelete = targetFullPath || root.editingFilePath;
+        root.isCreatingFile = false;
         root.editingFilePath = "";
 
         if (pathToDelete) {
@@ -1484,8 +1510,23 @@ Rectangle {
         var oldNorm = (oldFullPath || "").replace(/\\/g, "/");
         var oldBaseName = oldNorm.split("/").pop();
 
-        if (!trimmedName || trimmedName === oldBaseName) {
+        if (!trimmedName) {
+            if (root.isCreatingFile) {
+                root.cancelInlineEdit(oldNorm);
+            } else {
+                root.editingFilePath = "";
+            }
+            return;
+        }
+
+        if (trimmedName === oldBaseName) {
             root.editingFilePath = "";
+            if (root.isCreatingFile) {
+                root.isCreatingFile = false;
+                if (typeof backend !== "undefined" && backend && backend.open_file) {
+                    backend.open_file(oldNorm);
+                }
+            }
             return;
         }
 
@@ -1508,6 +1549,8 @@ Rectangle {
             return;
         }
 
+        var wasCreating = root.isCreatingFile;
+        root.isCreatingFile = false;
         root.editingFilePath = "";
 
         if (typeof backend !== "undefined" && backend) {
@@ -1525,6 +1568,9 @@ Rectangle {
                     }
                     if (typeof editorArea !== "undefined" && editorArea && editorArea.renameTabByPath) {
                         editorArea.renameTabByPath(oldNorm, newFullPath);
+                    }
+                    if (wasCreating && backend.open_file) {
+                        backend.open_file(newFullPath);
                     }
                 }
             }

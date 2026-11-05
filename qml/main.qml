@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQml.Models 2.15
 import QtQuick.Window 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.Controls 2.15
@@ -45,8 +46,8 @@ Window {
     // Visibility States
     property bool explorerVisible: true
     property bool rightPanelVisible: true
-    property bool terminalVisible: true
-    property bool aiVisible: true
+    property bool terminalVisible: false
+    property bool aiVisible: false
     property bool musicVisible: true
     property bool zenMode: false
     property bool whiteboardVisible: false
@@ -353,7 +354,7 @@ Window {
                         }
                     }
                     onOpenFolderRequested: openFolderDialog.open()
-                    onNewFolderRequested: openFolderDialog.open()
+                    // onNewFolderRequested handled directly by ExplorerPanel
                     onRefreshRequested: {
                         if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
                             backend.open_Workspace(explorerPanel.workspacePath);
@@ -384,6 +385,7 @@ Window {
                         objectName: "editorArea"
                         anchors.fill: parent
 
+                        onSettingsPopupRequested: settingsOverlay.visible = true
                         onRequestOpenFile: openFileDialog.open()
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
@@ -572,10 +574,16 @@ Window {
     // =========================================================================
     Rectangle {
         id: settingsOverlay
+        objectName: "settingsOverlay"
         anchors.fill: parent
-        color: "#00000066"
+        color: Qt.rgba(0, 0, 0, 0.70)
         visible: false
         z: 210
+        opacity: visible ? 1.0 : 0.0
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+        }
 
         onVisibleChanged: {
             if (visible) {
@@ -584,17 +592,41 @@ Window {
             }
         }
 
+        // Click outside on backdrop to dismiss ("click off" backdrop)
         MouseArea {
             anchors.fill: parent
             onClicked: settingsOverlay.visible = false
         }
 
+        // Ambient dialog drop shadow
+        Rectangle {
+            x: settingsDialog.x - 6
+            y: settingsDialog.y - 6
+            width: settingsDialog.width + 12
+            height: settingsDialog.height + 12
+            radius: settingsDialog.radius + 6
+            color: "transparent"
+            border.color: "#00000066"
+            border.width: 6
+            visible: settingsOverlay.visible
+        }
+
         SettingsDialog {
             id: settingsDialog
+            objectName: "settingsDialog"
             x: Math.round((parent.width - width) / 2)
             y: Math.round((parent.height - height) / 2)
+            scale: settingsOverlay.visible ? 1.0 : 0.98
+
+            Behavior on scale {
+                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+            }
 
             onCloseRequested: settingsOverlay.visible = false
+            onOpenAsTabRequested: {
+                settingsOverlay.visible = false;
+                editorArea.openSettingsTab();
+            }
             onExtensionsRequested: {
                 settingsOverlay.visible = false;
                 mainWindow.showExtensions();
@@ -611,9 +643,14 @@ Window {
     Rectangle {
         id: extensionsOverlay
         anchors.fill: parent
-        color: "#00000077"
+        color: Qt.rgba(0, 0, 0, 0.70)
         visible: false
         z: 220
+        opacity: visible ? 1.0 : 0.0
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+        }
 
         onVisibleChanged: {
             if (visible) {
@@ -623,18 +660,69 @@ Window {
             }
         }
 
+        // Click outside on backdrop to dismiss ("click off" backdrop)
         MouseArea {
             anchors.fill: parent
             onClicked: extensionsOverlay.visible = false
+        }
+
+        // Ambient dialog drop shadow
+        Rectangle {
+            x: extensionsDialog.x - 6
+            y: extensionsDialog.y - 6
+            width: extensionsDialog.width + 12
+            height: extensionsDialog.height + 12
+            radius: extensionsDialog.radius + 6
+            color: "transparent"
+            border.color: "#00000066"
+            border.width: 6
+            visible: extensionsOverlay.visible
         }
 
         ExtensionsDialog {
             id: extensionsDialog
             x: Math.round((parent.width - width) / 2)
             y: Math.round((parent.height - height) / 2)
+            scale: extensionsOverlay.visible ? 1.0 : 0.98
+
+            Behavior on scale {
+                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+            }
 
             onCloseRequested: extensionsOverlay.visible = false
         }
+    }
+
+    // Dynamic Extension Custom Popup Host
+
+    // Dynamic Pure-Python Extension Shortcuts
+    Instantiator {
+        model: (typeof extensionManager !== "undefined" && extensionManager && extensionManager.registeredShortcuts) ? extensionManager.registeredShortcuts : []
+        delegate: Shortcut {
+            sequence: modelData
+            context: Qt.ApplicationShortcut
+            onActivated: {
+                if (typeof extensionManager !== "undefined" && extensionManager) {
+                    extensionManager.dispatch_shortcut(modelData);
+                }
+            }
+        }
+    }
+    DynamicPopupHost {
+        id: dynamicPopupHost
+        z: 9995
+        anchors.fill: parent
+        onCloseRequested: {
+            if (typeof extensionManager !== "undefined" && extensionManager) {
+                extensionManager.closeActivePopup();
+            }
+        }
+    }
+
+    // Dynamic Particle Effects Emitter Overlay
+    ParticleEmitterOverlay {
+        id: particleEmitterOverlay
+        anchors.fill: parent
     }
 
     function showExtensions() {

@@ -111,15 +111,6 @@ Rectangle {
 
         function onMessageReceived(msgId, role, content) {
             var ctx = root.activeSelectionContext;
-            if (role === "assistant") {
-                var rFirst20 = (content || "").substring(0, 20);
-                var rLast20 = (content || "").length > 20 ? (content || "").substring((content || "").length - 20) : (content || "");
-                console.log("[AI_DIAGNOSTIC_STAGE_3] === COMPLETE RAW AI RESPONSE BEFORE PARSING ===");
-                console.log("[AI_DIAGNOSTIC_STAGE_3] Length: " + (content ? content.length : 0));
-                console.log("[AI_DIAGNOSTIC_STAGE_3] First 20 chars: " + JSON.stringify(rFirst20));
-                console.log("[AI_DIAGNOSTIC_STAGE_3] Last 20 chars: " + JSON.stringify(rLast20));
-                console.log("[AI_DIAGNOSTIC_STAGE_3] Full raw response (with whitespace visible): " + JSON.stringify(content || ""));
-            }
             for (var i = 0; i < chatHistoryModel.count; i++) {
                 if (chatHistoryModel.get(i).msgId === msgId) {
                     chatHistoryModel.setProperty(i, "content", content);

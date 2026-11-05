@@ -52,6 +52,7 @@ Item {
 
     Shortcut {
         sequence: "F2"
+        enabled: Boolean(codeTextArea && codeTextArea.activeFocus)
         onActivated: root.triggerRenameSymbol()
     }
 
@@ -326,9 +327,10 @@ Item {
     readonly property var cachedIndentLevelWidths: {
         var _dep = (fontMetrics.font.pixelSize || 13) + (fontMetrics.height || 0) + (typeof theme !== "undefined" && theme ? (theme.editorFontSize || 13) : 0);
         var tabSz = (typeof theme !== "undefined" && theme && theme.tabSize) ? theme.tabSize : 4;
+        var oneTabWidth = fontMetrics.advanceWidth(" ".repeat(tabSz));
         var arr = [0];
         for (var i = 1; i <= 32; i++) {
-            arr.push(fontMetrics.advanceWidth(" ".repeat(i * tabSz)));
+            arr.push(i * oneTabWidth);
         }
         return arr;
     }
@@ -690,7 +692,7 @@ Item {
 
     Timer {
         id: foldAnalysisTimer
-        interval: 800
+        interval: 2500
         repeat: false
         onTriggered: {
             root.recalculateFoldableLines();
@@ -844,7 +846,7 @@ Item {
                     Item {
                         id: codeEditorContainer
                         anchors.fill: parent
-                        visible: !root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && root.currentTab.languageId !== "webpreview")
+                        visible: !root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && root.currentTab.languageId !== "webpreview" && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab)
 
                         Rectangle {
                             anchors.fill: parent
@@ -889,12 +891,14 @@ Item {
                                         property string tabKey: (typeof model !== "undefined" && model) ? (model.path || model.fileId || ("tab_" + index)) : ("tab_" + index)
                                         property int windowStartLine: 0
                                         property int windowEndLine: 0
-                                        property bool isVirtualized: paneTotalLineCount > 800
                                         property int paneTotalLineCount: (typeof backend !== "undefined" && backend && backend.get_backing_total_lines) ? backend.get_backing_total_lines(tabPane.tabKey) : (codeTextArea ? Math.max(1, codeTextArea.lineCount) : 1)
+                                        property bool isVirtualized: paneTotalLineCount > 250
                                         property bool isShifting: false
                                         property int pendingScrollbarTargetLine: -1
                                         property alias gutter: gutter
-                                        property alias gutterFlickable: gutterFlickable
+                                        property alias gutterCanvas: gutterCanvas
+                                        property alias gutterFlickable: dummyGutterFlickable
+                                        property alias canvasDebounceTimer: canvasDebounceTimer
                                         property alias textAreaContainer: textAreaContainer
                                         property alias indentGuidesCanvas: indentGuidesCanvas
                                         property alias editorFlickable: editorFlickable
@@ -905,8 +909,34 @@ Item {
                                         property var paneGuideSegments: []
                                         property int paneFontSize: 13
                                         property real paneCharWidth: 7.8
-                                        property real paneLineHeight: 18.0
-                                        property real lastKnownLineHeight: 18.0
+                                        property real paneLineHeight: root.editorLineHeight > 0 ? root.editorLineHeight : 18.0
+                                        property real lastKnownLineHeight: paneLineHeight
+
+                                        Timer {
+                                            id: backingSliceDebounceTimer
+                                            interval: 60
+                                            repeat: false
+                                            onTriggered: tabPane.syncBackingSlice()
+                                        }
+
+                                        function syncBackingSlice() {
+                                            if (tabPane.isVirtualized && typeof backend !== "undefined" && backend && backend.update_backing_slice) {
+                                                backend.update_backing_slice(tabPane.tabKey, tabPane.windowStartLine, tabPane.windowEndLine, codeTextArea.text);
+                                                var newLineCount = codeTextArea.lineCount;
+                                                tabPane.windowEndLine = tabPane.windowStartLine + newLineCount - 1;
+                                                tabPane.paneTotalLineCount = backend.get_backing_total_lines(tabPane.tabKey);
+                                            } else if (typeof backend !== "undefined" && backend && backend.update_backing_text) {
+                                                backend.update_backing_text(tabPane.tabKey, codeTextArea.text);
+                                                tabPane.paneTotalLineCount = Math.max(1, codeTextArea.lineCount);
+                                            }
+                                        }
+
+                                        function flushBackingSlice() {
+                                            if (backingSliceDebounceTimer.running) {
+                                                backingSliceDebounceTimer.stop();
+                                                syncBackingSlice();
+                                            }
+                                        }
 
                                         Component.onCompleted: {
                                             if (typeof theme !== "undefined" && theme && theme.editorFontSize) {
@@ -917,7 +947,8 @@ Item {
                                             lastKnownLineHeight = paneLineHeight;
                                             if (typeof backend !== "undefined" && backend && backend.get_backing_total_lines) {
                                                 paneTotalLineCount = backend.get_backing_total_lines(tabKey);
-                                                if (paneTotalLineCount > 800) {
+                                                isVirtualized = (paneTotalLineCount > 250);
+                                                if (isVirtualized) {
                                                     checkAndShiftWindow(true, "init");
                                                 }
                                             }
@@ -925,36 +956,26 @@ Item {
 
                                         function checkAndShiftWindow(force, reason) {
                                             if (!isVirtualized || isShifting || typeof backend === "undefined" || !backend || !backend.get_backing_slice) return;
+                                            tabPane.flushBackingSlice();
                                             
                                             var viewTop = editorFlickable.contentY;
                                             var lineH = paneLineHeight > 0 ? paneLineHeight : 18.0;
                                             var viewCenterLine = (pendingScrollbarTargetLine >= 0) ? pendingScrollbarTargetLine : Math.max(0, Math.floor((viewTop + editorFlickable.height * 0.5) / lineH));
                                             
-                                            var bufferThreshold = 180;
+                                            var bufferThreshold = 60;
                                             var needsShift = (force === true) || (viewCenterLine < windowStartLine + bufferThreshold) || (viewCenterLine > windowEndLine - bufferThreshold);
                                             
                                             if (needsShift) {
-                                                var halfWindow = 400;
+                                                var halfWindow = 200;
                                                 var newStart = Math.max(0, viewCenterLine - halfWindow);
-                                                var newEnd = Math.min(paneTotalLineCount - 1, newStart + 800);
-                                                newStart = Math.max(0, newEnd - 800);
+                                                var newEnd = Math.min(paneTotalLineCount - 1, newStart + 400);
+                                                newStart = Math.max(0, newEnd - 400);
                                                 
-                                                if (newStart === windowStartLine && newEnd === windowEndLine && !force) return;
+                                                if (newStart === windowStartLine && newEnd === windowEndLine && reason !== "init") return;
                                                 
                                                 var sliceObj = backend.get_backing_slice(tabKey, newStart, newEnd);
                                                 if (sliceObj && sliceObj.text !== undefined) {
                                                     isShifting = true;
-                                                    var viewStart = Math.max(0, Math.floor(viewTop / lineH));
-                                                    var viewEnd = viewStart + Math.ceil(editorFlickable.height / lineH);
-                                                    console.log("[Virtualization Shift]", "reason:", reason || "wheel",
-                                                        "globalTotalLines:", paneTotalLineCount,
-                                                        "window:", (windowStartLine + 1) + ".." + (windowEndLine + 1), "->", (sliceObj.startLine + 1) + ".." + (sliceObj.endLine + 1),
-                                                        "viewport:", viewStart + ".." + viewEnd,
-                                                        "contentY:", Math.round(viewTop), "contentHeight:", Math.round(editorFlickable.contentHeight),
-                                                        "flickWidth:", editorFlickable.width,
-                                                        "matX:", materializedEditorContainer.x, "matW:", materializedEditorContainer.width,
-                                                        "codeX:", codeTextArea.x, "codeW:", codeTextArea.width,
-                                                        "gutterW:", gutter.width);
                                                     
                                                     var oldScrollY = editorFlickable.contentY;
                                                     var oldScrollX = editorFlickable.contentX;
@@ -979,12 +1000,24 @@ Item {
                                                                 charPos += Math.min(globalCol - 1, localLines[targetLine - 1].length);
                                                             }
                                                             codeTextArea.cursorPosition = Math.min(charPos, sliceObj.text.length);
+                                                        } else if (reason === "minimap" || reason === "scrollbar") {
+                                                            var centerLineLocal = Math.max(0, Math.min(newEnd - newStart, viewCenterLine - newStart));
+                                                            var localLinesSlice = sliceObj.text.split("\n");
+                                                            var targetSliceLine = Math.min(centerLineLocal, localLinesSlice.length - 1);
+                                                            var posSlice = 0;
+                                                            for (var sl = 0; sl < targetSliceLine; sl++) {
+                                                                posSlice += localLinesSlice[sl].length + 1;
+                                                            }
+                                                            codeTextArea.cursorPosition = Math.min(posSlice, sliceObj.text.length);
                                                         }
+                                                        codeTextArea.cursorVisible = true;
+                                                        root.updateCursorPosition();
 
-                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
-                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
-                                                        if (tabPane.index === root.activeTabIndex) {
-                                                            indentGuidesCanvas.requestPaint();
+                                                        // Asynchronously update scopes and indent guides via debounce timer
+                                                        // so the UI thread doesn't stutter on window shift
+                                                        canvasDebounceTimer.restart();
+                                                        if (typeof backend !== "undefined" && backend && backend.rehighlight_current) {
+                                                            backend.rehighlight_current();
                                                         }
                                                     } finally {
                                                         root.isRestoringTab = false;
@@ -998,11 +1031,17 @@ Item {
                                         }
 
                                         function syncFontMetricsAndGeometry() {
-                                            var oldLineH = lastKnownLineHeight > 0 ? lastKnownLineHeight : (paneLineHeight > 0 ? paneLineHeight : 18.0);
                                             var newLineH = root.editorLineHeight > 0 ? root.editorLineHeight : 18.0;
                                             var newCharW = root.charWidth > 0 ? root.charWidth : 7.8;
                                             var newFontSize = (typeof theme !== "undefined" && theme && theme.editorFontSize) ? theme.editorFontSize : 13;
 
+                                            if (tabPane.paneFontSize === newFontSize &&
+                                                Math.abs(tabPane.paneLineHeight - newLineH) < 0.001 &&
+                                                Math.abs(tabPane.paneCharWidth - newCharW) < 0.001) {
+                                                return;
+                                            }
+
+                                            var oldLineH = lastKnownLineHeight > 0 ? lastKnownLineHeight : (paneLineHeight > 0 ? paneLineHeight : 18.0);
                                             tabPane.paneFontSize = newFontSize;
                                             tabPane.paneCharWidth = newCharW;
                                             tabPane.paneLineHeight = newLineH;
@@ -1016,7 +1055,10 @@ Item {
                                             }
 
                                             if (tabPane.isVirtualized) {
-                                                tabPane.checkAndShiftWindow(true, "zoom");
+                                                tabPane.checkAndShiftWindow(false, "zoom");
+                                            }
+                                            if (gutterCanvas) {
+                                                gutterCanvas.requestPaint();
                                             }
                                             if (indentGuidesCanvas) {
                                                 indentGuidesCanvas.requestPaint();
@@ -1069,7 +1111,7 @@ Item {
                                             anchors.fill: parent
                                             spacing: 0
 
-                                            // Line Numbers Gutter (Virtualized for high performance on large files)
+                                            // Line Numbers Gutter (Canvas 2D-rendered for 60fps scrolling & 0 lag on 5k+ line files)
                                             Rectangle {
                                                 id: gutter
                                                 Layout.fillWidth: false
@@ -1081,63 +1123,96 @@ Item {
                                                 visible: theme ? theme.enableLineNumbers : true
                                                 clip: true
 
-                                                readonly property int visibleStartLine: Math.max(0, Math.floor(gutterFlickable.contentY / tabPane.paneLineHeight))
-                                                readonly property int visibleLineCount: Math.min(tabPane.paneTotalLineCount - visibleStartLine, Math.ceil(gutter.height / tabPane.paneLineHeight) + 12)
+                                                // Dummy item for any external property references
+                                                Item {
+                                                    id: dummyGutterFlickable
+                                                    property real contentY: editorFlickable.contentY
+                                                    property real contentHeight: editorFlickable.contentHeight
+                                                }
 
-                                                Flickable {
-                                                    id: gutterFlickable
+                                                Canvas {
+                                                    id: gutterCanvas
                                                     anchors.fill: parent
-                                                    contentHeight: editorFlickable.contentHeight
-                                                    contentY: editorFlickable.contentY
-                                                    interactive: false
-                                                    boundsBehavior: Flickable.StopAtBounds
+                                                    renderTarget: Canvas.FramebufferObject
+                                                    renderStrategy: Canvas.Immediate
 
-                                                    Item {
-                                                        width: gutter.width
-                                                        height: Math.max(gutterFlickable.height, tabPane.paneTotalLineCount * tabPane.paneLineHeight + codeTextArea.topPadding + codeTextArea.bottomPadding)
+                                                    Connections {
+                                                        target: editorFlickable
+                                                        function onContentYChanged() { gutterCanvas.requestPaint(); }
+                                                    }
+                                                    Connections {
+                                                        target: root
+                                                        function onCursorLineChanged() { gutterCanvas.requestPaint(); }
+                                                    }
+                                                    Connections {
+                                                        target: tabPane
+                                                        function onPaneTotalLineCountChanged() { gutterCanvas.requestPaint(); }
+                                                        function onWindowStartLineChanged() { gutterCanvas.requestPaint(); }
+                                                    }
 
-                                                        Repeater {
-                                                            model: gutter.visibleLineCount > 0 ? gutter.visibleLineCount : 0
+                                                    onPaint: {
+                                                        var ctx = getContext("2d");
+                                                        ctx.clearRect(0, 0, width, height);
 
-                                                            delegate: Item {
-                                                                readonly property int lineNum: gutter.visibleStartLine + index + 1
-                                                                width: gutter.width
-                                                                height: tabPane.paneLineHeight
-                                                                y: (lineNum - 1) * tabPane.paneLineHeight + codeTextArea.topPadding
+                                                        var lineH = tabPane.paneLineHeight > 0 ? tabPane.paneLineHeight : 18.0;
+                                                        var scrollY = editorFlickable.contentY;
+                                                        var total = tabPane.paneTotalLineCount;
+                                                        if (total <= 0) return;
 
-                                                                // Code fold chevron
-                                                                Text {
-                                                                    anchors.left: parent.left
-                                                                    anchors.leftMargin: 6
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    text: root.getFoldChevron(lineNum)
-                                                                    font.pixelSize: 10
-                                                                    font.family: "Consolas, monospace"
-                                                                    color: foldMa.containsMouse ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
-                                                                    visible: root.isFoldableLine(lineNum)
-                                                                    opacity: foldMa.containsMouse || root.isLineFolded(lineNum) ? 1.0 : 0.6
+                                                        var startLineIdx = Math.max(0, Math.floor(scrollY / lineH));
+                                                        var visibleCount = Math.ceil(height / lineH) + 2;
+                                                        var endLineIdx = Math.min(total - 1, startLineIdx + visibleCount);
 
-                                                                    MouseArea {
-                                                                        id: foldMa
-                                                                        anchors.fill: parent
-                                                                        anchors.margins: -4
-                                                                        hoverEnabled: true
-                                                                        cursorShape: Qt.PointingHandCursor
-                                                                        onClicked: {
-                                                                            root.toggleFoldAtLine(lineNum);
-                                                                        }
-                                                                    }
-                                                                }
+                                                        var fontPx = tabPane.paneFontSize > 0 ? tabPane.paneFontSize : 13;
+                                                        var activeLine = (tabPane.index === root.activeTabIndex) ? root.cursorLine : -1;
+                                                        var mutedColor = (theme && theme.textMuted) ? theme.textMuted : "#656565";
+                                                        var brightColor = (theme && theme.textBright) ? theme.textBright : "#ffffff";
+                                                        var accentColor = (theme && theme.accent) ? theme.accent : "#0078d4";
 
-                                                                // Line number
-                                                                Text {
-                                                                    anchors.right: parent.right
-                                                                    anchors.rightMargin: 10
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    text: lineNum.toString()
-                                                                    font.pixelSize: tabPane.paneFontSize
-                                                                    font.family: codeTextArea.font.family
-                                                                    color: (lineNum === root.cursorLine && tabPane.index === root.activeTabIndex) ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
+                                                        ctx.font = fontPx + "px Consolas, monospace";
+                                                        ctx.textBaseline = "middle";
+
+                                                        var topPad = codeTextArea.topPadding;
+                                                        var gutterW = width;
+
+                                                        for (var i = startLineIdx; i <= endLineIdx; i++) {
+                                                            var lineNum = i + 1;
+                                                            var yPos = (i * lineH + topPad - scrollY) + (lineH * 0.5);
+
+                                                            if (yPos < -lineH || yPos > height + lineH) continue;
+
+                                                            // Fold chevron if foldable
+                                                            if (root.isFoldableLine(lineNum)) {
+                                                                var chev = root.getFoldChevron(lineNum);
+                                                                var isFolded = root.isLineFolded(lineNum);
+                                                                ctx.fillStyle = isFolded ? accentColor : mutedColor;
+                                                                ctx.fillText(chev, 6, yPos);
+                                                            }
+
+                                                            // Line number
+                                                            ctx.fillStyle = (lineNum === activeLine) ? brightColor : mutedColor;
+                                                            var numStr = lineNum.toString();
+                                                            var numWidth = ctx.measureText(numStr).width;
+                                                            ctx.fillText(numStr, gutterW - numWidth - 10, yPos);
+                                                        }
+                                                    }
+
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        hoverEnabled: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: function(mouse) {
+                                                            var lineH = tabPane.paneLineHeight > 0 ? tabPane.paneLineHeight : 18.0;
+                                                            var scrollY = editorFlickable.contentY;
+                                                            var topPad = codeTextArea.topPadding;
+                                                            var lineIdx = Math.floor((mouse.y + scrollY - topPad) / lineH);
+                                                            var clickedLine = lineIdx + 1;
+                                                            if (clickedLine >= 1 && clickedLine <= tabPane.paneTotalLineCount) {
+                                                                if (mouse.x <= 20 && root.isFoldableLine(clickedLine)) {
+                                                                    root.toggleFoldAtLine(clickedLine);
+                                                                    gutterCanvas.requestPaint();
+                                                                } else {
+                                                                    root.jumpToLine(clickedLine, 1);
                                                                 }
                                                             }
                                                         }
@@ -1274,7 +1349,7 @@ Item {
                                                     clip: true
                                                     boundsBehavior: Flickable.StopAtBounds
                                                     contentWidth: (theme && theme.enableWordWrap) ? width : Math.max(width, codeTextArea.contentWidth + codeTextArea.leftPadding + codeTextArea.rightPadding + 80)
-                                                    contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, codeTextArea.contentHeight + codeTextArea.topPadding + codeTextArea.bottomPadding + 220) : Math.max(height, tabPane.paneTotalLineCount * tabPane.paneLineHeight + 220)
+                                                    contentHeight: (theme && theme.enableWordWrap) ? Math.max(height, codeTextArea.contentHeight + codeTextArea.topPadding + codeTextArea.bottomPadding) : Math.max(height, tabPane.paneTotalLineCount * tabPane.paneLineHeight + codeTextArea.topPadding + codeTextArea.bottomPadding)
 
                                                     Timer {
                                                         id: windowShiftDebounceTimer
@@ -1307,6 +1382,10 @@ Item {
                                                                 var lineH = tabPane.paneLineHeight > 0 ? tabPane.paneLineHeight : 18;
                                                                 var sLine = Math.max(0, Math.floor(editorFlickable.contentY / lineH));
                                                                 var eLine = sLine + Math.ceil(editorFlickable.height / lineH) + 4;
+                                                                if (tabPane.isVirtualized) {
+                                                                    sLine = Math.max(0, sLine - tabPane.windowStartLine);
+                                                                    eLine = Math.max(0, eLine - tabPane.windowStartLine);
+                                                                }
                                                                 backend.update_visible_range(sLine, eLine);
                                                             }
                                                         }
@@ -1320,7 +1399,7 @@ Item {
                                                             } else {
                                                                 var lineH = paneLineHeight > 0 ? paneLineHeight : 18.0;
                                                                 var vCenter = Math.floor((editorFlickable.contentY + editorFlickable.height * 0.5) / lineH);
-                                                                if (vCenter < tabPane.windowStartLine + 100 || vCenter > tabPane.windowEndLine - 100) {
+                                                                if (vCenter < tabPane.windowStartLine + 60 || vCenter > tabPane.windowEndLine - 60) {
                                                                     tabPane.checkAndShiftWindow(false, "wheel_fast");
                                                                 } else {
                                                                     windowShiftDebounceTimer.restart();
@@ -1356,11 +1435,11 @@ Item {
 
                                                     Timer {
                                                         id: zoomCoalesceTimer
-                                                        interval: 35
+                                                        interval: 25
                                                         repeat: false
                                                         onTriggered: {
                                                             if (typeof theme === "undefined" || !theme || theme.enableMouseWheelZoom === false) return;
-                                                            if (Math.abs(zoomWheelHandler.deltaAccumulator) >= 60) {
+                                                            if (Math.abs(zoomWheelHandler.deltaAccumulator) >= 30) {
                                                                 var steps = Math.round(zoomWheelHandler.deltaAccumulator / 120.0);
                                                                 if (steps === 0) steps = (zoomWheelHandler.deltaAccumulator > 0) ? 1 : -1;
                                                                 zoomWheelHandler.deltaAccumulator = 0.0;
@@ -1389,10 +1468,23 @@ Item {
                                                             var delta = event.angleDelta.y;
                                                             if (delta === 0) return;
 
-                                                             deltaAccumulator += delta;
-                                                             zoomCoalesceTimer.restart();
-                                                         }
-                                                     }
+                                                            deltaAccumulator += delta;
+                                                            if (Math.abs(deltaAccumulator) >= 60) {
+                                                                zoomCoalesceTimer.stop();
+                                                                var steps = Math.round(deltaAccumulator / 120.0);
+                                                                if (steps === 0) steps = (deltaAccumulator > 0) ? 1 : -1;
+                                                                deltaAccumulator = 0.0;
+                                                                var currentSize = theme.editorFontSize;
+                                                                var newSize = Math.max(8, Math.min(48, currentSize + steps));
+                                                                if (newSize !== currentSize) {
+                                                                    theme.editorFontSize = newSize;
+                                                                    saveZoomTimer.restart();
+                                                                }
+                                                            } else {
+                                                                zoomCoalesceTimer.restart();
+                                                            }
+                                                        }
+                                                    }
 
                                                     WheelHandler {
                                                         target: editorFlickable
@@ -1428,6 +1520,7 @@ Item {
                                                         active: true
                                                     }
 
+
                                                     // Current Line Highlight Band
                                                     Rectangle {
                                                         id: currentLineHighlight
@@ -1439,6 +1532,24 @@ Item {
                                                         opacity: 0.35
                                                         z: 0
                                                         visible: codeTextArea.cursorRectangle.height > 0 && tabPane.index === root.activeTabIndex
+                                                    }
+
+                                                    // Viewport Background Click Handler (Ensures focus & places cursor when clicking empty/overscroll space)
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        acceptedButtons: Qt.LeftButton
+                                                        z: 0
+                                                        onPressed: function(mouse) {
+                                                            codeTextArea.forceActiveFocus();
+                                                            var containerY = tabPane.isVirtualized ? (tabPane.windowStartLine * tabPane.paneLineHeight) : 0;
+                                                            var localY = mouse.y - containerY;
+                                                            var charPos = codeTextArea.positionAt(mouse.x, localY);
+                                                            if (charPos >= 0) {
+                                                                codeTextArea.cursorPosition = charPos;
+                                                            }
+                                                            codeTextArea.cursorVisible = true;
+                                                            root.updateCursorPosition();
+                                                        }
                                                     }
 
                                                     Item {
@@ -1454,7 +1565,7 @@ Item {
                                                             objectName: "codeTextArea"
                                                             anchors.fill: parent
                                                             topPadding: 6
-                                                            bottomPadding: 16
+                                                            bottomPadding: 6
                                                             leftPadding: 10
                                                             rightPadding: 24
                                                             wrapMode: (theme && theme.enableWordWrap) ? TextArea.WrapAtWordBoundaryOrAnywhere : TextArea.NoWrap
@@ -1467,43 +1578,66 @@ Item {
                                                             selectByMouse: true
                                                             focus: tabPane.index === root.activeTabIndex
                                                             cursorVisible: true
-                                                            cursorDelegate: Rectangle {
-                                                                id: caretRect
+                                                            cursorDelegate: Item {
+                                                                width: 0
+                                                                height: 0
+                                                                visible: false
+                                                            }
+                                                            textFormat: TextArea.PlainText
+                                                            background: null
+                                                            text: (typeof model !== "undefined" && model && model.content) ? model.content : ""
+
+                                                            // High-Contrast Solid/Blinking Text Insertion Caret (|)
+                                                            Rectangle {
+                                                                id: activeCaretRect
+                                                                objectName: "activeCaretRect"
+                                                                x: codeTextArea.cursorRectangle.x
+                                                                y: codeTextArea.cursorRectangle.y
                                                                 width: 2
+                                                                height: codeTextArea.cursorRectangle.height > 0 ? codeTextArea.cursorRectangle.height : tabPane.paneLineHeight
                                                                 color: (typeof theme !== "undefined" && theme && theme.accent) ? theme.accent : "#38bdf8"
-                                                                visible: codeTextArea.cursorVisible && (tabPane.index === root.activeTabIndex)
+                                                                visible: (tabPane.index === root.activeTabIndex)
+                                                                z: 100
                                                                 opacity: 1.0
 
                                                                 Timer {
                                                                     id: caretBlinkTimer
                                                                     interval: 530
                                                                     repeat: true
-                                                                    running: caretRect.visible && codeTextArea.activeFocus
-                                                                    onTriggered: caretRect.opacity = (caretRect.opacity > 0.5 ? 0.0 : 1.0)
+                                                                    running: activeCaretRect.visible && codeTextArea.activeFocus
+                                                                    onTriggered: activeCaretRect.opacity = (activeCaretRect.opacity > 0.5 ? 0.0 : 1.0)
                                                                 }
 
                                                                 Connections {
                                                                     target: codeTextArea
                                                                     function onCursorPositionChanged() {
-                                                                        caretRect.opacity = 1.0;
-                                                                        if (codeTextArea.activeFocus) {
-                                                                            caretBlinkTimer.restart();
-                                                                        }
+                                                                        activeCaretRect.opacity = 1.0;
+                                                                        caretBlinkTimer.restart();
                                                                     }
                                                                     function onActiveFocusChanged() {
-                                                                        caretRect.opacity = 1.0;
+                                                                        activeCaretRect.opacity = 1.0;
                                                                         if (codeTextArea.activeFocus) {
                                                                             caretBlinkTimer.restart();
                                                                         }
                                                                     }
                                                                 }
                                                             }
-                                                            textFormat: TextArea.PlainText
-                                                            background: null
-                                                            text: (typeof model !== "undefined" && model && model.content) ? model.content : ""
+
+                                                            TapHandler {
+                                                                acceptedButtons: Qt.LeftButton
+                                                                onTapped: function() {
+                                                                    codeTextArea.forceActiveFocus();
+                                                                    codeTextArea.cursorVisible = true;
+                                                                    activeCaretRect.opacity = 1.0;
+                                                                    caretBlinkTimer.restart();
+                                                                }
+                                                            }
 
                                                             Component.onCompleted: {
                                                                 Qt.callLater(function() {
+                                                                    if (tabPane && tabPane.index === root.activeTabIndex) {
+                                                                        codeTextArea.forceActiveFocus();
+                                                                    }
                                                                     if (tabPane && tabPane.index === root.activeTabIndex && typeof backend !== "undefined" && backend && backend.register_text_area) {
                                                                         backend.register_text_area(codeTextArea, (model && model.path) ? model.path : "", (model && model.languageId) ? model.languageId : "text");
                                                                     }
@@ -1511,9 +1645,9 @@ Item {
                                                                         if (tabPane.isVirtualized) {
                                                                             tabPane.checkAndShiftWindow(true);
                                                                         }
-                                                                        tabPane.paneScopeRanges = root.computeScopesForText(codeTextArea.text);
-                                                                        tabPane.paneGuideSegments = root.computeGuideSegmentsForText(codeTextArea.text);
-                                                                        indentGuidesCanvas.requestPaint();
+                                                                        if (canvasDebounceTimer) {
+                                                                            canvasDebounceTimer.restart();
+                                                                        }
                                                                     }
                                                                 });
                                                             }
@@ -1655,38 +1789,15 @@ Item {
 
                                                                                                                 
 
-                                                         // Alt+Click Multi-Cursor Interceptor (Left Button with Alt Modifier)
-                                                        MouseArea {
-                                                            anchors.fill: parent
-                                                            acceptedButtons: Qt.LeftButton
-                                                            hoverEnabled: false
-                                                            z: 20
-                                                            cursorShape: Qt.IBeamCursor
-
-                                                            onPressed: function(mouse) {
-                                                                if (mouse.modifiers & Qt.AltModifier) {
-                                                                    mouse.accepted = true;
-                                                                    var charPos = codeTextArea.positionAt(mouse.x, mouse.y);
-                                                                    root.toggleExtraCursor(charPos);
-                                                                } else {
-                                                                    mouse.accepted = false;
-                                                                }
-                                                            }
-                                                        }
-
-                                                        // Normal Left-Click TapHandler - clears autocomplete and extra cursors & ensures focus
+                                                         // Alt+Click Multi-Cursor Pointer Handler (Zero interference with native left click/selection)
                                                         TapHandler {
                                                             acceptedButtons: Qt.LeftButton
-                                                            acceptedModifiers: Qt.NoModifier
-                                                            onTapped: {
+                                                            acceptedModifiers: Qt.AltModifier
+                                                            onTapped: function(eventPoint) {
                                                                 codeTextArea.forceActiveFocus();
-                                                                if (root.extraCursors.length > 0) {
-                                                                    root.extraCursors = [];
-                                                                    root.multiCursorUndoStack = [];
-                                                                    root.multiCursorRedoStack = [];
-                                                                }
-                                                                if (suggestionModel.count > 0) {
-                                                                    suggestionModel.clear();
+                                                                var charPos = codeTextArea.positionAt(eventPoint.position.x, eventPoint.position.y);
+                                                                if (charPos >= 0) {
+                                                                    root.toggleExtraCursor(charPos);
                                                                 }
                                                             }
                                                         }
@@ -1722,9 +1833,16 @@ Item {
                                                             }
                                                         }
 
+                                                        onActiveFocusChanged: {
+                                                            if (codeTextArea.activeFocus) {
+                                                                root.updateCursorPosition();
+                                                            }
+                                                        }
+
                                                         onCursorPositionChanged: {
                                                             if (tabPane.index === root.activeTabIndex) {
                                                                 root.updateCursorPosition();
+                                                                root.ensureCursorVisible();
                                                                 
                                                                 if (codeTextArea.selectedText && codeTextArea.selectedText.length >= 2) {
                                                                     root.updateSelectionOccurrences();
@@ -1747,35 +1865,34 @@ Item {
                                                             }
                                                         }
 
+                                                        onTextEdited: {
+                                                            if (root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
+                                                            if (index >= 0 && index < tabModel.count) {
+                                                                var curTab = tabModel.get(index);
+                                                                if (curTab && !curTab.isDirty) {
+                                                                    tabModel.setProperty(index, "isDirty", true);
+                                                                    root.dirtyVersion++;
+                                                                    if (index === root.activeTabIndex) {
+                                                                        root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, true);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+
                                                         onTextChanged: {
                                                             if (root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
                                                             if (index >= 0 && index < tabModel.count) {
                                                                 var curTab = tabModel.get(index);
                                                                 if (curTab) {
-                                                                    if (tabPane.isVirtualized && typeof backend !== "undefined" && backend && backend.update_backing_slice) {
-                                                                        backend.update_backing_slice(tabPane.tabKey, tabPane.windowStartLine, tabPane.windowEndLine, codeTextArea.text);
-                                                                        tabPane.paneTotalLineCount = backend.get_backing_total_lines(tabPane.tabKey);
-                                                                    } else if (typeof backend !== "undefined" && backend && backend.update_backing_text) {
-                                                                        backend.update_backing_text(tabPane.tabKey, codeTextArea.text);
-                                                                        tabPane.paneTotalLineCount = Math.max(1, codeTextArea.lineCount);
-                                                                    }
-                                                                    var isDirtyNow = false;
-                                                                    if (tabPane.isUntitled || !curTab.path || curTab.path === "") {
-                                                                        isDirtyNow = true;
-                                                                    } else {
-                                                                        if (typeof backend !== "undefined" && backend && backend.is_backing_document_modified) {
-                                                                            isDirtyNow = backend.is_backing_document_modified(tabPane.tabKey);
-                                                                        } else if (typeof backend !== "undefined" && backend && backend.is_document_modified) {
-                                                                            isDirtyNow = backend.is_document_modified(codeTextArea);
-                                                                        } else {
-                                                                            isDirtyNow = (codeTextArea.text !== (tabPane.savedContent || ""));
-                                                                        }
-                                                                    }
-                                                                    if (curTab.isDirty !== isDirtyNow) {
-                                                                        tabModel.setProperty(index, "isDirty", isDirtyNow);
-                                                                        root.dirtyVersion++;
-                                                                        if (index === root.activeTabIndex) {
-                                                                            root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, isDirtyNow);
+                                                                    // Coalesce backing slice update (60ms debounce) so typing has 0ms overhead
+                                                                    backingSliceDebounceTimer.restart();
+                                                                    if (!tabPane.isVirtualized && tabPane.savedContent !== undefined && tabPane.savedContent !== "") {
+                                                                        if (codeTextArea.text !== tabPane.savedContent && !curTab.isDirty) {
+                                                                            tabModel.setProperty(index, "isDirty", true);
+                                                                            root.dirtyVersion++;
+                                                                            if (index === root.activeTabIndex) {
+                                                                                root.activeFileChanged(curTab.path || "", curTab.title || "", root.currentLanguage, true);
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
@@ -2441,14 +2558,7 @@ Item {
                                                         }
 
                                                         Keys.onReleased: function(event) {
-                                                            if (event.key === Qt.Key_Up || event.key === Qt.Key_Down ||
-                                                                event.key === Qt.Key_Left || event.key === Qt.Key_Right ||
-                                                                event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown ||
-                                                                event.key === Qt.Key_Home || event.key === Qt.Key_End ||
-                                                                event.key === Qt.Key_Return || event.key === Qt.Key_Enter ||
-                                                                event.key === Qt.Key_Backspace || event.key === Qt.Key_Tab) {
-                                                                root.ensureCursorVisible();
-                                                            }
+                                                            root.ensureCursorVisible();
                                                         }
                                                     }
                                                 }
@@ -2464,7 +2574,7 @@ Item {
                                 id: codeMinimap
                                 objectName: "codeMinimap"
                                 Layout.fillHeight: true
-                                visible: theme ? theme.enableMinimap : true
+                                visible: (theme ? theme.enableMinimap : true) && (!root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab))
                                 documentText: ""
                                 totalLineCount: root.activeEditorPane ? root.activeEditorPane.paneTotalLineCount : 1
                                 visibleRatio: root.editorFlickable ? (root.editorFlickable.height / Math.max(1, root.editorFlickable.contentHeight)) : 1.0
@@ -2473,18 +2583,22 @@ Item {
                                 onScrollRequested: function(ratio) {
                                     if (root.editorFlickable) {
                                         root.editorFlickable.contentY = ratio * Math.max(0, root.editorFlickable.contentHeight - root.editorFlickable.height);
+                                        if (root.activeEditorPane && root.activeEditorPane.isVirtualized) {
+                                            root.activeEditorPane.checkAndShiftWindow(true, "minimap");
+                                        }
                                     }
                                 }
                             }
 
                             Timer {
                                 id: minimapDeferredUpdateTimer
-                                interval: 100
+                                interval: 60
                                 repeat: false
                                 onTriggered: {
                                     if (codeMinimap && root.currentTab) {
-                                        var tabKey = root.currentTab.fileId || root.currentTab.path || root.currentTab.title || "tab";
-                                        codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
+                                        var tabKey = root.getActiveTabKey();
+                                        var text = root.getEffectiveTabText(root.currentTab);
+                                        codeMinimap.setTabAndText(tabKey, text);
                                     }
                                 }
                             }
@@ -2493,8 +2607,9 @@ Item {
                                 target: root
                                 function onActiveTabIndexChanged() {
                                     if (codeMinimap && root.currentTab) {
-                                        var tabKey = root.currentTab.fileId || root.currentTab.path || root.currentTab.title || "tab";
-                                        codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
+                                        var tabKey = root.getActiveTabKey();
+                                        var text = root.getEffectiveTabText(root.currentTab);
+                                        codeMinimap.setTabAndText(tabKey, text);
                                     } else {
                                         minimapDeferredUpdateTimer.restart();
                                     }
@@ -2784,6 +2899,13 @@ Item {
                                 if (root.codeTextArea) root.codeTextArea.forceActiveFocus();
                             }
                         }
+
+                        // Pure-Python Extension Floating Mascot / Screen Widgets
+                        DynamicFloatingHost {
+                            id: dynamicFloatingHost
+                            anchors.fill: parent
+                            z: 110
+                        }
                     }
 
                     // 1.2 Whiteboard Canvas Tab View (Embedded as a full tab)
@@ -2806,6 +2928,46 @@ Item {
                         htmlContent: root.currentTab ? (root.currentTab.content || "") : ""
                         sourcePath: root.currentTab ? (root.currentTab.sourcePath || root.currentTab.path || "") : ""
                         isMarkdown: root.currentTab ? (root.currentTab.isMarkdown || false) : false
+                        onCloseRequested: {
+                            if (root.activeTabIndex >= 0) {
+                                root.closeTab(root.activeTabIndex);
+                            }
+                        }
+                    }
+
+                    // 1.4 Settings Tab View
+                    SettingsDialog {
+                        id: settingsTab
+                        anchors.fill: parent
+                        isTabMode: true
+                        visible: Boolean(root.currentTab && (root.currentTab.isSettings || root.currentTab.languageId === "settings"))
+                        onCloseRequested: {
+                            if (root.activeTabIndex >= 0) {
+                                root.closeTab(root.activeTabIndex);
+                            }
+                        }
+                        onOpenAsPopupRequested: {
+                            if (root.activeTabIndex >= 0) {
+                                root.closeTab(root.activeTabIndex);
+                            }
+                            if (typeof settingsOverlay !== "undefined" && settingsOverlay) {
+                                settingsOverlay.visible = true;
+                            }
+                        }
+                        onExtensionsRequested: {
+                            mainWindow.showExtensions();
+                        }
+                        onThemeSelected: function(tName) {
+                            if (theme) theme.setTheme(tName);
+                        }
+                    }
+
+                    // 1.5 Custom Extension Tab View
+                    DynamicTabHost {
+                        id: customExtensionTabHost
+                        anchors.fill: parent
+                        tabData: root.currentTab ? root.currentTab.extensionTabData : null
+                        visible: Boolean(root.currentTab && root.currentTab.isCustomExtensionTab)
                         onCloseRequested: {
                             if (root.activeTabIndex >= 0) {
                                 root.closeTab(root.activeTabIndex);
@@ -2906,7 +3068,7 @@ Item {
                                                     spacing: 4
 
                                                     VectorIcon {
-                                                        name: (model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file")
+                                                        name: (model.isSettings || model.languageId === "settings") ? "settings" : ((model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file"))
                                                         size: 10
                                                         color: index === root.secondaryTabIndex ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
                                                     }
@@ -2972,7 +3134,7 @@ Item {
                                     visible: root.secondaryTab !== null
 
                                     VectorIcon {
-                                        name: (root.secondaryTab && (root.secondaryTab.isWhiteboard || root.secondaryTab.languageId === "whiteboard")) ? "board" : ((root.secondaryTab && (root.secondaryTab.isWebPreview || root.secondaryTab.languageId === "webpreview")) ? "sparkles" : "file")
+                                        name: (root.secondaryTab && (root.secondaryTab.isSettings || root.secondaryTab.languageId === "settings")) ? "settings" : ((root.secondaryTab && (root.secondaryTab.isWhiteboard || root.secondaryTab.languageId === "whiteboard")) ? "board" : ((root.secondaryTab && (root.secondaryTab.isWebPreview || root.secondaryTab.languageId === "webpreview")) ? "sparkles" : "file"))
                                         size: 11
                                         color: theme ? theme.accent : "#0078d4"
                                     }
@@ -3027,7 +3189,7 @@ Item {
                             // Secondary Code Editor Surface
                             Item {
                                 anchors.fill: parent
-                                visible: Boolean(!root.secondaryTab || (!root.secondaryTab.isWhiteboard && !root.secondaryTab.isWebPreview && root.secondaryTab.languageId !== "webpreview"))
+                                visible: Boolean(!root.secondaryTab || (!root.secondaryTab.isWhiteboard && !root.secondaryTab.isWebPreview && root.secondaryTab.languageId !== "webpreview" && !root.secondaryTab.isSettings && root.secondaryTab.languageId !== "settings"))
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -3290,7 +3452,7 @@ Item {
 
     Timer {
         id: autocompleteTimer
-        interval: 180
+        interval: 250
         repeat: false
         onTriggered: {
             root.triggerCompletionRequest();
@@ -3934,13 +4096,28 @@ Item {
         }
     }
 
+    function getActiveTabKey() {
+        if (!root.currentTab) return "tab";
+        return root.currentTab.path || root.currentTab.fileId || ("tab_" + root.activeTabIndex);
+    }
+
+    function getEffectiveTabText(tab) {
+        if (!tab) return "";
+        if (tab.path && typeof backend !== "undefined" && backend && backend.get_backing_text) {
+            var backing = backend.get_backing_text(tab.path);
+            if (backing && backing.length > 0) return backing;
+        }
+        if (tab.content && tab.content.length > 0) return tab.content;
+        return root.getCanonicalText();
+    }
+
     function jumpToLineAndCol(line, col) {
         root.jumpToLine(line, col);
     }
 
     Timer {
         id: textChangeDebounceTimer
-        interval: 300
+        interval: 800
         repeat: false
         onTriggered: {
             if (root.activeEditorPane && codeTextArea) {
@@ -3949,11 +4126,11 @@ Item {
                 }
             }
             var canonical = root.getCanonicalText();
-            if (root.currentTab) {
+            if (root.currentTab && (!root.activeEditorPane || !root.activeEditorPane.isVirtualized)) {
                 root.currentTab.content = canonical;
             }
             if (codeMinimap) {
-                var tabKeyVal = (root.currentTab && (root.currentTab.fileId || root.currentTab.path || root.currentTab.title)) || "tab";
+                var tabKeyVal = root.getActiveTabKey();
                 codeMinimap.setTabAndText(tabKeyVal, canonical);
             }
             for (var t = 0; t < tabModel.count; t++) {
@@ -4033,13 +4210,24 @@ Item {
             backend.init_backing_document(path, content || "");
         }
 
+        var initialContent = content || "";
+        if (typeof backend !== "undefined" && backend && backend.get_backing_total_lines && backend.get_backing_slice) {
+            var totLines = backend.get_backing_total_lines(path);
+            if (totLines > 250) {
+                var initSlice = backend.get_backing_slice(path, 0, 400);
+                if (initSlice && initSlice.text !== undefined) {
+                    initialContent = initSlice.text;
+                }
+            }
+        }
+
         root.isInitialTextLoading = true;
         try {
             tabModel.append({
                     fileId: fileId,
                     title: fileName,
                     path: path,
-                    content: content || "",
+                    content: initialContent,
                     isDirty: false,
                     languageName: langObj.name,
                     languageId: langObj.id,
@@ -4064,8 +4252,8 @@ Item {
                 if (root.activeEditorPane) {
                     root.activeEditorPane.savedContent = content || "";
                     root.activeEditorPane.isUntitled = false;
-                    if (root.activeEditorPane.updatePaneScopes) {
-                        root.activeEditorPane.updatePaneScopes();
+                    if (root.activeEditorPane.canvasDebounceTimer) {
+                        root.activeEditorPane.canvasDebounceTimer.restart();
                     }
                 }
                 if (newIdx >= 0 && newIdx < tabModel.count) {
@@ -4073,6 +4261,9 @@ Item {
                     if (newIdx === root.activeTabIndex) {
                         root.dirtyVersion++;
                     }
+                }
+                if (codeMinimap) {
+                    codeMinimap.setTabAndText(path, content || initialContent);
                 }
                 minimapDeferredUpdateTimer.restart();
                 console.log("[Timing] Editor fully responsive");
@@ -4137,6 +4328,68 @@ Item {
             });
 
         switchToTab(newIdx);
+    }
+
+    signal settingsPopupRequested()
+
+    function openSettingsTab() {
+        root.settingsPopupRequested();
+    }
+
+    function openCustomExtensionTab(tabData) {
+        if (!tabData) return;
+        var existingIdx = -1;
+        for (var i = 0; i < tabModel.count; i++) {
+            var cur = tabModel.get(i);
+            if (cur && cur.fileId === ("custom_tab_" + tabData.id)) {
+                existingIdx = i;
+                break;
+            }
+        }
+        if (existingIdx !== -1) {
+            tabModel.setProperty(existingIdx, "extensionTabData", tabData);
+            switchToTab(existingIdx);
+            return;
+        }
+
+        var newIdx = tabModel.count;
+        tabModel.append({
+            title: tabData.title || "Extension View",
+            fileName: tabData.title || "Extension View",
+            path: "",
+            fileId: "custom_tab_" + tabData.id,
+            content: "",
+            isDirty: false,
+            languageName: "Extension View",
+            languageId: "extension",
+            isWhiteboard: false,
+            isWebPreview: false,
+            isSettings: false,
+            isCustomExtensionTab: true,
+            extensionTabData: tabData,
+            cursorPos: 0
+        });
+        switchToTab(newIdx);
+    }
+
+    Connections {
+        target: (typeof extensionManager !== "undefined" && extensionManager) ? extensionManager : null
+        function onCustomTabsChanged() {
+            var tabs = extensionManager.customTabs;
+            if (!tabs) return;
+            var activeIds = {};
+            for (var i = 0; i < tabs.length; i++) {
+                activeIds["custom_tab_" + tabs[i].id] = true;
+                root.openCustomExtensionTab(tabs[i]);
+            }
+            // Close any custom tabs whose extension was disabled or closed
+            for (var j = tabModel.count - 1; j >= 0; j--) {
+                var item = tabModel.get(j);
+                if (item && item.isCustomExtensionTab && !activeIds[item.fileId]) {
+                    root.closeTab(j);
+                }
+            }
+        }
     }
 
     // =========================================================================
@@ -4476,12 +4729,12 @@ Item {
             backend.set_active_file(newTab.path || newTab.title || "", newTab.languageId || "text");
         }
 
-        if (!newTab.isWhiteboard && !newTab.isWebPreview) {
+        if (!newTab.isWhiteboard && !newTab.isWebPreview && !newTab.isSettings && newTab.languageId !== "settings") {
             if (root.codeTextArea) {
                 if (typeof backend !== "undefined" && backend && backend.register_text_area) {
                     backend.register_text_area(root.codeTextArea, newTab.path || "", newTab.languageId || "text");
                 }
-                if (!(typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.editingFilePath !== "")) {
+                if (!(typeof explorerPanel !== "undefined" && explorerPanel && (explorerPanel.editingFilePath !== "" || (explorerPanel.fileListView && explorerPanel.fileListView.activeFocus)))) {
                     root.codeTextArea.forceActiveFocus();
                 }
                 root.updateCursorPosition();
@@ -4491,8 +4744,9 @@ Item {
                 root.indentGuidesCanvas.requestPaint();
             }
             if (codeMinimap) {
-                var tabKey = newTab.fileId || newTab.path || newTab.title || ("tab_" + index);
-                codeMinimap.setTabAndText(tabKey, root.getCanonicalText());
+                var tabKey = newTab.path || newTab.fileId || ("tab_" + index);
+                var text = root.getEffectiveTabText(newTab);
+                codeMinimap.setTabAndText(tabKey, text);
             }
         }
 
@@ -4708,6 +4962,9 @@ Item {
 
         if (typeof backend !== "undefined" && backend) {
             var pane = root.activeEditorPane;
+            if (pane && pane.flushBackingSlice) {
+                pane.flushBackingSlice();
+            }
             var tabKey = (pane && pane.tabKey) ? pane.tabKey : (root.currentTab.path || root.currentTab.fileId || "");
             var canonical = (pane && pane.isVirtualized && backend.get_backing_text) ? backend.get_backing_text(tabKey) : root.getCanonicalText();
             backend.save_file(root.currentTab.path, canonical);
@@ -4740,6 +4997,9 @@ Item {
         var fileName = cleanPath.split("/").pop().split("\\").pop();
         var langObj = LanguageRegistry.detectLanguage(fileName);
         var pane = root.activeEditorPane;
+        if (pane && pane.flushBackingSlice) {
+            pane.flushBackingSlice();
+        }
         var tabKey = (pane && pane.tabKey) ? pane.tabKey : (root.currentTab ? (root.currentTab.path || root.currentTab.fileId || "") : "");
         var canonical = (pane && pane.isVirtualized && backend.get_backing_text) ? backend.get_backing_text(tabKey) : root.getCanonicalText();
 
@@ -5484,11 +5744,12 @@ Item {
             var tLine = Math.max(1, Math.min(targetLine, totalLines));
             var zeroBasedLine = tLine - 1;
 
-            if (zeroBasedLine < pane.windowStartLine + 60 || zeroBasedLine > pane.windowEndLine - 60) {
-                var halfWindow = 400;
+            var bufferThreshold = 60;
+            if (zeroBasedLine < pane.windowStartLine + bufferThreshold || zeroBasedLine > pane.windowEndLine - bufferThreshold) {
+                var halfWindow = 200;
                 var newStart = Math.max(0, zeroBasedLine - halfWindow);
-                var newEnd = Math.min(totalLines - 1, newStart + 800);
-                newStart = Math.max(0, newEnd - 800);
+                var newEnd = Math.min(totalLines - 1, newStart + 400);
+                newStart = Math.max(0, newEnd - 400);
 
                 var sliceObj = backend.get_backing_slice(pane.tabKey, newStart, newEnd);
                 if (sliceObj && sliceObj.text !== undefined) {
@@ -5499,10 +5760,13 @@ Item {
                         pane.windowStartLine = sliceObj.startLine;
                         pane.windowEndLine = sliceObj.endLine;
                         ta.text = sliceObj.text;
-                        pane.paneScopeRanges = root.computeScopesForText(ta.text);
-                        pane.paneGuideSegments = root.computeGuideSegmentsForText(ta.text);
-                        if (pane.indentGuidesCanvas) {
-                            pane.indentGuidesCanvas.requestPaint();
+                        if (pane.canvasDebounceTimer) {
+                            pane.canvasDebounceTimer.restart();
+                        } else {
+                            if (pane.indentGuidesCanvas) pane.indentGuidesCanvas.requestPaint();
+                        }
+                        if (typeof backend !== "undefined" && backend && backend.rehighlight_current) {
+                            backend.rehighlight_current();
                         }
                     } finally {
                         root.isRestoringTab = false;
@@ -5551,12 +5815,26 @@ Item {
         if (!codeTextArea) return;
         var text = codeTextArea.text;
         var curPos = codeTextArea.cursorPosition;
+        var sel = codeTextArea.selectedText ? codeTextArea.selectedText.trim() : "";
+        var sym = "";
         var wStart = curPos;
-        while (wStart > 0 && /[a-zA-Z0-9_]/.test(text[wStart - 1])) wStart--;
-        var wEnd = curPos;
-        while (wEnd < text.length && /[a-zA-Z0-9_]/.test(text[wEnd])) wEnd++;
-        var sym = text.substring(wStart, wEnd).trim();
-        if (!sym) return;
+
+        if (sel && /^[a-zA-Z0-9_]+$/.test(sel)) {
+            sym = sel;
+            wStart = Math.min(codeTextArea.selectionStart, codeTextArea.selectionEnd);
+        } else {
+            while (wStart > 0 && /[a-zA-Z0-9_]/.test(text[wStart - 1])) wStart--;
+            var wEnd = curPos;
+            while (wEnd < text.length && /[a-zA-Z0-9_]/.test(text[wEnd])) wEnd++;
+            sym = text.substring(wStart, wEnd).trim();
+        }
+
+        if (!sym) {
+            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                mainWindow.showNotification("Place cursor on a symbol or highlight a word to rename.", "info", "Rename");
+            }
+            return;
+        }
 
         var r = codeTextArea.positionToRectangle(wStart);
         var pt = codeTextArea.mapToItem(root, r.x, r.y);

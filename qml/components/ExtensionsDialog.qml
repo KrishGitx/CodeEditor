@@ -205,61 +205,27 @@ Rectangle {
 
                 VectorIcon {
                     name: "puzzle"
-                    size: 16
+                    size: 15
                     color: theme ? theme.accent : "#0078d4"
                 }
 
                 Text {
-                    text: "Extensions & Language Formatters"
+                    text: "Extensions"
                     color: theme ? theme.textBright : "#ffffff"
-                    font.pixelSize: 13
+                    font.pixelSize: 14
                     font.bold: true
                     font.family: theme ? theme.fontFamilyUi : "sans-serif"
                 }
 
                 Item { Layout.fillWidth: true }
 
-                // Install from Folder Button
+                // Install from Package / File
                 Rectangle {
-                    width: 130
-                    height: 26
-                    radius: 4
-                    color: installFolderMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2d2d30") : (theme ? theme.bgSurface : "#252526")
-                    border.color: theme ? theme.borderSubtle : "#3e3e42"
-                    border.width: 1
-
-                    RowLayout {
-                        anchors.centerIn: parent
-                        spacing: 6
-                        VectorIcon {
-                            name: "folder"
-                            size: 12
-                            color: theme ? theme.accent : "#0078d4"
-                        }
-                        Text {
-                            text: "Install Folder..."
-                            font.pixelSize: 11
-                            color: theme ? theme.textPrimary : "#cccccc"
-                            font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                        }
-                    }
-
-                    MouseArea {
-                        id: installFolderMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: installFolderDialog.open()
-                    }
-                }
-
-                // Install from ZIP / Package Button
-                Rectangle {
-                    width: 130
+                    width: 132
                     height: 26
                     radius: 4
                     color: installZipMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2d2d30") : (theme ? theme.bgSurface : "#252526")
-                    border.color: theme ? theme.borderSubtle : "#3e3e42"
+                    border.color: theme ? theme.borderNormal : "#383838"
                     border.width: 1
 
                     RowLayout {
@@ -267,11 +233,11 @@ Rectangle {
                         spacing: 6
                         VectorIcon {
                             name: "download"
-                            size: 12
+                            size: 11
                             color: theme ? theme.accent : "#0078d4"
                         }
                         Text {
-                            text: "Install from File..."
+                            text: "Install from VSIX..."
                             font.pixelSize: 11
                             color: theme ? theme.textPrimary : "#cccccc"
                             font.family: theme ? theme.fontFamilyUi : "sans-serif"
@@ -437,42 +403,50 @@ Rectangle {
                             }
                         }
 
-                        // Filter Pills
-                        RowLayout {
+                        // Segmented Category Switcher
+                        Rectangle {
                             Layout.fillWidth: true
-                            spacing: 4
+                            height: 28
+                            radius: 4
+                            color: theme ? theme.bgSurface : "#252526"
+                            border.color: theme ? theme.borderSubtle : "#2d2d30"
+                            border.width: 1
 
-                            Repeater {
-                                model: [
-                                    { id: "all", label: "All" },
-                                    { id: "formatters", label: "Formatters" },
-                                    { id: "missing", label: "Missing Tools" },
-                                    { id: "installed", label: "User-Added" }
-                                ]
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 2
+                                spacing: 2
 
-                                delegate: Rectangle {
-                                    height: 22
-                                    radius: 3
-                                    Layout.fillWidth: true
-                                    color: root.selectedCategory === modelData.id ? (theme ? theme.accent : "#0078d4") : (pillMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
-                                    border.color: root.selectedCategory === modelData.id ? "transparent" : (theme ? theme.borderSubtle : "#333333")
-                                    border.width: 1
+                                Repeater {
+                                    model: [
+                                        { id: "all", label: "All" },
+                                        { id: "formatters", label: "Formatters" },
+                                        { id: "missing", label: "Missing" },
+                                        { id: "installed", label: "Installed" }
+                                    ]
 
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData.label
-                                        font.pixelSize: 10
-                                        font.bold: root.selectedCategory === modelData.id
-                                        color: root.selectedCategory === modelData.id ? "#ffffff" : (theme ? theme.textSecondary : "#858585")
-                                        font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                                    }
+                                    delegate: Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        radius: 3
+                                        color: root.selectedCategory === modelData.id ? (theme ? theme.bgSurfaceActive : "#37373d") : (pillMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
 
-                                    MouseArea {
-                                        id: pillMa
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.selectedCategory = modelData.id
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.label
+                                            font.pixelSize: 10
+                                            font.bold: root.selectedCategory === modelData.id
+                                            color: root.selectedCategory === modelData.id ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585")
+                                            font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                                        }
+
+                                        MouseArea {
+                                            id: pillMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.selectedCategory = modelData.id
+                                        }
                                     }
                                 }
                             }
@@ -526,8 +500,8 @@ Rectangle {
                                             width: 36
                                             height: 36
                                             radius: 4
-                                            color: modelData.enabled ? (theme ? theme.accentMuted : "#1a2736") : "#252526"
-                                            border.color: modelData.enabled ? (theme ? theme.accent : "#0078d4") : "#3e3e42"
+                                            color: theme ? theme.bgSurfaceHover : "#252526"
+                                            border.color: modelData.enabled ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#3e3e42")
                                             border.width: 1
 
                                             VectorIcon {
@@ -647,8 +621,8 @@ Rectangle {
                                     width: 46
                                     height: 46
                                     radius: 6
-                                    color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accentMuted : "#1a2736") : "#252526"
-                                    border.color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accent : "#0078d4") : "#3e3e42"
+                                    color: theme ? theme.bgSurfaceHover : "#252526"
+                                    border.color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#3e3e42")
                                     border.width: 1
 
                                     VectorIcon {
@@ -704,12 +678,14 @@ Rectangle {
                                 width: parent.width
                                 spacing: 8
 
-                                // Toggle Enable/Disable Button
+                                // Toggle Enable/Disable Button (Clean secondary style if enabled, primary if disabled)
                                 Rectangle {
-                                    width: 120
+                                    width: 100
                                     height: 28
                                     radius: 4
-                                    color: toggleMa.containsMouse ? (theme ? theme.accentHover : "#0062a8") : (theme ? theme.accent : "#0078d4")
+                                    color: (root.selectedExt && root.selectedExt.enabled) ? (toggleMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2d2d30") : (theme ? theme.bgSurface : "#252526")) : (toggleMa.containsMouse ? (theme ? theme.accentHover : "#0062a8") : (theme ? theme.accent : "#0078d4"))
+                                    border.color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.borderNormal : "#3c3d36") : "transparent"
+                                    border.width: 1
 
                                     RowLayout {
                                         anchors.centerIn: parent
@@ -717,11 +693,11 @@ Rectangle {
                                         VectorIcon {
                                             name: (root.selectedExt && root.selectedExt.enabled) ? "close" : "play"
                                             size: 11
-                                            color: "#ffffff"
+                                            color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.textSecondary : "#858585") : "#ffffff"
                                         }
                                         Text {
                                             text: (root.selectedExt && root.selectedExt.enabled) ? "Disable" : "Enable"
-                                            color: "#ffffff"
+                                            color: (root.selectedExt && root.selectedExt.enabled) ? (theme ? theme.textPrimary : "#cccccc") : "#ffffff"
                                             font.pixelSize: 11
                                             font.bold: true
                                             font.family: theme ? theme.fontFamilyUi : "sans-serif"
@@ -869,10 +845,10 @@ Rectangle {
                                         }
 
                                         Text {
-                                            text: "FORMATTER DEPENDENCY: " + (root.selectedExt ? root.selectedExt.formatterDependency : "")
-                                            font.pixelSize: 11
+                                            text: "Formatter Tool: " + (root.selectedExt ? root.selectedExt.formatterDependency : "")
+                                            font.pixelSize: 12
                                             font.bold: true
-                                            color: formatterCard.isExtReady ? "#4ec9b0" : (formatterCard.isExtInstalling ? "#60a5fa" : "#d7ba7d")
+                                            color: theme ? theme.textBright : "#ffffff"
                                             font.family: theme ? theme.fontFamilyUi : "sans-serif"
                                             Layout.fillWidth: true
                                             elide: Text.ElideRight

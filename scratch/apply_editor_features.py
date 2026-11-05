@@ -18,9 +18,9 @@ props_to_add = '''    property bool copiedWholeLine: false
         onActivated: quickOpenPalette.openQuickOpen()
     }
 
-    Shortcut {
+    Shortcut 
         sequence: "Ctrl+G"
-        onActivated: quickOpenPalette.openGotoLine(root.cursorLine)
+        onActivated: quickOpnPalette.openGotoLine(root.cursorLine)
     }
 
     Shortcut {
