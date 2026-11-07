@@ -104,7 +104,7 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: (root.selectedIndex >= 0 && root.selectedIndex < root.actions.length) ? ((root.actions[root.selectedIndex].id === "run" && root.hasSelectedCode) ? "Ask AI" : root.actions[root.selectedIndex].label) : "DGX"
+                text: (root.selectedIndex >= 0 && root.selectedIndex < root.actions.length) ? ((root.actions[root.selectedIndex].id === "run" && root.hasSelectedCode) ? "Ask AI" : root.actions[root.selectedIndex].label) : "Pod"
                 color: root.selectedIndex >= 0 ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#656565")
                 font.pixelSize: 10
                 font.bold: true

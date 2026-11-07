@@ -15,6 +15,42 @@ Rectangle {
     property int collapseVersion: 0
     property bool isCreatingFile: false
     property var cutPaths: ({})
+    property var customIconTheme: null
+
+    function reloadIconTheme() {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_icon_theme_json) {
+            try {
+                var raw = settingsBackend.get_icon_theme_json();
+                if (raw && raw !== "{}" && raw !== "") {
+                    root.customIconTheme = JSON.parse(raw);
+                }
+            } catch(e) {
+                console.log("[ExplorerPanel] Error parsing custom icon theme:", e);
+            }
+        }
+    }
+
+    Component.onCompleted: {
+        reloadIconTheme();
+    }
+
+    Connections {
+        target: typeof settingsBackend !== "undefined" ? settingsBackend : null
+        ignoreUnknownSignals: true
+        function onIconThemeChanged() {
+            root.reloadIconTheme();
+        }
+    }
+
+    property int iconThemeVersion: 0
+
+    Connections {
+        target: typeof extensionManager !== "undefined" ? extensionManager : null
+        ignoreUnknownSignals: true
+        function onIconThemeChanged() {
+            root.iconThemeVersion++;
+        }
+    }
 
     // Drag & Drop State
     property bool isDragging: false
@@ -271,8 +307,27 @@ Rectangle {
                             }
                         }
 
+                        // Tree Indentation Guidelines (Continuous vertical lines at each ancestor level)
+                        Item {
+                            anchors.fill: parent
+                            z: 0
+                            visible: model.level > 0
+
+                            Repeater {
+                                model: model.level
+                                delegate: Rectangle {
+                                    x: index * 12 + 12
+                                    width: 1
+                                    height: parent.height
+                                    color: (typeof theme !== "undefined" && theme && theme.borderNormal) ? theme.borderNormal : "#404856"
+                                    opacity: 0.40
+                                }
+                            }
+                        }
+
                         RowLayout {
                             id: contentRow
+                            z: 1
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
                             anchors.leftMargin: Math.max(6, model.level * 12 + 6)
@@ -306,12 +361,46 @@ Rectangle {
                                 visible: !itemRow.isFolder
                             }
 
-                            // File / Folder Icon
-                            VectorIcon {
-                                readonly property var fileInfo: itemRow.isFolder ? null : root.getFileIconInfo(model.name)
-                                name: itemRow.isFolder ? (itemRow.isCollapsed ? "folder" : "folder-open") : (fileInfo ? fileInfo.icon : "file")
-                                size: 12
-                                color: itemRow.isFolder ? (theme ? theme.textSecondary : "#858585") : (fileInfo ? fileInfo.color : (theme ? theme.textMuted : "#656565"))
+                            // File / Folder / Solution Icon
+                            Item {
+                                id: treeItemIconBox
+                                width: 14
+                                height: 14
+                                readonly property bool isSolutionNode: Boolean(model.isSolution) || (model.name && (model.name.endsWith(".sln") || model.name.endsWith(".slnx")))
+                                readonly property int themeVer: root.iconThemeVersion
+                                readonly property string customSvgUrl: {
+                                    var _ = themeVer;
+                                    if (typeof extensionManager === "undefined" || !extensionManager || isSolutionNode) return "";
+                                    if (itemRow.isFolder) {
+                                        return extensionManager.get_folder_icon(model.name, itemRow.isCollapsed) || "";
+                                    } else {
+                                        return extensionManager.get_file_icon(model.name) || "";
+                                    }
+                                }
+                                readonly property var folderInfo: (itemRow.isFolder && !isSolutionNode) ? root.getFolderIconInfo(model.name, itemRow.isCollapsed) : null
+                                readonly property var fileInfo: (itemRow.isFolder && !isSolutionNode) ? null : root.getFileIconInfo(model.name)
+
+                                Image {
+                                    id: customSvgIcon
+                                    anchors.centerIn: parent
+                                    width: 14
+                                    height: 14
+                                    source: treeItemIconBox.customSvgUrl
+                                    sourceSize.width: 14
+                                    sourceSize.height: 14
+                                    fillMode: Image.PreserveAspectFit
+                                    visible: treeItemIconBox.customSvgUrl !== "" && status === Image.Ready
+                                    asynchronous: true
+                                    smooth: true
+                                }
+
+                                VectorIcon {
+                                    anchors.centerIn: parent
+                                    visible: !customSvgIcon.visible
+                                    name: (itemRow.isFolder && !treeItemIconBox.isSolutionNode) ? (treeItemIconBox.folderInfo ? treeItemIconBox.folderInfo.icon : "folder") : (treeItemIconBox.fileInfo ? treeItemIconBox.fileInfo.icon : "file-code")
+                                    size: 12
+                                    color: (itemRow.isFolder && !treeItemIconBox.isSolutionNode) ? (treeItemIconBox.folderInfo ? treeItemIconBox.folderInfo.color : "#eab308") : (treeItemIconBox.fileInfo ? treeItemIconBox.fileInfo.color : "#a855f7")
+                                }
                             }
 
                             // Label
@@ -364,6 +453,7 @@ Rectangle {
                                         if (visible) {
                                             text = model.name || "";
                                             hasBeenFocused = false;
+                                            initFocusAndSelection();
                                             Qt.callLater(initFocusAndSelection);
                                         }
                                     }
@@ -1206,7 +1296,9 @@ Rectangle {
         var copy = Object.assign({}, root.collapsedFolders);
         var changed = false;
         var cur = norm;
-        while (cur && cur.length >= ws.length) {
+        var depth = 0;
+        while (cur && cur.length >= ws.length && depth < 40) {
+            depth++;
             if (copy[cur] === true) {
                 copy[cur] = false;
                 changed = true;
@@ -1214,7 +1306,9 @@ Rectangle {
             if (cur === ws) break;
             var slash = cur.lastIndexOf("/");
             if (slash <= 0) break;
-            cur = cur.substring(0, slash);
+            var nextCur = cur.substring(0, slash);
+            if (nextCur === cur) break;
+            cur = nextCur;
         }
         if (changed) {
             root.collapsedFolders = copy;
@@ -1241,61 +1335,85 @@ Rectangle {
         var ws = root.workspacePath ? root.workspacePath.replace(/\\/g, "/") : "";
         if (p === ws) return true;
 
-        while (p && p.length > 0) {
+        var depth = 0;
+        while (p && p.length > 0 && depth < 30) {
+            depth++;
             if (root.collapsedFolders[p] === true) {
                 return false;
             }
             if (ws && p === ws) break;
             var slash = p.lastIndexOf("/");
             if (slash <= 0) break;
-            p = p.substring(0, slash);
+            var nextP = p.substring(0, slash);
+            if (nextP === p) break;
+            p = nextP;
         }
         return true;
     }
 
     function populateModel(rawList, fPath) {
-        fileTreeModel.clear();
+        if (root.isCreatingFile || root.editingFilePath !== "") {
+            // User is actively creating/renaming a file or folder - do not wipe model or interrupt input!
+            return;
+        }
+
         root.workspacePath = fPath ? fPath.replace(/\\/g, "/") : "";
         root.workspaceName = (fPath ? fPath.split("/").pop().split("\\").pop() : "") || "PROJECT";
 
-        if (!rawList || rawList.length === 0) return;
+        if (!rawList || rawList.length === 0) {
+            fileTreeModel.clear();
+            return;
+        }
 
-        var parentLevelMap = {};
-        parentLevelMap[root.workspaceName] = 0;
+        var maxItems = Math.min(rawList.length, 8000);
 
-        var folderPathMap = {};
-        folderPathMap[root.workspaceName] = root.workspacePath;
+        // Flicker-free check: if item count and all fullPaths match, skip clearing model
+        if (fileTreeModel.count === maxItems) {
+            var isIdentical = true;
+            for (var k = 0; k < maxItems; k++) {
+                var cur = fileTreeModel.get(k);
+                var raw = rawList[k];
+                var rawP = raw.fullPath ? raw.fullPath.replace(/\\/g, "/") : ((root.workspacePath + "/" + raw.name).replace(/\\/g, "/"));
+                if (cur.fullPath !== rawP || cur.name !== (raw.name || "")) {
+                    isIdentical = false;
+                    break;
+                }
+            }
+            if (isIdentical) {
+                return; // Nothing changed, skip clear and avoid all flickering!
+            }
+        }
+
+        fileTreeModel.clear();
 
         var existingCollapsed = root.collapsedFolders || {};
         var mergedCollapsed = {};
+        var maxItems = Math.min(rawList.length, 8000);
 
-        for (var i = 0; i < rawList.length; i++) {
+        for (var i = 0; i < maxItems; i++) {
             var item = rawList[i];
-            var pId = item.parentId || root.workspaceName;
-            var parentDir = folderPathMap[pId] || root.workspacePath;
-            var fullPath = (parentDir + "/" + item.name).replace(/\\/g, "/");
+            var fPathItem = item.fullPath ? item.fullPath.replace(/\\/g, "/") : ((root.workspacePath + "/" + item.name).replace(/\\/g, "/"));
+            var parentPath = item.parentFullPath ? item.parentFullPath.replace(/\\/g, "/") : root.workspacePath;
+            var itemLevel = (item.level !== undefined) ? item.level : 0;
+            var itemType = item.type || "File";
 
-            if (item.type === "Folder") {
-                folderPathMap[item.name] = fullPath;
-                if (existingCollapsed[fullPath] !== undefined) {
-                    mergedCollapsed[fullPath] = existingCollapsed[fullPath];
+            if (itemType === "Folder") {
+                if (existingCollapsed[fPathItem] !== undefined) {
+                    mergedCollapsed[fPathItem] = existingCollapsed[fPathItem];
                 } else {
-                    mergedCollapsed[fullPath] = true;
+                    // By default all folders are collapsed
+                    mergedCollapsed[fPathItem] = true;
                 }
             }
 
-            var level = (parentLevelMap[pId] !== undefined) ? (parentLevelMap[pId] + 1) : 0;
-            if (item.type === "Folder") {
-                parentLevelMap[item.name] = level;
-            }
-
             fileTreeModel.append({
-                name: item.name,
-                parentId: item.parentId,
-                parentFullPath: parentDir.replace(/\\/g, "/"),
-                type: item.type,
-                level: level,
-                fullPath: fullPath
+                name: item.name || "",
+                parentId: item.parentId || parentPath,
+                parentFullPath: parentPath,
+                type: itemType,
+                level: itemLevel,
+                fullPath: fPathItem,
+                isSolution: Boolean(item.isSolution)
             });
         }
 
@@ -1577,11 +1695,68 @@ Rectangle {
         }
     }
 
+    function getFolderIconInfo(folderName, isCollapsed) {
+        var defColor = isCollapsed ? "#eab308" : "#f59e0b"; // Warm golden amber default
+        var defIcon = isCollapsed ? "folder" : "folder-open";
+        if (!folderName) return { icon: defIcon, color: defColor };
+
+        var lower = folderName.toLowerCase().trim();
+
+        // 1. User-defined custom icon theme override from icon_theme.json
+        if (root.customIconTheme && root.customIconTheme.folders) {
+            var customEntry = root.customIconTheme.folders[lower] || root.customIconTheme.folders[folderName];
+            if (customEntry) {
+                return {
+                    icon: customEntry.icon || defIcon,
+                    color: customEntry.color || defColor
+                };
+            }
+        }
+
+        // 2. Comprehensive built-in Material / Pod Studio Folder Theme
+        if (lower === "assets" || lower === "asset") return { icon: defIcon, color: "#f59e0b" }; // Amber
+        if (lower === "scripts" || lower === "script" || lower === "src" || lower === "source") return { icon: defIcon, color: "#06b6d4" }; // Cyan
+        if (lower === "scenes" || lower === "scene") return { icon: defIcon, color: "#a855f7" }; // Purple
+        if (lower === "packages" || lower === "package" || lower === "node_modules") return { icon: defIcon, color: "#3b82f6" }; // Royal Blue
+        if (lower === ".vscode" || lower === ".idea" || lower === ".git" || lower === ".pod_studio" || lower === ".github") return { icon: defIcon, color: "#38bdf8" }; // VS Blue
+        if (lower === "misc" || lower === "miscellaneous" || lower === "other" || lower === "temp") return { icon: defIcon, color: "#f97316" }; // Orange
+        if (lower === "npc" || lower === "player" || lower === "enemy" || lower === "enemies" || lower === "character" || lower === "characters" || lower === "entities" || lower === "actors") return { icon: defIcon, color: "#10b981" }; // Emerald
+        if (lower === "behaviours" || lower === "behaviors" || lower === "logic" || lower === "controllers" || lower === "controller") return { icon: defIcon, color: "#14b8a6" }; // Mint Teal
+        if (lower === "core" || lower === "system" || lower === "engine" || lower === "framework" || lower === "base") return { icon: defIcon, color: "#6366f1" }; // Indigo
+        if (lower === "prefabs" || lower === "prefab" || lower === "models" || lower === "model" || lower === "meshes") return { icon: defIcon, color: "#059669" }; // Dark Green
+        if (lower === "materials" || lower === "material" || lower === "textures" || lower === "texture" || lower === "sprites" || lower === "sprite" || lower === "art" || lower === "images") return { icon: defIcon, color: "#ec4899" }; // Pink
+        if (lower === "audio" || lower === "sounds" || lower === "sound" || lower === "music" || lower === "sfx") return { icon: defIcon, color: "#d946ef" }; // Fuchsia
+        if (lower === "urp" || lower === "hdrp" || lower === "rendering" || lower === "shaders" || lower === "shader") return { icon: defIcon, color: "#9333ea" }; // Purple
+        if (lower === "ui" || lower === "gui" || lower === "views" || lower === "view" || lower === "components" || lower === "component") return { icon: defIcon, color: "#f43f5e" }; // Rose
+        if (lower === "plugins" || lower === "plugin" || lower === "extensions" || lower === "addons") return { icon: defIcon, color: "#84cc16" }; // Lime
+        if (lower === "editor" || lower === "tools" || lower === "tool" || lower === "build" || lower === "dist" || lower === "bin") return { icon: defIcon, color: "#eab308" }; // Yellow
+        if (lower === "docs" || lower === "documentation" || lower === "guide" || lower === "guides") return { icon: defIcon, color: "#0284c7" }; // Sky
+        if (lower === "tests" || lower === "test" || lower === "testing" || lower === "specs" || lower === "spec") return { icon: defIcon, color: "#22c55e" }; // Bright Green
+        if (lower === "settings" || lower === "config" || lower === "configuration" || lower === "preferences") return { icon: defIcon, color: "#64748b" }; // Slate
+        if (lower === "prototype" || lower === "prototypes") return { icon: defIcon, color: "#f59e0b" }; // Amber
+        if (lower === "animations" || lower === "anim" || lower === "animation") return { icon: defIcon, color: "#8b5cf6" }; // Violet
+        if (lower === "fonts" || lower === "font") return { icon: defIcon, color: "#fb7185" }; // Rose
+
+        return { icon: defIcon, color: defColor };
+    }
+
     function getFileIconInfo(fileName) {
         if (!fileName) return { icon: "file", color: theme ? theme.textMuted : "#656565" };
         var lower = fileName.toLowerCase();
 
-        // 1. Check extension-registered custom file icons from ExtensionManager
+        // 1. Check user-defined custom icon theme override from icon_theme.json
+        if (root.customIconTheme && root.customIconTheme.files) {
+            var extMatch = lower.split(".").pop();
+            var customFile = root.customIconTheme.files[lower] || root.customIconTheme.files[extMatch];
+            if (customFile) {
+                return {
+                    icon: customFile.icon || "file-code",
+                    color: customFile.color || "#38bdf8"
+                };
+            }
+        }
+
+        // 2. Check extension-registered custom file icons from ExtensionManager
         if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_custom_file_icons) {
             var customIcons = extensionManager.get_custom_file_icons();
             if (customIcons && customIcons.length > 0) {
@@ -1597,7 +1772,7 @@ Rectangle {
             }
         }
 
-        // 2. Special filenames
+        // 3. Special filenames
         if (lower === "package.json" || lower === "package-lock.json") return { icon: "file-code", color: "#facc15" };
         if (lower === "cargo.toml" || lower === "cargo.lock") return { icon: "file-code", color: "#ea580c" };
         if (lower === "cmakelists.txt") return { icon: "file-code", color: "#60a5fa" };
@@ -1606,7 +1781,7 @@ Rectangle {
         if (lower === ".gitignore" || lower === ".gitmodules") return { icon: "file-text", color: "#f97316" };
         if (lower === "readme.md") return { icon: "file-text", color: "#38bdf8" };
 
-        // 3. Extension based mappings
+        // 4. Extension based mappings
         var ext = lower.split(".").pop();
         if (ext === "py" || ext === "pyw") return { icon: "file-code", color: "#38bdf8" };
         if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") return { icon: "file-code", color: "#60a5fa" };
@@ -1625,10 +1800,13 @@ Rectangle {
         if (ext === "rs") return { icon: "file-code", color: "#ea580c" };
         if (ext === "go") return { icon: "file-code", color: "#06b6d4" };
         if (ext === "java") return { icon: "file-code", color: "#f87171" };
-        if (ext === "cs") return { icon: "file-code", color: "#a855f7" };
+        if (ext === "cs") return { icon: "file-code", color: "#38bdf8" }; // C# Electric Cyan/Blue
+        if (ext === "sln" || ext === "slnx" || ext === "csproj") return { icon: "file-code", color: "#a855f7" }; // VS Purple
+        if (ext === "unity" || ext === "prefab" || ext === "asset" || ext === "mat" || ext === "shader") return { icon: "file-code", color: "#10b981" };
+        if (ext === "meta") return { icon: "file-text", color: "#64748b" };
         if (ext === "md" || ext === "markdown") return { icon: "file-text", color: "#38bdf8" };
-        if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "ico" || ext === "bmp") return { icon: "file-image", color: "#a855f7" };
-        if (ext === "mp3" || ext === "wav" || ext === "ogg" || ext === "flac" || ext === "m4a") return { icon: "file-audio", color: "#ec4899" };
+        if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "ico" || ext === "bmp") return { icon: "file-image", color: "#ec4899" };
+        if (ext === "mp3" || ext === "wav" || ext === "ogg" || ext === "flac" || ext === "m4a") return { icon: "file-audio", color: "#d946ef" };
         if (ext === "exe" || ext === "bat" || ext === "cmd" || ext === "ps1" || ext === "sh" || ext === "bin") return { icon: "file-binary", color: "#4ade80" };
         if (ext === "zip" || ext === "tar" || ext === "gz" || ext === "7z" || ext === "rar" || ext === "dgxext" || ext === "vsix") return { icon: "file-archive", color: "#f59e0b" };
 

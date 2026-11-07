@@ -1,0 +1,9 @@
+{
+  "id": "user.my_first_extension",
+  "name": "Volume Controller",
+  "version": "1.0.0",
+  "author": "DGX",
+  "description": "Controls Volume",
+  "main": "main.py",
+  "categories": ["Tools", "Productivity"]
+}

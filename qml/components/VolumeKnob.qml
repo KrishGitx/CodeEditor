@@ -50,7 +50,7 @@ Item {
                 ctx.beginPath();
                 var curRad = (root.currentAngle * Math.PI) / 180;
                 ctx.arc(centerX, centerY, radius, startRad, curRad, false);
-                ctx.strokeStyle = theme ? theme.accent : "#0078d4";
+                ctx.strokeStyle = theme ? (theme.accentMuted || "#4b6a8a") : "#4b6a8a";
                 ctx.lineWidth = 3;
                 ctx.lineCap = "round";
                 ctx.stroke();

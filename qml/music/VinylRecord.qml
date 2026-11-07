@@ -30,7 +30,7 @@ Item {
             angle: root.currentAngle
         }
 
-        // Concentric Micro-Grooves
+        // Concentric High-Visibility Grooves & Yellow Ring
         Canvas {
             id: groovesCanvas
             anchors.fill: parent
@@ -43,17 +43,73 @@ Item {
 
                 var cx = width / 2;
                 var cy = height / 2;
-                var maxR = width / 2 - 3;
-                var minR = width * 0.22;
+                var maxR = width / 2 - 2;
+                var minR = width * 0.23;
 
-                ctx.strokeStyle = "#1a1a1a";
-                ctx.lineWidth = 0.6;
+                // 1. Outer rim lead-in track
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.24)";
+                ctx.lineWidth = 1.0;
+                ctx.beginPath();
+                ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
+                ctx.stroke();
 
-                for (var r = minR + 3; r < maxR; r += 2.8) {
+                // 2. High-contrast sound grooves
+                var step = 2.4;
+                var idx = 0;
+                for (var r = minR + 4; r < maxR - 1; r += step) {
+                    idx++;
+                    var alpha = (idx % 3 === 0) ? 0.24 : ((idx % 2 === 0) ? 0.16 : 0.09);
+                    ctx.strokeStyle = "rgba(255, 255, 255, " + alpha + ")";
+                    ctx.lineWidth = (idx % 3 === 0) ? 0.8 : 0.5;
                     ctx.beginPath();
                     ctx.arc(cx, cy, r, 0, Math.PI * 2);
                     ctx.stroke();
+
+                    // Dark groove cut right next to it for authentic depth
+                    if (idx % 3 === 0) {
+                        ctx.strokeStyle = "rgba(0, 0, 0, 0.70)";
+                        ctx.lineWidth = 0.5;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, r + 0.6, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
                 }
+
+                // 3. Prominent Yellow / Golden circular line in disk
+                var midR = minR + (maxR - minR) * 0.52;
+                ctx.strokeStyle = "#eab308";
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                ctx.arc(cx, cy, midR, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Inner golden accent ring near center label
+                ctx.strokeStyle = "rgba(250, 204, 21, 0.85)";
+                ctx.lineWidth = 1.0;
+                ctx.beginPath();
+                ctx.arc(cx, cy, minR + 2, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // 4. Specular vinyl luster sheen (anisotropic reflections)
+                var grad = ctx.createLinearGradient(cx - maxR, cy - maxR, cx + maxR, cy + maxR);
+                grad.addColorStop(0.0, "rgba(255, 255, 255, 0.12)");
+                grad.addColorStop(0.25, "rgba(255, 255, 255, 0.0)");
+                grad.addColorStop(0.75, "rgba(255, 255, 255, 0.0)");
+                grad.addColorStop(1.0, "rgba(255, 255, 255, 0.12)");
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
+                ctx.fill();
+
+                var grad2 = ctx.createLinearGradient(cx + maxR, cy - maxR, cx - maxR, cy + maxR);
+                grad2.addColorStop(0.0, "rgba(255, 255, 255, 0.08)");
+                grad2.addColorStop(0.3, "rgba(255, 255, 255, 0.0)");
+                grad2.addColorStop(0.7, "rgba(255, 255, 255, 0.0)");
+                grad2.addColorStop(1.0, "rgba(255, 255, 255, 0.08)");
+                ctx.fillStyle = grad2;
+                ctx.beginPath();
+                ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
+                ctx.fill();
             }
         }
 
@@ -128,6 +184,16 @@ Item {
                 border.color: "#333333"
                 border.width: 1
                 z: 10
+            }
+
+            // Crisp Golden Ring Framing the Album Center Hub
+            Rectangle {
+                anchors.fill: parent
+                radius: width / 2
+                color: "transparent"
+                border.color: "#eab308"
+                border.width: 1.5
+                z: 15
             }
         }
     }

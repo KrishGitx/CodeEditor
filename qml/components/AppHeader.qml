@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "."
@@ -11,10 +12,14 @@ Rectangle {
     property string activeFileName: ""
     property bool isDirty: false
     property bool isMaximized: false
+    property bool explorerVisible: true
+    property bool terminalVisible: false
+    property bool aiVisible: false
 
     signal newFileRequested()
     signal openFileRequested()
     signal openFolderRequested()
+    signal openRecentRequested(string folderPath)
     signal saveRequested()
     signal saveAsRequested()
     signal closeTabRequested()
@@ -64,14 +69,14 @@ Rectangle {
         }
 
         onDoubleClicked: function(mouse) {
-            var win = root.Window.window;
-            if (win) {
-                if (win.visibility === Window.Maximized) {
+            var win = (root.Window && root.Window.window) ? root.Window.window : null;
+            if (typeof backend !== "undefined" && backend && backend.toggle_maximize_window) {
+                backend.toggle_maximize_window();
+            } else if (win) {
+                if (win.visibility === Window.Maximized || win.visibility === Window.FullScreen || root.isMaximized) {
                     win.showNormal();
-                    root.isMaximized = false;
                 } else {
                     win.showMaximized();
-                    root.isMaximized = true;
                 }
             }
         }
@@ -85,7 +90,7 @@ Rectangle {
 
         // 1. DGX Studio Branding
         Text {
-            text: "DGX Studio"
+            text: "Pod Studio"
             color: theme ? theme.textPrimary : "#cccccc"
             font.pixelSize: 12
             font.bold: true
@@ -136,6 +141,19 @@ Rectangle {
                     Action { text: "New File\tCtrl+N"; onTriggered: root.newFileRequested() }
                     Action { text: "Open File...\tCtrl+O"; onTriggered: root.openFileRequested() }
                     Action { text: "Open Folder...\tCtrl+Shift+O"; onTriggered: root.openFolderRequested() }
+                    Menu {
+                        title: "Open Recent"
+                        id: recentProjectsMenu
+                        Instantiator {
+                            model: (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_recent_projects) ? settingsBackend.get_recent_projects() : []
+                            onObjectAdded: function(index, object) { recentProjectsMenu.insertItem(index, object); }
+                            onObjectRemoved: function(index, object) { recentProjectsMenu.removeItem(object); }
+                            delegate: MenuItem {
+                                text: (modelData && modelData.name) ? modelData.name : (modelData ? modelData.toString() : "")
+                                onTriggered: root.openRecentRequested(modelData.path)
+                            }
+                        }
+                    }
                     MenuSeparator { contentItem: Rectangle { implicitHeight: 1; color: theme ? theme.borderSubtle : "#282828" } }
                     Action { text: "Save\tCtrl+S"; onTriggered: root.saveRequested() }
                     Action { text: "Save As...\tCtrl+Shift+S"; onTriggered: root.saveAsRequested() }
@@ -280,13 +298,13 @@ Rectangle {
                     id: viewMenu
                     y: viewBtn.height + 2
                     background: Rectangle {
-                        implicitWidth: 230
+                        implicitWidth: 250
                         color: theme ? theme.bgPopup : "#252526"
                         border.color: theme ? theme.borderNormal : "#333333"
                         radius: theme ? theme.radiusSm : 3
                     }
 
-                    Action { text: "Live Web & Markdown Preview\tCtrl+Shift+V"; onTriggered: root.openWebPreviewRequested() }
+                    Action { text: "Live Web Preview\tCtrl+Shift+V"; onTriggered: root.openWebPreviewRequested() }
                     Action { text: "Architecture Whiteboard\tCtrl+Alt+W"; onTriggered: root.toggleWhiteboardRequested() }
                     Action { text: "Split Editor Side-by-Side\tCtrl+\\"; onTriggered: root.toggleSplitEditorRequested() }
                     Action { text: "Inline Color Picker\tCtrl+Shift+C"; onTriggered: root.openColorPickerRequested() }
@@ -304,7 +322,7 @@ Rectangle {
                     delegate: MenuItem {
                         id: viewItm
                         implicitHeight: 28
-                        implicitWidth: 230
+                        implicitWidth: 250
                         contentItem: RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 10
@@ -411,14 +429,16 @@ Rectangle {
             Layout.fillWidth: true
             height: parent.height
 
-            Text {
-                anchors.centerIn: parent
-                text: root.activeFileName ? (root.activeFileName + (root.isDirty ? " •" : "") + " — DGX Studio") : "DGX Studio"
-                color: theme ? theme.textMuted : "#656565"
-                font.pixelSize: 11
-                font.family: theme ? theme.fontFamilyUi : "sans-serif"
-                elide: Text.ElideMiddle
-            }
+             Text {
+                 anchors.centerIn: parent
+                 width: Math.min(implicitWidth, Math.max(0, parent.width - 20))
+                 visible: parent.width > 100
+                     text: root.activeFileName ? (root.activeFileName + (root.isDirty ? " *" : "") + " - Pod Studio") : "Pod Studio"
+                 color: theme ? theme.textMuted : "#656565"
+                 font.pixelSize: 11
+                 font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                 elide: Text.ElideMiddle
+             }
         }
 
         // 3. Right Header Actions & Window Controls
@@ -426,57 +446,31 @@ Rectangle {
             spacing: 2
             z: 10
 
-            // Extensions Button
-            Rectangle {
-                width: 26
-                height: 24
-                radius: theme ? theme.radiusSm : 2
-                color: extensionsMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-
-                VectorIcon {
-                    anchors.centerIn: parent
-                    name: "puzzle"
-                    size: 13
-                    color: theme ? theme.textSecondary : "#858585"
-                }
-
-                ToolTip.visible: extensionsMa.containsMouse
-                ToolTip.text: "Extensions (Ctrl+Shift+X)"
-
-                MouseArea {
-                    id: extensionsMa
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.extensionsRequested()
-                }
+            // 1. Toggle Primary Side Bar (Left Explorer)
+            LayoutToggleButton {
+                panel: "left"
+                active: root.explorerVisible
+                toolTipText: "Toggle Primary Side Bar (Ctrl+B)"
+                onClicked: root.toggleExplorerRequested()
             }
 
-            // Settings Button
-            Rectangle {
-                width: 26
-                height: 24
-                radius: theme ? theme.radiusSm : 2
-                color: settingsMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-
-                VectorIcon {
-                    anchors.centerIn: parent
-                    name: "settings"
-                    size: 13
-                    color: theme ? theme.textSecondary : "#858585"
-                }
-
-                ToolTip.visible: settingsMa.containsMouse
-                ToolTip.text: "Settings (Ctrl+,)"
-
-                MouseArea {
-                    id: settingsMa
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.settingsRequested()
-                }
+            // 2. Toggle Panel (Bottom Terminal)
+            LayoutToggleButton {
+                panel: "bottom"
+                active: root.terminalVisible
+                toolTipText: "Toggle Panel (Ctrl+`)"
+                onClicked: root.toggleTerminalRequested()
             }
+
+            // 3. Toggle Secondary Side Bar (Right AI Workspace)
+            LayoutToggleButton {
+                panel: "right"
+                active: root.aiVisible
+                toolTipText: "Toggle Secondary Side Bar"
+                onClicked: root.toggleAiRequested()
+            }
+
+            Item { width: 4; height: 1 }
 
             // Minimize
             Rectangle {
@@ -496,7 +490,7 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     onClicked: {
-                        var win = root.Window.window;
+                        var win = (root.Window && root.Window.window) ? root.Window.window : null;
                         if (win) win.showMinimized();
                     }
                 }
@@ -515,19 +509,22 @@ Rectangle {
                     color: theme ? theme.textSecondary : "#858585"
                 }
 
+                ToolTip.visible: maxMa.containsMouse
+                ToolTip.text: root.isMaximized ? "Restore" : "Maximize"
+
                 MouseArea {
                     id: maxMa
                     anchors.fill: parent
                     hoverEnabled: true
                     onClicked: {
-                        var win = root.Window.window;
-                        if (win) {
-                            if (win.visibility === Window.Maximized) {
+                        var win = (root.Window && root.Window.window) ? root.Window.window : null;
+                        if (typeof backend !== "undefined" && backend && backend.toggle_maximize_window) {
+                            backend.toggle_maximize_window();
+                        } else if (win) {
+                            if (win.visibility === Window.Maximized || win.visibility === Window.FullScreen || root.isMaximized) {
                                 win.showNormal();
-                                root.isMaximized = false;
                             } else {
                                 win.showMaximized();
-                                root.isMaximized = true;
                             }
                         }
                     }

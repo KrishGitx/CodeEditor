@@ -9,11 +9,23 @@ Rectangle {
     property var tabModel: null
     property int activeIndex: 0
     property bool isSplit: false
+    property bool isMaximized: false
+    property var theme: null
+    property int iconThemeVersion: 0
+
+    Connections {
+        target: typeof extensionManager !== "undefined" ? extensionManager : null
+        ignoreUnknownSignals: true
+        function onIconThemeChanged() {
+            root.iconThemeVersion++;
+        }
+    }
 
     signal tabSelected(int index)
     signal tabClosed(int index)
     signal newTabRequested()
     signal splitEditorRequested()
+    signal toggleMaximizeRequested()
     signal closeOtherTabsRequested(int index)
     signal closeTabsToTheRightRequested(int index)
     signal closeAllTabsRequested()
@@ -54,7 +66,7 @@ Rectangle {
                 delegate: Rectangle {
                     id: tabItem
                     height: root.height - 1
-                    width: Math.min(190, Math.max(90, tabTitleText.contentWidth + 46))
+                    width: Math.min(190, Math.max(90, tabTitleText.implicitWidth + 46))
                     color: index === root.activeIndex ? (theme ? theme.bgEditor : "#1e1e1e") : (tabMa.containsMouse ? (theme ? theme.bgSurface : "#252526") : (theme ? theme.bgHeader : "#181818"))
 
                     readonly property bool isDirty: model.isDirty === true
@@ -86,10 +98,40 @@ Rectangle {
                         spacing: 6
 
                         // File Icon
-                        VectorIcon {
-                            name: (model.isSettings || model.languageId === "settings") ? "settings" : ((model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file"))
-                            size: 11
-                            color: index === root.activeIndex ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
+                        Item {
+                            id: tabIconBox
+                            width: 14
+                            height: 14
+                            Layout.alignment: Qt.AlignVCenter
+                            readonly property bool isSpecialTab: Boolean(model.isSettings || model.languageId === "settings" || model.isExtensionDetails || model.isCustomExtensionTab || model.languageId === "extension" || model.isWhiteboard || model.languageId === "whiteboard" || model.isWebPreview || model.languageId === "webpreview")
+                            readonly property int themeVer: root.iconThemeVersion
+                            readonly property string tabSvgUrl: {
+                                var _ = themeVer;
+                                if (isSpecialTab || typeof extensionManager === "undefined" || !extensionManager) return "";
+                                return extensionManager.get_file_icon(model.path || model.title || "") || "";
+                            }
+
+                            Image {
+                                id: tabSvgIcon
+                                anchors.centerIn: parent
+                                width: 14
+                                height: 14
+                                source: tabIconBox.tabSvgUrl
+                                sourceSize.width: 14
+                                sourceSize.height: 14
+                                fillMode: Image.PreserveAspectFit
+                                visible: tabIconBox.tabSvgUrl !== "" && status === Image.Ready
+                                asynchronous: true
+                                smooth: true
+                            }
+
+                            VectorIcon {
+                                anchors.centerIn: parent
+                                visible: !tabSvgIcon.visible
+                                name: (model.isSettings || model.languageId === "settings") ? "settings" : ((model.isExtensionDetails || model.isCustomExtensionTab || model.languageId === "extension") ? "puzzle" : ((model.isWhiteboard || model.languageId === "whiteboard") ? "board" : ((model.isWebPreview || model.languageId === "webpreview") ? "sparkles" : "file")))
+                                size: 11
+                                color: index === root.activeIndex ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
+                            }
                         }
 
                         // Tab Title
@@ -157,7 +199,8 @@ Rectangle {
                             } else if (mouse.button === Qt.MiddleButton) {
                                 root.tabClosed(index);
                             } else if (mouse.button === Qt.RightButton) {
-                                tabContextMenu.openAt(mouse.x, mouse.y, index, model.path || "", model.title || "", model.isDirty === true);
+                                var pt = tabMa.mapToItem(root, mouse.x, mouse.y);
+                                tabContextMenu.openAt(pt.x, pt.y, index, model.path || "", model.title || "", model.isDirty === true);
                             }
                         }
                     }
@@ -189,6 +232,9 @@ Rectangle {
                 color: root.isSplit ? (theme ? theme.accent : "#0078d4") : (splitMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585"))
             }
 
+            ToolTip.visible: splitMa.containsMouse
+            ToolTip.text: root.isSplit ? "Close Split Editor (Ctrl+\\)" : "Split Editor Right (Ctrl+\\)"
+
             MouseArea {
                 id: splitMa
                 anchors.fill: parent
@@ -198,27 +244,30 @@ Rectangle {
             }
         }
 
-        // New Tab Button (+)
+        // Maximize / Restore Editor Button
         Rectangle {
-            id: newTabBtn
+            id: maxEditorBtn
             width: 24
             height: 24
             radius: 2
-            color: newTabMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+            color: root.isMaximized ? (theme ? theme.bgSurfaceActive : "#37373d") : (maxEditorMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent")
 
             VectorIcon {
                 anchors.centerIn: parent
-                name: "new-file"
+                name: root.isMaximized ? "restore" : "maximize"
                 size: 11
-                color: newTabMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585")
+                color: root.isMaximized ? (theme ? theme.accent : "#0078d4") : (maxEditorMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textSecondary : "#858585"))
             }
 
+            ToolTip.visible: maxEditorMa.containsMouse
+            ToolTip.text: root.isMaximized ? "Restore Editor Group" : "Maximize Editor Group"
+
             MouseArea {
-                id: newTabMa
+                id: maxEditorMa
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.newTabRequested()
+                onClicked: root.toggleMaximizeRequested()
             }
         }
     }
@@ -228,6 +277,7 @@ Rectangle {
     // =========================================================================
     Popup {
         id: tabContextMenu
+        objectName: "tabContextMenu"
         width: 180
         padding: 4
         modal: false
@@ -246,15 +296,14 @@ Rectangle {
             radius: 4
         }
 
-        function openAt(mouseX, mouseY, idx, path, title, isDirty) {
+        function openAt(targetX, targetY, idx, path, title, isDirty) {
             targetIndex = idx;
             targetPath = path || "";
             targetTitle = title || "";
             targetIsDirty = isDirty || false;
 
-            var globalPos = mapToItem(root, mouseX, mouseY);
-            tabContextMenu.x = Math.max(4, Math.min(root.width - tabContextMenu.width - 6, mouseX + 10));
-            tabContextMenu.y = Math.max(4, Math.min(root.height + 250, mouseY + 24));
+            tabContextMenu.x = Math.max(4, Math.min(root.width - tabContextMenu.width - 6, targetX));
+            tabContextMenu.y = Math.max(4, Math.min(root.height + 250, targetY + 12));
             tabContextMenu.open();
         }
 

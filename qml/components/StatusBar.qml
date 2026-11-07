@@ -14,6 +14,7 @@ Rectangle {
     signal settingsRequested()
     signal themeSelected(string themeName)
     signal toggleMusicRequested()
+    signal profilerRequested()
 
     height: 22
     color: theme ? theme.bgHeader : "#181818"
@@ -205,7 +206,62 @@ Rectangle {
             }
         }
 
-        // 4. Quick Notification / Ready State
+        // 4. Live LSP & RAM Resource Profiler Pill (Clickable)
+        Rectangle {
+            id: profilerPill
+            height: 18
+            radius: 3
+            color: profilerMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+            Layout.preferredWidth: profilerRow.implicitWidth + 10
+
+            property var pStats: (typeof lspManager !== "undefined" && lspManager) ? lspManager.get_profiler_stats() : null
+
+            Timer {
+                interval: 2000
+                running: true
+                repeat: true
+                onTriggered: {
+                    if (typeof lspManager !== "undefined" && lspManager) {
+                        profilerPill.pStats = lspManager.get_profiler_stats();
+                    }
+                }
+            }
+
+            Row {
+                id: profilerRow
+                anchors.centerIn: parent
+                spacing: 5
+
+                Text {
+                    text: "⚡"
+                    font.pixelSize: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Text {
+                    text: {
+                        if (!profilerPill.pStats) return "RAM: -- MB";
+                        var totRam = (profilerPill.pStats.totalRamMb || 0).toFixed(1);
+                        var srvRam = (profilerPill.pStats.lspRamMb || 0).toFixed(1);
+                        return "RAM: " + totRam + " MB (LSP: " + srvRam + " MB)";
+                    }
+                    color: profilerMa.containsMouse ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#888888")
+                    font.pixelSize: 11
+                    font.family: theme ? theme.fontFamilyUi : "sans-serif"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            MouseArea {
+                id: profilerMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.profilerRequested()
+            }
+        }
+
+        // 5. Quick Notification / Ready State
         RowLayout {
             spacing: 4
 

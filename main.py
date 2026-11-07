@@ -51,6 +51,8 @@ from TerminalBackend import TerminalBackend
 from SettingsBackend import SettingsBackend
 from ExtensionManager import ExtensionManager
 from FormatterManager import FormatterManager
+from ProjectCompletionEngine import ProjectCompletionEngine
+from LanguageServerManager import LanguageServerManager
 
 try:
     import shiboken6
@@ -143,6 +145,14 @@ class LSPReaderWorker(QThread):
             except Exception as e:
                 self.error_occurred.emit(str(e))
                 break
+
+    def stop(self):
+        self.running = False
+        try:
+            if self.process and self.process.stdout:
+                self.process.stdout.close()
+        except Exception:
+            pass
 
 
 class LSPWriterWorker(QThread):
@@ -308,6 +318,38 @@ class EditorBackend(QObject):
     notificationRequested = Signal(str, str, str)  # message, type ('info', 'warning', 'error', 'success'), title
     formatterInstallProgress = Signal(str, str, str)  # extension_id, status ('installing', 'success', 'failed'), message
     formattingCompleted = Signal(str, str, bool, str, str, bool, str)  # req_id, file_path, success, formatted_code, message, available, extension_id
+    windowMaximizedChanged = Signal(bool)
+
+    @Slot()
+    def maximize_window(self):
+        if sys.platform == "win32" and hasattr(self, "_main_hwnd") and self._main_hwnd:
+            import ctypes
+            ctypes.windll.user32.ShowWindow(self._main_hwnd, 3) # SW_MAXIMIZE
+        elif hasattr(self, "_root_window") and self._root_window:
+            self._root_window.showMaximized()
+
+    @Slot()
+    def restore_window(self):
+        if sys.platform == "win32" and hasattr(self, "_main_hwnd") and self._main_hwnd:
+            import ctypes
+            ctypes.windll.user32.ShowWindow(self._main_hwnd, 9) # SW_RESTORE
+        elif hasattr(self, "_root_window") and self._root_window:
+            self._root_window.showNormal()
+
+    @Slot()
+    def toggle_maximize_window(self):
+        if sys.platform == "win32" and hasattr(self, "_main_hwnd") and self._main_hwnd:
+            import ctypes
+            if ctypes.windll.user32.IsZoomed(self._main_hwnd):
+                self.restore_window()
+            else:
+                self.maximize_window()
+        elif hasattr(self, "_root_window") and self._root_window:
+            from PySide6.QtQuick import QQuickWindow
+            if self._root_window.visibility() == QQuickWindow.Visibility.Maximized:
+                self._root_window.showNormal()
+            else:
+                self._root_window.showMaximized()
 
     def __init__(self):
         super().__init__()
@@ -344,9 +386,52 @@ class EditorBackend(QObject):
         self.fs_debounce_timer.timeout.connect(self._on_fs_debounced)
         self.fs_watcher.directoryChanged.connect(self._on_fs_event)
         self.fs_watcher.fileChanged.connect(self._on_fs_event)
+        self._recently_saved_files = {}
+        self._last_workspace_sig = None
         self._explorer_clipboard = {}
 
-        self.start_lsp_server()
+        self.completion_engine = ProjectCompletionEngine()
+        self.sync_extensions_to_completion_engine()
+        self.extension_manager.extensionsChanged.connect(self.sync_extensions_to_completion_engine)
+        if self.folder_path:
+            self.completion_engine.index_workspace(self.folder_path)
+
+        # Solution 3: Multi-Language Server Protocol (LSP) Manager & Resource Profiler
+        self.lsp_manager = LanguageServerManager(self.folder_path)
+        self.lsp_manager.completionsReceived.connect(self._on_lsp_completions)
+
+    def sync_extensions_to_completion_engine(self):
+        if not hasattr(self, "completion_engine") or not self.completion_engine:
+            return
+        if not hasattr(self, "extension_manager") or not self.extension_manager:
+            return
+        ext_dict = getattr(self.extension_manager, "_extensions", None)
+        if not ext_dict or not isinstance(ext_dict, dict):
+            ext_dict = getattr(self.extension_manager, "extensions", {})
+        for ext in (ext_dict.values() if isinstance(ext_dict, dict) else []):
+            if not getattr(ext, "enabled", True):
+                continue
+            contrib = getattr(ext, "contributes", {}) or {}
+            types_map = contrib.get("types")
+            if types_map and isinstance(types_map, dict):
+                langs = getattr(ext, "languages", []) or ["general"]
+                for lang in langs:
+                    self.completion_engine.register_extension_types(ext.id, lang, types_map)
+
+    def _on_lsp_completions(self, lang, items):
+        if not items:
+            return
+        if hasattr(self, "lsp_manager") and self.lsp_manager:
+            lang_alias = {
+                "cs": "csharp", "c#": "csharp", "py": "python", "rs": "rust",
+                "gd": "gdscript", "js": "javascript", "ts": "javascript", "tsx": "javascript", "jsx": "javascript"
+            }
+            active = getattr(self.lsp_manager, "active_language", "")
+            active_norm = lang_alias.get(active.lower().strip(), active.lower().strip())
+            recv_norm = lang_alias.get((lang or "").lower().strip(), (lang or "").lower().strip())
+            if recv_norm != active_norm:
+                return
+        self.completionsReceived.emit(items)
 
     def _norm_key(self, key):
         if not key:
@@ -354,7 +439,8 @@ class EditorBackend(QObject):
         clean = key
         if clean.startswith("file:///"):
             clean = url2pathname(urlparse(clean).path)
-        return os.path.abspath(os.path.normpath(clean)) if os.path.isabs(clean) else clean.replace("\\", "/")
+        norm = os.path.abspath(os.path.normpath(clean)) if os.path.isabs(clean) else clean.replace("\\", "/")
+        return os.path.normcase(norm)
 
     def _get_backing_doc(self, key):
         if not key:
@@ -362,8 +448,9 @@ class EditorBackend(QObject):
         k1 = self._norm_key(key)
         if k1 in self.backing_docs:
             return self.backing_docs[k1]
+        base_k1 = os.path.basename(k1)
         for k, v in self.backing_docs.items():
-            if k.endswith(key) or key.endswith(k):
+            if k == k1 or k.endswith(k1) or k1.endswith(k) or (base_k1 and os.path.basename(k) == base_k1):
                 return v
         return None
 
@@ -395,12 +482,22 @@ class EditorBackend(QObject):
 
     @Slot(str, int, int, str)
     def update_backing_slice(self, key, start_line, end_line, slice_text):
+        if slice_text is None:
+            return
         doc = self._get_backing_doc(key)
-        if doc:
-            doc.update_slice(start_line, end_line, slice_text)
-        else:
+        if not doc:
             clean_key = self._norm_key(key)
             self.backing_docs[clean_key] = BackingDocument(slice_text)
+            return
+
+        new_lines = slice_text.split("\n")
+        expected_count = end_line - start_line + 1
+        # Protection against slice collapse / blanking:
+        # If the backing doc expects a multi-line slice (>10 lines), but incoming text is empty or collapsed to 1 line,
+        # ignore it to prevent wiping out document lines in memory.
+        if expected_count > 10 and len(new_lines) == 1 and not slice_text.strip():
+            return
+        doc.update_slice(start_line, end_line, slice_text)
 
     @Slot(str, str)
     def update_backing_text(self, key, full_text):
@@ -694,9 +791,21 @@ class EditorBackend(QObject):
             print("LSP could not be started:", e)
 
     def stop_lsp_server(self):
+        if hasattr(self, "lsp_manager") and self.lsp_manager:
+            try:
+                self.lsp_manager.stop_all_servers()
+            except Exception:
+                pass
         if hasattr(self, "writer_thread") and self.writer_thread:
             try:
                 self.writer_thread.stop()
+                self.writer_thread.wait(200)
+            except Exception:
+                pass
+        if hasattr(self, "reader_thread") and self.reader_thread:
+            try:
+                self.reader_thread.running = False
+                self.reader_thread.wait(200)
             except Exception:
                 pass
         if self.lsp_process:
@@ -741,32 +850,17 @@ class EditorBackend(QObject):
             print("LSP notification error:", e)
 
     def initial_file_open(self, filepath, current_text):
-        clean_path = filepath.replace("\\", "/")
-        if not clean_path.startswith("file:///"):
-            clean_path = "file:///" + clean_path
-
-        open_payload = {
-            "textDocument": {
-                "uri": clean_path,
-                "languageId": "python",
-                "version": self.doc_version,
-                "text": current_text
-            }
-        }
-        self.send_lsp_notification("textDocument/didOpen", open_payload)
+        if hasattr(self, "lsp_manager") and self.lsp_manager:
+            ext = os.path.splitext(filepath)[1].lower().lstrip(".")
+            self.lsp_manager.set_active_language(ext)
+            self.lsp_manager.notify_did_open(filepath, ext, current_text)
 
     @Slot(str, str)
     def notify_change(self, filepath, full_text):
-        clean_path = filepath.replace("\\", "/")
-        if not clean_path.startswith("file:///"):
-            clean_path = "file:///" + clean_path
-
         self.doc_version += 1
-        payload = {
-            "textDocument": {"uri": clean_path, "version": self.doc_version},
-            "contentChanges": [{"text": full_text}]
-        }
-        self.send_lsp_notification("textDocument/didChange", payload)
+        if hasattr(self, "lsp_manager") and self.lsp_manager:
+            ext = os.path.splitext(filepath)[1].lower().lstrip(".")
+            self.lsp_manager.notify_did_change(filepath, ext, full_text, self.doc_version)
         if hasattr(self, "extension_manager") and self.extension_manager:
             self.extension_manager.notify_editor_change(filepath, full_text)
 
@@ -782,60 +876,50 @@ class EditorBackend(QObject):
 
     @Slot(str, int, int)
     @Slot(str, int, int, str)
-    def request_completion(self, filepath, line, character, current_text=""):
+    @Slot(str, int, int, str, str, str)
+    @Slot(str, int, int, str, str, str, str)
+    def request_completion(self, filepath, line, character, current_text="", target_obj="", prefix="", language=""):
         clean_path = filepath.replace("\\", "/")
         if not clean_path.startswith("file:///"):
             clean_path = "file:///" + clean_path
 
-        if current_text:
-            self.doc_version += 1
-            payload = {
-                "textDocument": {"uri": clean_path, "version": self.doc_version},
-                "contentChanges": [{"text": current_text}]
-            }
-            self.send_lsp_notification("textDocument/didChange", payload)
-
-        completion_payload = {
-            "textDocument": {"uri": clean_path},
-            "position": {"line": line, "character": character}
+        lang_alias = {
+            "cs": "csharp", "c#": "csharp", "py": "python", "rs": "rust",
+            "gd": "gdscript", "js": "javascript", "ts": "javascript", "tsx": "javascript", "jsx": "javascript"
         }
-        req_id = self.send_lsp_request("textDocument/completion", completion_payload)
-        if req_id is not None:
-            self.latest_completion_req_id = req_id
+        ext = os.path.splitext(filepath)[1].lower().lstrip(".")
+        eff_lang = language or lang_alias.get(ext, ext) or "csharp"
 
-    def handle_lsp_message(self, response_json):
-        msg_id = response_json.get("id")
+        # If target_obj or prefix wasn't passed directly, derive from position in current_text
+        if not target_obj and not prefix and current_text:
+            lines = current_text.splitlines()
+            if 0 <= line < len(lines):
+                cur_line = lines[line]
+                col = min(character, len(cur_line))
+                prefix_chunk = cur_line[:col]
+                m_dot = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z0-9_]*)$', prefix_chunk)
+                if m_dot:
+                    target_obj = m_dot.group(1)
+                    prefix = m_dot.group(2)
+                else:
+                    m_word = re.search(r'([a-zA-Z0-9_]+)$', prefix_chunk)
+                    if m_word:
+                        prefix = m_word.group(1)
 
-        if msg_id == 1:
-            self.send_lsp_notification("initialized", {})
-            print("LSP INITIALIZED HANDSHAKE COMPLETE")
-            return
+        # 1. Universal Multi-Language Project Symbol Engine (Instant for Godot, Rust, C#, Python, etc.)
+        if hasattr(self, "completion_engine") and self.completion_engine:
+            engine_suggestions = self.completion_engine.get_completions(
+                filepath, line, character, target_obj, prefix, current_text, eff_lang
+            )
+            if engine_suggestions:
+                self.completionsReceived.emit(engine_suggestions)
 
-        # Discard stale completion responses if a newer request was dispatched
-        if msg_id is not None and self.latest_completion_req_id is not None:
-            if msg_id != self.latest_completion_req_id:
-                return
-
-        if "result" in response_json:
-            result_data = response_json.get("result") or {}
-            items_list = []
-
-            if isinstance(result_data, dict):
-                items_list = result_data.get("items") or []
-            elif isinstance(result_data, list):
-                items_list = result_data
-
-            suggestions = []
-            # Efficiently extract and limit to top 40 results
-            for item in items_list[:40]:
-                label = item.get("label", "")
-                if label:
-                    suggestions.append({
-                        "label": label,
-                        "insertText": item.get("insertText", label),
-                        "type": item.get("kind", "")
-                    })
-            self.completionsReceived.emit(suggestions)
+        # 2. Forward to Multi-Language Server Protocol (LSP) Manager
+        if hasattr(self, "lsp_manager") and self.lsp_manager:
+            self.lsp_manager.set_active_language(eff_lang)
+            if current_text:
+                self.lsp_manager.notify_did_change(filepath, eff_lang, current_text, self.doc_version)
+            self.lsp_manager.request_completion(filepath, eff_lang, line, character)
 
     @Slot(str)
     def open_file(self, filePath):
@@ -851,7 +935,12 @@ class EditorBackend(QObject):
         self.current_file = clean_path
         try:
             ext = os.path.splitext(clean_path)[1].lower()
-            binary_exts = {".exe", ".dll", ".so", ".bin", ".iso", ".dat", ".pyc", ".pyd", ".o", ".a", ".class", ".zip", ".tar", ".gz", ".7z", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".mp3", ".mp4", ".wav", ".flac", ".pdf"}
+            binary_exts = {
+                ".exe", ".dll", ".so", ".bin", ".iso", ".dat", ".pyc", ".pyd", ".o", ".a", ".class",
+                ".zip", ".tar", ".gz", ".7z", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+                ".mp3", ".mp4", ".wav", ".flac", ".pdf", ".fbx", ".obj", ".blend", ".tga", ".psd",
+                ".exr", ".hdr", ".ttf", ".otf", ".woff", ".woff2"
+            }
             file_size = os.path.getsize(clean_path)
 
             if ext in binary_exts or file_size > 5 * 1024 * 1024:
@@ -925,6 +1014,9 @@ class EditorBackend(QObject):
             # line endings while saving editor content.
             with open(clean_path, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
+
+            import time
+            self._recently_saved_files[clean_path.replace("\\", "/").lower()] = time.time()
 
             if doc:
                 doc.mark_saved()
@@ -1202,9 +1294,11 @@ class EditorBackend(QObject):
             return
         self._active_formatting_requests.add(req_id)
 
+        effective_tab_size = int(tab_size) if tab_size and int(tab_size) > 0 else 4
+
         def _worker():
             try:
-                result = self.formatter_manager.format_code(lang_id, file_path, source_code, tab_size)
+                result = self.formatter_manager.format_code(lang_id, file_path, source_code, effective_tab_size)
                 self.formattingCompleted.emit(
                     req_id,
                     file_path or "",
@@ -1234,7 +1328,8 @@ class EditorBackend(QObject):
     @Slot(str, str, str, int, result="QVariantMap")
     def format_code(self, lang_id, file_path, source_code, tab_size=4):
         """Delegates formatting to FormatterManager via active language extensions (synchronous fallback)."""
-        result = self.formatter_manager.format_code(lang_id, file_path, source_code, tab_size)
+        effective_tab_size = int(tab_size) if tab_size and int(tab_size) > 0 else 4
+        result = self.formatter_manager.format_code(lang_id, file_path, source_code, effective_tab_size)
         if not result.get("success") and not result.get("available"):
             self.notificationRequested.emit(result.get("message", "No formatter available"), "warning", "Formatter")
         elif not result.get("success"):
@@ -1713,6 +1808,131 @@ class EditorBackend(QObject):
     def log_output(self, channel, text):
         self.outputLogReceived.emit(channel, text)
 
+    IGNORED_WORKSPACE_DIRS = {
+        # Unity engine internal folders and caches
+        "library", "temp", "logs", "usersettings", "memorycaptures",
+        # Version control & IDEs
+        ".git", ".svn", ".hg", ".idea", ".vscode", ".vs", ".qtcreator", ".dgx_studio", ".pod_studio",
+        # Build outputs & compilers
+        "bin", "obj", "build", "builds", "dist", "out", "target", "cmakefiles",
+        # Web & Node package stores
+        "node_modules", ".next", ".nuxt", ".cache", "coverage", ".turbo",
+        # Python caches & virtual environments
+        "__pycache__", ".venv", "venv", "env", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        # Mobile & Other
+        ".gradle", ".dart_tool", "pods", "deriveddata", ".android"
+    }
+
+    def scan_workspace_tree(self, root_path, max_items=8000, max_depth=12):
+        """Safely and iteratively scans the workspace tree with bounded depth and item limits.
+        Excludes Unity caches, build artifacts, and package stores to guarantee instant loads."""
+        norm_root = os.path.normpath(root_path).replace("\\", "/")
+        if not os.path.exists(norm_root):
+            return []
+
+        results = []
+
+        def _walk_level(current_path, level):
+            if level > max_depth or len(results) >= max_items:
+                return
+
+            subdirs = []
+            files = []
+            try:
+                with os.scandir(current_path) as it:
+                    for entry in it:
+                        try:
+                            name = entry.name
+                            if entry.is_dir(follow_symlinks=False):
+                                if name.lower() not in self.IGNORED_WORKSPACE_DIRS and not name.startswith("."):
+                                    subdirs.append((name, entry.path))
+                            elif entry.is_file(follow_symlinks=False):
+                                if not name.startswith(".") and name.lower() not in ("thumbs.db", "desktop.ini"):
+                                    files.append((name, entry.path))
+                        except (PermissionError, OSError):
+                            continue
+            except (PermissionError, OSError):
+                return
+
+            subdirs.sort(key=lambda x: x[0].lower())
+            files.sort(key=lambda x: x[0].lower())
+
+            curr_norm = current_path.replace("\\", "/")
+
+            for d_name, d_path in subdirs:
+                if len(results) >= max_items:
+                    break
+                full_d = os.path.normpath(d_path).replace("\\", "/")
+                results.append({
+                    "name": d_name,
+                    "fullPath": full_d,
+                    "parentFullPath": curr_norm,
+                    "type": "Folder",
+                    "level": level,
+                    "parentId": curr_norm
+                })
+                _walk_level(full_d, level + 1)
+
+            # Visual Studio Solution grouping: if .sln/.slnx and .csproj files exist in current directory,
+            # nest the .csproj files inside the solution node so it is collapsible like in VS Code!
+            sln_entries = [f for f in files if f[0].lower().endswith((".sln", ".slnx"))]
+            csproj_entries = [f for f in files if f[0].lower().endswith(".csproj")]
+            grouped_csprojs = set()
+
+            if sln_entries and csproj_entries:
+                primary_sln = sln_entries[0]
+                grouped_csprojs = {f[0] for f in csproj_entries}
+                sln_full = os.path.normpath(primary_sln[1]).replace("\\", "/")
+                results.append({
+                    "name": primary_sln[0],
+                    "fullPath": sln_full,
+                    "parentFullPath": curr_norm,
+                    "type": "Folder",
+                    "level": level,
+                    "parentId": curr_norm,
+                    "isSolution": True
+                })
+                for c_name, c_path in sorted(csproj_entries, key=lambda x: x[0].lower()):
+                    if len(results) >= max_items:
+                        break
+                    full_c = os.path.normpath(c_path).replace("\\", "/")
+                    results.append({
+                        "name": c_name,
+                        "fullPath": full_c,
+                        "parentFullPath": sln_full,
+                        "type": "File",
+                        "level": level + 1,
+                        "parentId": sln_full,
+                        "isSolution": False
+                    })
+
+            for f_name, f_path in files:
+                if len(results) >= max_items:
+                    break
+                if f_name in grouped_csprojs:
+                    continue
+                if sln_entries and csproj_entries and f_name == sln_entries[0][0]:
+                    continue
+                full_f = os.path.normpath(f_path).replace("\\", "/")
+                results.append({
+                    "name": f_name,
+                    "fullPath": full_f,
+                    "parentFullPath": curr_norm,
+                    "type": "File",
+                    "level": level,
+                    "parentId": curr_norm,
+                    "isSolution": False
+                })
+
+        _walk_level(norm_root, 0)
+        return results
+
+    @Slot()
+    def reload_workspace(self):
+        """Reloads the current workspace and rescans file tree and indexing."""
+        if self.folder_path and os.path.exists(self.folder_path):
+            self.open_Workspace(self.folder_path)
+
     @Slot(str)
     def open_Workspace(self, path):
         if path.startswith("file:///"):
@@ -1729,10 +1949,11 @@ class EditorBackend(QObject):
                 print("Recent project tracking notice:", se)
 
         try:
-            root, arr = self.search_folder_items(self.folder_path)
-            result = self.explorerList(arr, root)
+            result = self.scan_workspace_tree(self.folder_path)
             self.explorerContent.emit(result, self.folder_path)
             self._update_fs_watcher()
+            if hasattr(self, "completion_engine") and self.completion_engine:
+                self.completion_engine.index_workspace(self.folder_path)
         except Exception as e:
             print("Error loading workspace tree:", e)
 
@@ -1749,78 +1970,61 @@ class EditorBackend(QObject):
             if curr_files:
                 self.fs_watcher.removePaths(curr_files)
 
-            ignored_dirs = {
-                ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", "env",
-                ".dgx_studio", ".idea", ".vscode", "dist", "build", ".pytest_cache", ".agents",
-                "bin", "obj", ".qtcreator"
-            }
             paths_to_watch = [self.folder_path]
             for root_dir, dirs, _ in os.walk(self.folder_path):
-                dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
+                dirs[:] = [d for d in dirs if d.lower() not in self.IGNORED_WORKSPACE_DIRS and not d.startswith(".")]
                 for d in dirs:
                     paths_to_watch.append(os.path.join(root_dir, d))
+                    if len(paths_to_watch) >= 60:
+                        break
+                if len(paths_to_watch) >= 60:
+                    break
 
             if paths_to_watch:
-                # Watch top 500 subdirectories to prevent OS descriptor limit
-                self.fs_watcher.addPaths(paths_to_watch[:500])
+                self.fs_watcher.addPaths(paths_to_watch[:60])
         except Exception as e:
             print("[EditorBackend] fs_watcher update notice:", e)
 
     def _on_fs_event(self, path=""):
+        import time
+        clean_p = (path or "").replace("\\", "/").lower()
+        now = time.time()
+        if hasattr(self, "_recently_saved_files"):
+            # Purge entries older than 4 seconds
+            self._recently_saved_files = {p: t for p, t in self._recently_saved_files.items() if now - t < 4.0}
+            if clean_p in self._recently_saved_files:
+                return  # Skip re-scan: triggered by our own editor file save!
+
         if hasattr(self, "fs_debounce_timer") and self.fs_debounce_timer:
-            self.fs_debounce_timer.start(300)
+            self.fs_debounce_timer.start(350)
 
     def _on_fs_debounced(self):
-        if self.folder_path and os.path.exists(self.folder_path):
+        if not self.folder_path or not os.path.exists(self.folder_path):
+            return
+
+        def worker():
             try:
-                root, arr = self.search_folder_items(self.folder_path)
-                result = self.explorerList(arr, root)
+                result = self.scan_workspace_tree(self.folder_path)
+                sig = [(it.get("fullPath", ""), it.get("type", "")) for it in result]
+                if getattr(self, "_last_workspace_sig", None) == sig:
+                    return  # Tree structure didn't change, avoid redundant UI re-renders!
+                self._last_workspace_sig = sig
                 self.explorerContent.emit(result, self.folder_path)
                 self._update_fs_watcher()
             except Exception as e:
-                print("[EditorBackend] _on_fs_debounced error:", e)
+                print("[EditorBackend] _on_fs_debounced background scan error:", e)
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
 
     def search_folder_items(self, path):
-        p = Path(path)
-        try:
-            files = list(p.iterdir())
-        except PermissionError:
-            return p.name, []
-
-        root_folder = p.name
-        ls = []
-
-        # Sort folders first, then files alphabetically
-        dirs = [f for f in files if f.is_dir() and not f.name.startswith(".")]
-        nondirs = [f for f in files if not f.is_dir()]
-
-        for d in sorted(dirs, key=lambda x: x.name.lower()):
-            root, childs = self.search_folder_items(d)
-            ls.append([root, childs])
-
-        for f in sorted(nondirs, key=lambda x: x.name.lower()):
-            ls.append(f.name)
-
-        return root_folder, ls
+        res = self.scan_workspace_tree(path)
+        return os.path.basename(path), res
 
     def explorerList(self, arry, pid):
-        final_list = []
-        for item in arry:
-            node = {}
-            if isinstance(item, list):
-                folder_name = item[0]
-                li = item[1]
-                node["name"] = folder_name
-                node["parentId"] = pid
-                node["type"] = "Folder"
-                final_list.append(node)
-                final_list.extend(self.explorerList(li, folder_name))
-            else:
-                node["name"] = item
-                node["parentId"] = pid
-                node["type"] = "File"
-                final_list.append(node)
-        return final_list
+        if isinstance(arry, list) and arry and isinstance(arry[0], dict):
+            return arry
+        return []
 
     @Slot(str, result=list)
     def get_workspace_files(self, query=""):
@@ -1828,18 +2032,15 @@ class EditorBackend(QObject):
         base_dir = self.folder_path if (self.folder_path and os.path.exists(self.folder_path)) else os.getcwd()
         query = (query or "").strip().lower()
         results = []
-        ignored_dirs = {
-            ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", "env",
-            ".dgx_studio", ".idea", ".vscode", "dist", "build", ".pytest_cache", ".agents",
-            "bin", "obj", ".qtcreator"
-        }
 
         count = 0
         max_files = 500
         for root_dir, dirs, files in os.walk(base_dir):
-            # Prune ignored directories in-place
-            dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
+            # Prune ignored directories in-place with case-insensitivity
+            dirs[:] = [d for d in dirs if d.lower() not in self.IGNORED_WORKSPACE_DIRS and not d.startswith(".")]
             for f in files:
+                if f.startswith(".") or f.lower() in ("thumbs.db", "desktop.ini"):
+                    continue
                 full_path = os.path.join(root_dir, f)
                 try:
                     rel_path = os.path.relpath(full_path, base_dir).replace("\\", "/")
@@ -1901,16 +2102,40 @@ class EditorBackend(QObject):
 
         ext = os.path.splitext(file_path)[1].lower() if file_path else ""
 
-        # 1. Python AST & Docstring lookup
+        # 1. Python AST & Docstring lookup with parameter extraction
         if ext in (".py", ".pyw") or "def " in source_code or "class " in source_code:
             try:
                 import ast
                 tree = ast.parse(source_code)
                 for node in ast.walk(tree):
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol:
-                        args = [a.arg for a in node.args.args]
-                        sig = f"def {node.name}({', '.join(args)})"
-                        doc = ast.get_docstring(node) or "No documentation provided."
+                        args = []
+                        num_defaults = len(node.args.defaults)
+                        num_args = len(node.args.args)
+                        defaults_start = num_args - num_defaults
+                        for i, a in enumerate(node.args.args):
+                            arg_str = a.arg
+                            if a.annotation:
+                                try:
+                                    arg_str += f": {ast.unparse(a.annotation)}"
+                                except Exception:
+                                    pass
+                            if i >= defaults_start:
+                                try:
+                                    default_val = ast.unparse(node.args.defaults[i - defaults_start])
+                                    arg_str += f" = {default_val}"
+                                except Exception:
+                                    pass
+                            args.append(arg_str)
+                        ret_ann = ""
+                        if node.returns:
+                            try:
+                                ret_ann = f" -> {ast.unparse(node.returns)}"
+                            except Exception:
+                                pass
+                        prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                        sig = f"{prefix} {node.name}({', '.join(args)}){ret_ann}"
+                        doc = ast.get_docstring(node) or "Function defined in current file."
                         return {
                             "found": True,
                             "symbol": symbol,
@@ -1931,6 +2156,29 @@ class EditorBackend(QObject):
                         }
             except Exception:
                 pass
+
+        # 2. ExtensionSDK methods lookup
+        sdk_methods = {
+            "show": ("ctx.notifications.show(title: str, message: str, level=\"info\", duration_ms=5000, sound=\"\", actions=None)", "Displays a floating notification in DGX Studio."),
+            "register": ("ctx.shortcuts.register(shortcut: str, callback: Callable, title: str = \"\")", "Registers a global keyboard shortcut with Studio."),
+            "get_music_volume": ("ctx.audio.get_music_volume() -> int", "Returns current audio player volume (0-100)."),
+            "set_music_volume": ("ctx.audio.set_music_volume(volume: int) -> bool", "Sets music player volume (0-100)."),
+            "play_sound": ("ctx.audio.play_sound(path: str, volume: float = 1.0)", "Plays an audio file through Studio's audio engine."),
+            "add_widget": ("ctx.ui.add_widget(component: UIComponent) -> str", "Creates a floating widget window in Studio."),
+            "add_tab": ("ctx.ui.add_tab(title: str, component: UIComponent) -> str", "Opens a custom extension tab in EditorArea."),
+            "show_popup": ("ctx.ui.show_popup(title: str, component: UIComponent)", "Displays a modal or dialog popup."),
+            "emit": ("ctx.particles.emit(x: int, y: int, count: int = 15)", "Emits visual particles at screen coordinates."),
+            "activate": ("def activate(ctx: DGXExtensionContext)", "Extension entrypoint called when DGX Studio loads the extension.")
+        }
+        if symbol in sdk_methods:
+            sig, doc = sdk_methods[symbol]
+            return {
+                "found": True,
+                "symbol": symbol,
+                "title": sig,
+                "doc": doc,
+                "kind": "function"
+            }
 
         # 2. General regex lookup for function / class / variable definitions
         func_match = re.search(rf'(?:def|function|fn|func|public|private|protected|static|\s)\s+{re.escape(symbol)}\s*\(([^)]*)\)', source_code)
@@ -2102,6 +2350,13 @@ class EditorBackend(QObject):
         return symbols
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+        except Exception:
+            pass
+
     try:
         from PySide6.QtWebEngineQuick import QtWebEngineQuick
         QtWebEngineQuick.initialize()
@@ -2134,6 +2389,8 @@ if __name__ == "__main__":
     backend.settings_backend = settingsBackend
     backend.extension_manager.ai_backend = aiBackend
     backend.extension_manager._terminal_backend = terminalBackend
+    backend.extension_manager.settings_backend = settingsBackend
+    backend.extension_manager.music_player = musicPlayer
 
     # Register root context properties
     engine.rootContext().setContextProperty("backend", backend)
@@ -2142,6 +2399,7 @@ if __name__ == "__main__":
     engine.rootContext().setContextProperty("aiBackend", aiBackend)
     engine.rootContext().setContextProperty("terminalBackend", terminalBackend)
     engine.rootContext().setContextProperty("settingsBackend", settingsBackend)
+    engine.rootContext().setContextProperty("lspManager", backend.lsp_manager)
 
     engine.load("qml/main.qml")
     if not engine.rootObjects():
@@ -2151,6 +2409,7 @@ if __name__ == "__main__":
             sys.exit(-1)
 
     root_window = engine.rootObjects()[0]
+    backend._root_window = root_window
     root_window.setFlags(
         Qt.Window
         | Qt.FramelessWindowHint
@@ -2163,16 +2422,19 @@ if __name__ == "__main__":
         try:
             import ctypes
             from ctypes import wintypes
+            from PySide6.QtCore import QAbstractNativeEventFilter
 
             hwnd = int(root_window.winId())
+            backend._main_hwnd = hwnd
             GWL_STYLE = -16
             WS_THICKFRAME = 0x00040000
+            WS_CAPTION = 0x00C00000
             WS_MINIMIZEBOX = 0x00020000
             WS_MAXIMIZEBOX = 0x00010000
             WS_SYSMENU = 0x00080000
 
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
-            style |= (WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)
+            style |= (WS_THICKFRAME | WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style)
 
             class MARGINS(ctypes.Structure):
@@ -2184,6 +2446,108 @@ if __name__ == "__main__":
                 ]
             margins = MARGINS(1, 1, 1, 1)
             ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+
+            WM_NCCALCSIZE = 0x0083
+            WM_GETMINMAXINFO = 0x0024
+            MONITOR_DEFAULTTONEAREST = 2
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+            class MINMAXINFO(ctypes.Structure):
+                _fields_ = [
+                    ("ptReserved", POINT),
+                    ("ptMaxSize", POINT),
+                    ("ptMaxPosition", POINT),
+                    ("ptMinTrackSize", POINT),
+                    ("ptMaxTrackSize", POINT),
+                ]
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            class NCCALCSIZE_PARAMS(ctypes.Structure):
+                _fields_ = [("rgrc", RECT * 3), ("lppos", ctypes.c_void_p)]
+
+            class FramelessWindowNativeEventFilter(QAbstractNativeEventFilter):
+                def __init__(self, hwnd, backend):
+                    super().__init__()
+                    self.hwnd = hwnd
+                    self.backend = backend
+                    self._last_max = None
+
+                def nativeEventFilter(self, eventType, message):
+                    if eventType == b"windows_generic_MSG":
+                        msg = wintypes.MSG.from_address(int(message))
+                        if msg.hWnd == self.hwnd:
+                            if msg.message in (0x0005, 0x0047):  # WM_SIZE, WM_WINDOWPOSCHANGED
+                                is_max = bool(ctypes.windll.user32.IsZoomed(self.hwnd))
+                                if is_max != self._last_max:
+                                    self._last_max = is_max
+                                    if self.backend:
+                                        self.backend.windowMaximizedChanged.emit(is_max)
+                                    DWMWA_WINDOW_CORNER_PREFERENCE = 33
+                                    pref = ctypes.c_int(1 if is_max else 2)  # 1=DONOTROUND, 2=ROUND
+                                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                                        self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ctypes.byref(pref), ctypes.sizeof(pref)
+                                    )
+                            elif msg.message == WM_GETMINMAXINFO:
+                                hMonitor = ctypes.windll.user32.MonitorFromWindow(
+                                    self.hwnd, MONITOR_DEFAULTTONEAREST
+                                )
+                                mi = MONITORINFO()
+                                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                                if ctypes.windll.user32.GetMonitorInfoW(
+                                    hMonitor, ctypes.byref(mi)
+                                ):
+                                    mmi = MINMAXINFO.from_address(msg.lParam)
+                                    work_w = mi.rcWork.right - mi.rcWork.left
+                                    work_h = mi.rcWork.bottom - mi.rcWork.top
+                                    mmi.ptMaxSize.x = work_w
+                                    mmi.ptMaxSize.y = work_h
+                                    mmi.ptMaxTrackSize.x = max(mmi.ptMaxTrackSize.x, work_w + 100)
+                                    mmi.ptMaxTrackSize.y = max(mmi.ptMaxTrackSize.y, work_h + 100)
+                                    return True, 0
+                            elif msg.message == WM_NCCALCSIZE:
+                                if msg.wParam:
+                                    if ctypes.windll.user32.IsZoomed(self.hwnd):
+                                        hMonitor = ctypes.windll.user32.MonitorFromWindow(
+                                            self.hwnd, MONITOR_DEFAULTTONEAREST
+                                        )
+                                        mi = MONITORINFO()
+                                        mi.cbSize = ctypes.sizeof(MONITORINFO)
+                                        if ctypes.windll.user32.GetMonitorInfoW(
+                                            hMonitor, ctypes.byref(mi)
+                                        ):
+                                            params = NCCALCSIZE_PARAMS.from_address(msg.lParam)
+                                            params.rgrc[0] = mi.rcWork
+                                            return True, 0
+                                    return True, 0
+                    return False, 0
+
+            win_filter = FramelessWindowNativeEventFilter(hwnd, backend)
+            app.installNativeEventFilter(win_filter)
+
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_FRAMECHANGED = 0x0020
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            )
         except Exception as e:
             print("Native window setup warning:", e)
 

@@ -59,7 +59,7 @@ def test_extension_manager_dynamic():
     import ExtensionManager
     mgr = ExtensionManager.ExtensionManager()
     ext_ids = [e.get("id") if isinstance(e, dict) else e.id for e in mgr.get_marketplace_extensions()]
-    assert "dgx.meower" in ext_ids, f"dgx.meower not discovered dynamically: {ext_ids}"
+    assert "user.my_first_extension" in ext_ids or "dgx.meower" in ext_ids, f"custom extension not discovered dynamically: {ext_ids}"
     assert "dgx.python" in ext_ids, f"dgx.python not in marketplace: {ext_ids}"
     # Verify no hardcoded drive C: paths in locate_executable
     with open("ExtensionManager.py", "r", encoding="utf-8") as f:

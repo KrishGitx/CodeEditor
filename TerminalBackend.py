@@ -90,13 +90,42 @@ class SingleTerminalSession:
 
     def _read_output(self):
         buf = ""
+        handle = None
+        avail = None
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                handle = msvcrt.get_osfhandle(self.process.stdout.fileno())
+                avail = ctypes.c_ulong()
+            except Exception:
+                handle = None
+
         while self.is_running and self.process and self.process.stdout:
             try:
-                chunk = self.process.stdout.read(1)
+                chunk = ""
+                if handle is not None:
+                    ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
+                    if avail.value > 0:
+                        chunk_b = self.process.stdout.buffer.read(min(avail.value, 8192))
+                        chunk = chunk_b.decode("utf-8", errors="replace")
+                    else:
+                        time.sleep(0.015)
+                        if self.process.poll() is not None:
+                            ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
+                            if avail.value > 0:
+                                chunk_b = self.process.stdout.buffer.read(min(avail.value, 8192))
+                                chunk = chunk_b.decode("utf-8", errors="replace")
+                            else:
+                                break
+                else:
+                    chunk = self.process.stdout.read(1)
+                    if not chunk:
+                        if self.process.poll() is not None:
+                            break
+                        time.sleep(0.01)
+                        continue
+
                 if not chunk:
-                    if self.process.poll() is not None:
-                        break
-                    time.sleep(0.01)
                     continue
 
                 buf += chunk

@@ -16,6 +16,7 @@ def load_themes():
     themes = {}
     theme_dirs = [
         os.path.join(os.path.dirname(__file__), "themes"),
+        os.path.join(os.path.expanduser("~"), ".pod_studio", "themes"),
         os.path.join(os.path.expanduser("~"), ".dgx_studio", "themes")
     ]
     for tdir in theme_dirs:
@@ -143,6 +144,7 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         self._slice_timer.setInterval(12)
         self._slice_timer.timeout.connect(self._process_slice_queue)
         self._batch_slice_size = 30
+        self._is_incremental_loading = False
 
     def attach_document(self, doc, file_path="", explicit_lang=None, visible_lines=150):
         self.file_path = file_path or ""
@@ -333,15 +335,15 @@ class MultiLanguageHighlighter(QSyntaxHighlighter):
         # 2. C / C++ / C# / Java
         elif lang in ("c", "cpp", "csharp", "java"):
             kw = (
-                r"\b(?:int|float|double|char|void|long|short|unsigned|signed|bool|string|String|"
-                r"struct|class|union|enum|typedef|auto|const|static|extern|register|volatile|inline|"
+                r"\b(?:struct|class|union|enum|typedef|const|static|extern|register|volatile|inline|"
                 r"virtual|override|public|private|protected|friend|namespace|using|template|typename|"
                 r"new|delete|if|else|switch|case|default|while|do|for|break|continue|return|goto|"
                 r"try|catch|throw|sizeof|decltype|constexpr|nullptr|this|package|import|interface|"
                 r"extends|implements|abstract|final|finally|synchronized|native|transient|var|async|await)\b"
             )
             types = (
-                r"\b(?:string|String|std|vector|map|set|pair|unordered_map|unordered_set|queue|stack|"
+                r"\b(?:int|float|double|char|void|long|short|unsigned|signed|bool|string|String|auto|"
+                r"std|vector|map|set|pair|unordered_map|unordered_set|queue|stack|"
                 r"size_t|int8_t|int16_t|int32_t|int64_t|uint8_t|uint16_t|uint32_t|uint64_t|"
                 r"cout|cin|endl|cerr|printf|scanf|malloc|free|memcpy|memset|NULL|List|Dictionary|"
                 r"ArrayList|HashMap|HashSet|System|Console|Object|Boolean|Integer|Double|"

@@ -19,7 +19,7 @@ Window {
     minimumWidth: 800
     minimumHeight: 600
     visible: true
-    title: qsTr("DGX Studio")
+    title: qsTr("Pod Studio")
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
     color: theme.bgRoot
 
@@ -29,13 +29,20 @@ Window {
     }
     property alias appTheme: theme
 
-    onVisibilityChanged: {
-        if (visibility === Window.Maximized) {
-            appHeader.isMaximized = true;
-        } else if (visibility === Window.Windowed) {
-            appHeader.isMaximized = false;
+    function syncMaximizeState() {
+        var isMax = (mainWindow.visibility === Window.Maximized || mainWindow.visibility === Window.FullScreen || mainWindow.windowState === Qt.WindowMaximized);
+        if (typeof Screen !== "undefined" && Screen.desktopAvailableWidth && mainWindow.width < Screen.desktopAvailableWidth - 30) {
+            isMax = false;
+        }
+        if (appHeader) {
+            appHeader.isMaximized = isMax;
         }
     }
+
+    onVisibilityChanged: syncMaximizeState()
+    onWindowStateChanged: syncMaximizeState()
+    onWidthChanged: syncMaximizeState()
+    onHeightChanged: syncMaximizeState()
 
     // Panel Resizing & Layout Properties
     property real explorerWidth: 220
@@ -50,10 +57,53 @@ Window {
     property bool aiVisible: false
     property bool musicVisible: true
     property bool zenMode: false
+    property bool editorMaximized: false
     property bool whiteboardVisible: false
+    property string currentSidebarView: "explorer" // "explorer" or "extensions"
 
     // Presets
     property string currentPreset: "Full"
+
+    // Layout memory for un-maximizing
+    property bool preMaxExplorerVisible: true
+    property bool preMaxRightPanelVisible: false
+    property bool preMaxAiVisible: false
+    property bool preMaxMusicVisible: false
+    property bool preMaxTerminalVisible: false
+    property bool preMaxWindowMaximized: false
+
+    function toggleMaximizeEditor() {
+        if (!editorMaximized) {
+            preMaxExplorerVisible = mainWindow.explorerVisible;
+            preMaxRightPanelVisible = mainWindow.rightPanelVisible;
+            preMaxAiVisible = mainWindow.aiVisible;
+            preMaxMusicVisible = mainWindow.musicVisible;
+            preMaxTerminalVisible = mainWindow.terminalVisible;
+            preMaxWindowMaximized = (mainWindow.visibility === Window.Maximized);
+
+            editorMaximized = true;
+            zenMode = true;
+            mainWindow.explorerVisible = false;
+            mainWindow.rightPanelVisible = false;
+            mainWindow.aiVisible = false;
+            mainWindow.musicVisible = false;
+            mainWindow.terminalVisible = false;
+            if (mainWindow.visibility !== Window.Maximized) {
+                mainWindow.showMaximized();
+            }
+        } else {
+            editorMaximized = false;
+            zenMode = false;
+            mainWindow.explorerVisible = preMaxExplorerVisible;
+            mainWindow.rightPanelVisible = preMaxRightPanelVisible;
+            mainWindow.aiVisible = preMaxAiVisible;
+            mainWindow.musicVisible = preMaxMusicVisible;
+            mainWindow.terminalVisible = preMaxTerminalVisible;
+            if (!preMaxWindowMaximized && mainWindow.visibility === Window.Maximized) {
+                mainWindow.showNormal();
+            }
+        }
+    }
 
     // Clamping Limits
     readonly property real explorerMinWidth: 160
@@ -64,9 +114,9 @@ Window {
     readonly property real terminalMaxHeight: 440
 
     // Dynamic Layout Dimensions
-    readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode) ? explorerWidth : 0
-    readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && (aiVisible || musicVisible)) ? rightPanelWidth : 0
-    readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode) ? terminalHeight : 0
+    readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode && !editorMaximized) ? explorerWidth : 0
+    readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && !editorMaximized && (aiVisible || musicVisible)) ? rightPanelWidth : 0
+    readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode && !editorMaximized) ? terminalHeight : 0
 
     // Connect to Python Backend Services
     Connections {
@@ -101,6 +151,12 @@ Window {
         function onNotificationRequested(msg, type, title) {
             mainWindow.showNotification(msg, type, title);
         }
+
+        function onWindowMaximizedChanged(isMax) {
+            if (appHeader) {
+                appHeader.isMaximized = isMax;
+            }
+        }
     }
 
     Connections {
@@ -115,7 +171,7 @@ Window {
     // Native File Dialogs
     FileDialog {
         id: openFileDialog
-        title: "Open File in DGX Studio"
+        title: "Open File in Pod Studio"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
         onAccepted: {
             if (typeof backend !== "undefined" && backend && backend.open_file) {
@@ -139,15 +195,17 @@ Window {
         title: "Open Workspace Folder"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
         onAccepted: {
-            if (typeof backend !== "undefined" && backend && backend.open_Workspace) {
-                backend.open_Workspace(selectedFolder.toString());
-            }
+            mainWindow.openWorkspaceFolder(selectedFolder.toString());
         }
     }
 
     // =========================================================================
     // SINGLE OWNER KEYBOARD SHORTCUTS (DYNAMICALLY CUSTOMIZABLE)
     // =========================================================================
+    Shortcut {
+        sequence: "F2"
+        onActivated: mainWindow.renameActiveOrSelectedFile()
+    }
     Shortcut {
         sequence: (theme && theme.shortcutNewFile) ? theme.shortcutNewFile : "Ctrl+N"
         onActivated: editorArea.createNewFile()
@@ -175,7 +233,7 @@ Window {
     }
     Shortcut {
         sequence: (theme && theme.shortcutCloseTab) ? theme.shortcutCloseTab : "Ctrl+W"
-        onActivated: editorArea.closeTab(editorArea.activeTabIndex)
+        onActivated: editorArea.closeActiveTab()
     }
     Shortcut {
         sequence: (theme && theme.shortcutFind) ? theme.shortcutFind : "Ctrl+F"
@@ -215,7 +273,43 @@ Window {
     }
     Shortcut {
         sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+K Z"
-        onActivated: mainWindow.zenMode = !mainWindow.zenMode
+        onActivated: mainWindow.toggleMaximizeEditor()
+    }
+    Shortcut {
+        sequences: ["Ctrl+=", "Ctrl++", StandardKey.ZoomIn]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            var th = (typeof theme !== "undefined" && theme) ? theme : null;
+            var sz = th ? th.editorFontSize : 14;
+            editorArea.setEditorZoom(sz + 1);
+        }
+    }
+    Shortcut {
+        sequences: ["Ctrl+-", StandardKey.ZoomOut]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            var th = (typeof theme !== "undefined" && theme) ? theme : null;
+            var sz = th ? th.editorFontSize : 14;
+            editorArea.setEditorZoom(sz - 1);
+        }
+    }
+    Shortcut {
+        sequences: ["Ctrl+0"]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            editorArea.setEditorZoom(14);
+        }
+    }
+    Shortcut {
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            if (mainWindow.visibility === Window.FullScreen || mainWindow.visibility === Window.Maximized) {
+                mainWindow.showNormal();
+            } else {
+                mainWindow.showFullScreen();
+            }
+        }
     }
     Shortcut {
         sequence: (theme && theme.shortcutSettings) ? theme.shortcutSettings : "Ctrl+,"
@@ -294,25 +388,30 @@ Window {
         AppHeader {
             id: appHeader
             Layout.fillWidth: true
+            isMaximized: (mainWindow.visibility === Window.Maximized || mainWindow.visibility === Window.FullScreen || mainWindow.windowState === Qt.WindowMaximized) && (typeof Screen !== "undefined" && Screen.desktopAvailableWidth ? mainWindow.width >= Screen.desktopAvailableWidth - 30 : true)
             activeProjectName: explorerPanel.workspaceName
             activeFileName: editorArea.activeFileName
             activeFilePath: editorArea.activeFilePath
             isDirty: editorArea.isCurrentFileDirty
+            explorerVisible: mainWindow.explorerVisible
+            terminalVisible: mainWindow.terminalVisible
+            aiVisible: mainWindow.aiVisible
 
             onNewFileRequested: editorArea.createNewFile()
             onOpenFileRequested: openFileDialog.open()
             onOpenFolderRequested: openFolderDialog.open()
+            onOpenRecentRequested: function(folderPath) { mainWindow.openWorkspaceFolder(folderPath); }
             onSaveRequested: {
                 var s = editorArea.saveCurrentFile();
                 if (!s) saveAsDialog.open();
             }
             onSaveAsRequested: saveAsDialog.open()
-            onCloseTabRequested: editorArea.closeTab(editorArea.activeTabIndex)
+            onCloseTabRequested: editorArea.closeActiveTab()
             onToggleExplorerRequested: mainWindow.explorerVisible = !mainWindow.explorerVisible
             onToggleTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
             onToggleAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
             onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
-            onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
+            onToggleZenRequested: mainWindow.toggleMaximizeEditor()
             onToggleSplitEditorRequested: editorArea.toggleSplitEditor()
             onToggleWhiteboardRequested: editorArea.openWhiteboardTab()
             onOpenWebPreviewRequested: editorArea.openWebPreviewTab()
@@ -340,24 +439,79 @@ Window {
                 anchors.fill: parent
                 spacing: 0
 
-                // Left: Explorer Panel
-                ExplorerPanel {
-                    id: explorerPanel
-                    objectName: "explorerPanel"
+                // Far Left: Activity Bar (VS Code style navigation)
+                ActivityBar {
+                    id: activityBar
+                    Layout.fillHeight: true
+                    visible: !mainWindow.zenMode && !mainWindow.editorMaximized
+                    explorerActive: mainWindow.explorerVisible && mainWindow.currentSidebarView === "explorer"
+                    extensionsActive: mainWindow.explorerVisible && mainWindow.currentSidebarView === "extensions"
+                    settingsActive: settingsOverlay.visible
+                    musicActive: mainWindow.musicVisible
+                    aiActive: mainWindow.aiVisible
+                    terminalActive: mainWindow.terminalVisible
+
+                    onToggleExplorerRequested: {
+                        if (mainWindow.explorerVisible && mainWindow.currentSidebarView === "explorer") {
+                            mainWindow.explorerVisible = false;
+                        } else {
+                            mainWindow.currentSidebarView = "explorer";
+                            mainWindow.explorerVisible = true;
+                        }
+                    }
+                    onExtensionsRequested: {
+                        if (mainWindow.explorerVisible && mainWindow.currentSidebarView === "extensions") {
+                            mainWindow.explorerVisible = false;
+                        } else {
+                            mainWindow.currentSidebarView = "extensions";
+                            mainWindow.explorerVisible = true;
+                        }
+                    }
+                    onMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+                    onAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
+                    onTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
+                    onSettingsRequested: settingsOverlay.visible = true
+                }
+
+                // Left Sidebar: Multi-View Container (File Explorer / Extensions)
+                Item {
+                    id: leftSidebarContainer
                     Layout.preferredWidth: mainWindow.effectiveExplorerWidth
                     Layout.fillHeight: true
                     visible: mainWindow.effectiveExplorerWidth > 0
+                    clip: true
 
-                    onFileClicked: function(path) {
-                        if (typeof backend !== "undefined" && backend && backend.open_file) {
-                            backend.open_file(path);
+                    // 1. File Explorer View
+                    ExplorerPanel {
+                        id: explorerPanel
+                        objectName: "explorerPanel"
+                        anchors.fill: parent
+                        visible: mainWindow.currentSidebarView === "explorer"
+
+                        onFileClicked: function(path) {
+                            if (typeof backend !== "undefined" && backend && backend.open_file) {
+                                backend.open_file(path);
+                            }
+                        }
+                        onOpenFolderRequested: openFolderDialog.open()
+                        // onNewFolderRequested handled directly by ExplorerPanel
+                        onRefreshRequested: {
+                            if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
+                                backend.open_Workspace(explorerPanel.workspacePath);
+                            }
                         }
                     }
-                    onOpenFolderRequested: openFolderDialog.open()
-                    // onNewFolderRequested handled directly by ExplorerPanel
-                    onRefreshRequested: {
-                        if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
-                            backend.open_Workspace(explorerPanel.workspacePath);
+
+                    // 2. Extensions View (Shows right in the sidebar like VS Code)
+                    ExtensionsSidebarPanel {
+                        id: extensionsSidebarPanel
+                        objectName: "extensionsSidebarPanel"
+                        anchors.fill: parent
+                        visible: mainWindow.currentSidebarView === "extensions"
+                        onExtensionSelected: function(extData) {
+                            if (editorArea) {
+                                editorArea.openExtensionDetailsTab(extData);
+                            }
                         }
                     }
                 }
@@ -384,10 +538,19 @@ Window {
                         id: editorArea
                         objectName: "editorArea"
                         anchors.fill: parent
+                        theme: theme
+                        isEditorMaximized: mainWindow.editorMaximized
+                        onToggleMaximizeEditorRequested: mainWindow.toggleMaximizeEditor()
 
                         onSettingsPopupRequested: settingsOverlay.visible = true
                         onRequestOpenFile: openFileDialog.open()
-                        onRequestOpenFolder: openFolderDialog.open()
+                        onRequestOpenFolder: function(targetPath) {
+                            if (targetPath) {
+                                mainWindow.openWorkspaceFolder(targetPath);
+                            } else {
+                                openFolderDialog.open();
+                            }
+                        }
                         onRequestRunFile: mainWindow.runActiveFile()
 
                         onAskAi: function(code, startPos, endPos, langId) {
@@ -550,6 +713,7 @@ Window {
             onSettingsRequested: settingsOverlay.visible = true
             onThemeSelected: function(tName) { theme.setTheme(tName); }
             onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+            onProfilerRequested: profilerDialog.visible = !profilerDialog.visible
         }
     }
 
@@ -725,8 +889,72 @@ Window {
         anchors.fill: parent
     }
 
+    // Process Profiler & LSP Debugger Dialog
+    ProcessProfilerDialog {
+        id: profilerDialog
+    }
+
+    // Ctrl+Shift+M: Toggle Process Profiler & LSP Debugger
+    Shortcut {
+        sequence: "Ctrl+Shift+M"
+        context: Qt.ApplicationShortcut
+        onActivated: profilerDialog.visible = !profilerDialog.visible
+    }
+
+
+
+    function openWorkspaceFolder(path) {
+        if (!path) return;
+        var cleanPath = path.toString().replace(/^file:\/\/\//, "");
+        // 1. Save current workspace's open files session
+        if (typeof editorArea !== "undefined" && editorArea && editorArea.saveWorkspaceSession) {
+            editorArea.saveWorkspaceSession();
+        }
+        // 2. Track new workspace path
+        if (typeof editorArea !== "undefined" && editorArea) {
+            editorArea.currentWorkspacePath = cleanPath;
+        }
+        // 3. Open workspace in backend (scans tree, sets fs watcher, indexes symbols)
+        if (typeof backend !== "undefined" && backend && backend.open_Workspace) {
+            backend.open_Workspace(cleanPath);
+        }
+        // 4. Restore files that were open in this project
+        if (typeof editorArea !== "undefined" && editorArea && editorArea.restoreWorkspaceSession) {
+            editorArea.restoreWorkspaceSession(cleanPath);
+        }
+    }
+
+    function renameActiveOrSelectedFile() {
+        var targetPath = "";
+
+        // If user is currently in the editor, rename the current open file
+        if (typeof editorArea !== "undefined" && editorArea && editorArea.codeTextArea && editorArea.codeTextArea.activeFocus && editorArea.activeFilePath) {
+            targetPath = editorArea.activeFilePath;
+        } else if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectedFilePath) {
+            targetPath = explorerPanel.selectedFilePath;
+        } else if (typeof editorArea !== "undefined" && editorArea && editorArea.activeFilePath) {
+            targetPath = editorArea.activeFilePath;
+        }
+
+        if (targetPath && typeof explorerPanel !== "undefined" && explorerPanel) {
+            if (!mainWindow.explorerVisible) {
+                mainWindow.explorerVisible = true;
+            }
+            if (mainWindow.effectiveExplorerWidth <= 0) {
+                mainWindow.explorerWidth = Math.max(200, mainWindow.explorerWidth);
+            }
+            explorerPanel.selectAndRevealFile(targetPath);
+            explorerPanel.startInlineRename(targetPath);
+        }
+    }
+
     function showExtensions() {
-        extensionsOverlay.visible = true;
+        mainWindow.currentSidebarView = "extensions";
+        mainWindow.explorerVisible = true;
+    }
+
+    function toggleProfiler() {
+        profilerDialog.visible = !profilerDialog.visible;
     }
 
     // =========================================================================
@@ -748,6 +976,10 @@ Window {
     Connections {
         target: typeof extensionManager !== "undefined" ? extensionManager : null
         ignoreUnknownSignals: true
+
+        function onNotificationRequested(extId, title, message, icon, sound, actions) {
+            mainWindow.showNotification(message, "info", title || "Extension");
+        }
 
         function onSmartFixAvailable(proposal) {
             if (!proposal) return;
@@ -803,11 +1035,37 @@ Window {
         }
     }
 
+    function reloadWindow() {
+        if (editorArea.isCurrentFileDirty) {
+            editorArea.saveCurrentFile();
+        }
+        editorArea.saveWorkspaceSession();
+        if (typeof backend !== "undefined" && backend && backend.reload_workspace) {
+            backend.reload_workspace();
+        }
+        if (typeof extensionManager !== "undefined" && extensionManager) {
+            extensionManager.reload_extensions();
+        }
+        mainWindow.showNotification("Window and workspace reloaded successfully.", "info", "Developer");
+    }
+
     function runActiveFile() {
         if (!editorArea.activeFilePath) {
             mainWindow.showNotification("Please save the file first before running.", "warning", "Run");
+            saveAsFileDialog.open();
             return;
         }
+
+        // Auto-save pending changes before running
+        if (editorArea.isCurrentFileDirty) {
+            editorArea.saveCurrentFile();
+        }
+
+        // If this file belongs to an active extension, hot-reload it in-place
+        if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.check_and_reload_extension_file) {
+            extensionManager.check_and_reload_extension_file(editorArea.activeFilePath);
+        }
+
         var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
         var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
         var cmd = "";
@@ -966,6 +1224,7 @@ Window {
         }
 
         mainWindow.terminalVisible = true;
+        terminalPanel.activeTab = "TERMINAL";
         terminalPanel.addOutputLog("Build/Run", "Executing " + (editorArea.activeFileName || "script") + " [" + cmd + "]");
         terminalPanel.executeCommand(cmd);
     }

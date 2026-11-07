@@ -1,5 +1,5 @@
 """
-SettingsBackend.py - Persistent User Preferences Manager for DGX Studio
+SettingsBackend.py - Persistent User Preferences Manager for Pod Studio
 Automatically saves and restores settings (theme, volume, editor config, shortcuts, layout) to JSON.
 """
 
@@ -13,14 +13,32 @@ class SettingsBackend(QObject):
     settingsLoaded = Signal(str)
     settingChanged = Signal(str, str)
     recentProjectsChanged = Signal(list)
+    iconThemeChanged = Signal()
+    availableThemesChanged = Signal(list)
 
     def __init__(self):
         super().__init__()
-        # Store settings in user home directory under .dgx_studio/settings.json
-        self.config_dir = Path.home() / ".dgx_studio"
+        # Store settings in user home directory under .pod_studio/settings.json (with migration from legacy .dgx_studio)
+        legacy_dir = Path.home() / ".dgx_studio"
+        self.config_dir = Path.home() / ".pod_studio"
         self.config_file = self.config_dir / "settings.json"
+        self.icon_theme_file = self.config_dir / "icon_theme.json"
+
+        if not self.config_file.exists() and (legacy_dir / "settings.json").exists():
+            try:
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy2(legacy_dir / "settings.json", self.config_file)
+            except Exception as e:
+                print(f"[SettingsBackend] Migration notice: {e}")
+        elif not self.config_file.exists() and legacy_dir.exists():
+            self.config_dir = legacy_dir
+            self.config_file = legacy_dir / "settings.json"
+            self.icon_theme_file = legacy_dir / "icon_theme.json"
+
         self.settings = self._load_default_settings()
         self._load_from_disk()
+        self._ensure_default_icon_theme()
 
     def _load_default_settings(self):
         return {
@@ -40,7 +58,7 @@ class SettingsBackend(QObject):
             "explorer_width": 260,
             "right_panel_width": 340,
             "explorer_visible": True,
-            "terminal_visible": True,
+            "terminal_visible": False,
             "ai_visible": False,
             "music_visible": True,
             "shortcuts": {
@@ -186,6 +204,43 @@ class SettingsBackend(QObject):
                 print(f"[SettingsBackend] Error reading session state: {e}")
         return "{}"
 
+    @Slot(str, str)
+    def save_project_session(self, project_path: str, session_json: str):
+        if not project_path or not session_json:
+            return
+        try:
+            norm_key = os.path.normpath(project_path).lower()
+            data = json.loads(session_json)
+            sessions_file = self.config_dir / "workspace_sessions.json"
+            all_sessions = {}
+            if sessions_file.exists():
+                try:
+                    with open(sessions_file, "r", encoding="utf-8") as f:
+                        all_sessions = json.load(f)
+                except Exception:
+                    all_sessions = {}
+            all_sessions[norm_key] = data
+            with open(sessions_file, "w", encoding="utf-8") as f:
+                json.dump(all_sessions, f, indent=2)
+        except Exception as e:
+            print(f"[SettingsBackend] Error saving project session: {e}")
+
+    @Slot(str, result=str)
+    def get_project_session(self, project_path: str) -> str:
+        if not project_path:
+            return "{}"
+        try:
+            norm_key = os.path.normpath(project_path).lower()
+            sessions_file = self.config_dir / "workspace_sessions.json"
+            if sessions_file.exists():
+                with open(sessions_file, "r", encoding="utf-8") as f:
+                    all_sessions = json.load(f)
+                if norm_key in all_sessions:
+                    return json.dumps(all_sessions[norm_key])
+        except Exception as e:
+            print(f"[SettingsBackend] Error reading project session: {e}")
+        return "{}"
+
     @Slot()
     def clear_session_state(self):
         session_file = self.config_dir / "session_state.json"
@@ -319,7 +374,19 @@ class SettingsBackend(QObject):
         user_themes = self.config_dir / "themes"
         if user_themes.exists() and user_themes.is_dir():
             dirs.append(user_themes)
+        for extra in [Path.home() / ".pod_studio" / "themes", Path.home() / ".dgx_studio" / "themes"]:
+            if extra.exists() and extra.is_dir() and extra not in dirs:
+                dirs.append(extra)
         return dirs
+
+    @Slot(result=str)
+    def get_saved_theme_data(self):
+        saved_theme = self.get_value("theme", "nord")
+        return self.get_theme_data(saved_theme)
+
+    @Slot(result=str)
+    def get_saved_theme_name(self):
+        return self.get_value("theme", "nord")
 
     @Slot(result=list)
     def get_available_themes(self):
@@ -382,5 +449,78 @@ class SettingsBackend(QObject):
                 except Exception:
                     pass
         return "{}"
+
+    def _ensure_default_icon_theme(self):
+        try:
+            if not self.icon_theme_file.exists():
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                default_theme = {
+                    "themeName": "Pod Material Colorful",
+                    "description": "Customizable Icon Theme for Pod Studio. Add, edit, or customize folder and file colors/icons below.",
+                    "folders": {
+                        "assets": { "color": "#f59e0b", "icon": "folder" },
+                        "scripts": { "color": "#06b6d4", "icon": "folder" },
+                        "scenes": { "color": "#a855f7", "icon": "folder" },
+                        "packages": { "color": "#3b82f6", "icon": "folder" },
+                        ".vscode": { "color": "#38bdf8", "icon": "folder" },
+                        "misc": { "color": "#f97316", "icon": "folder" },
+                        "npc": { "color": "#10b981", "icon": "folder" },
+                        "player": { "color": "#10b981", "icon": "folder" },
+                        "behaviours": { "color": "#14b8a6", "icon": "folder" },
+                        "core": { "color": "#6366f1", "icon": "folder" },
+                        "prefabs": { "color": "#059669", "icon": "folder" },
+                        "materials": { "color": "#ec4899", "icon": "folder" },
+                        "audio": { "color": "#d946ef", "icon": "folder" },
+                        "urp": { "color": "#9333ea", "icon": "folder" },
+                        "editor": { "color": "#eab308", "icon": "folder" },
+                        "tests": { "color": "#22c55e", "icon": "folder" },
+                        "docs": { "color": "#0284c7", "icon": "folder" }
+                    },
+                    "files": {
+                        "cs": { "color": "#38bdf8", "icon": "file-code" },
+                        "sln": { "color": "#a855f7", "icon": "file-code" },
+                        "slnx": { "color": "#a855f7", "icon": "file-code" },
+                        "csproj": { "color": "#a855f7", "icon": "file-code" },
+                        "unity": { "color": "#10b981", "icon": "file-code" },
+                        "prefab": { "color": "#10b981", "icon": "file-code" },
+                        "mat": { "color": "#10b981", "icon": "file-code" },
+                        "shader": { "color": "#10b981", "icon": "file-code" },
+                        "py": { "color": "#38bdf8", "icon": "file-code" },
+                        "js": { "color": "#facc15", "icon": "file-code" },
+                        "ts": { "color": "#3b82f6", "icon": "file-code" },
+                        "cpp": { "color": "#60a5fa", "icon": "file-code" },
+                        "json": { "color": "#facc15", "icon": "file-code" }
+                    }
+                }
+                with open(self.icon_theme_file, "w", encoding="utf-8") as f:
+                    json.dump(default_theme, f, indent=2)
+        except Exception as e:
+            print(f"[SettingsBackend] Error creating default icon_theme.json: {e}")
+
+    @Slot(result=str)
+    def get_icon_theme_json(self) -> str:
+        if self.icon_theme_file.exists():
+            try:
+                with open(self.icon_theme_file, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception as e:
+                print(f"[SettingsBackend] Error reading icon_theme.json: {e}")
+        return "{}"
+
+    @Slot(str, result=bool)
+    def save_icon_theme_json(self, content: str) -> bool:
+        try:
+            parsed = json.loads(content)
+            with open(self.icon_theme_file, "w", encoding="utf-8") as f:
+                json.dump(parsed, f, indent=2)
+            self.iconThemeChanged.emit()
+            return True
+        except Exception as e:
+            print(f"[SettingsBackend] Error saving icon_theme.json: {e}")
+            return False
+
+    @Slot(result=str)
+    def get_icon_theme_file_path(self) -> str:
+        return str(self.icon_theme_file).replace("\\", "/")
 
 

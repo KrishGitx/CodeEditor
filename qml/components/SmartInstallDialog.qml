@@ -1247,7 +1247,7 @@ Rectangle {
                         }
 
                         Text {
-                            text: "Explicit approval is required. DGX will not execute fixes automatically."
+                            text: "Explicit approval is required. Pod Studio will not execute fixes automatically."
                             color: theme ? theme.textMuted : "#666666"
                             font.pixelSize: 10
                             font.italic: true
@@ -1325,7 +1325,7 @@ Rectangle {
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: root.statusMessage || root.explanationText || "This tool requires administrator privileges, interactive installer setup, or custom system configuration that cannot be safely automated by DGX Studio."
+                                    text: root.statusMessage || root.explanationText || "This tool requires administrator privileges, interactive installer setup, or custom system configuration that cannot be safely automated by Pod Studio."
                                     color: theme ? theme.textSecondary : "#aaaaaa"
                                     font.pixelSize: 11
                                     wrapMode: Text.WordWrap
@@ -1438,7 +1438,7 @@ Rectangle {
 
                                     Text {
                                         Layout.fillWidth: true
-                                        text: root.resumeNote ? root.resumeNote : "Once installed, re-run the format or build command in DGX Studio. Smart Install will detect the installed runtime automatically."
+                                        text: root.resumeNote ? root.resumeNote : "Once installed, re-run the format or build command in Pod Studio. Smart Install will detect the installed runtime automatically."
                                         color: theme ? theme.textMuted : "#888888"
                                         font.pixelSize: 10
                                         wrapMode: Text.WordWrap

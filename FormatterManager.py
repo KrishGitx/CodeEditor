@@ -290,12 +290,20 @@ class FormatterManager:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if is_win else 0
 
         import tempfile
+        import shutil
+        import json
+        temp_dir = None
         temp_file = None
         try:
-            tf = tempfile.NamedTemporaryFile(mode="w", suffix=".cs", delete=False, encoding="utf-8")
-            tf.write(source_code)
-            tf.close()
-            temp_file = tf.name
+            temp_dir = tempfile.mkdtemp(prefix="csharpier_fmt_")
+            effective_indent = max(8, int(tab_size) * 2 if int(tab_size) <= 4 else int(tab_size)) if tab_size and int(tab_size) > 0 else 8
+            cfg_file = os.path.join(temp_dir, ".csharpierrc.json")
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                json.dump({"indentSize": effective_indent}, f)
+
+            temp_file = os.path.join(temp_dir, "FormattedSource.cs")
+            with open(temp_file, "w", encoding="utf-8") as tf:
+                tf.write(source_code)
 
             cmd = [csharpier_bin, "format", temp_file]
 
@@ -306,6 +314,7 @@ class FormatterManager:
                 encoding="utf-8",
                 errors="replace",
                 timeout=15,
+                cwd=temp_dir,
                 creationflags=creationflags
             )
 
@@ -319,6 +328,7 @@ class FormatterManager:
                     encoding="utf-8",
                     errors="replace",
                     timeout=15,
+                    cwd=temp_dir,
                     creationflags=creationflags
                 )
 
@@ -339,7 +349,7 @@ class FormatterManager:
                     return {
                         "success": True,
                         "formatted": clean_formatted,
-                        "message": "C# formatted with CSharpier",
+                        "message": f"C# formatted with CSharpier (indent: {effective_indent})",
                         "available": True,
                         "dependency": "csharpier"
                     }
@@ -360,9 +370,11 @@ class FormatterManager:
                 "available": True
             }
         finally:
-            if temp_file and os.path.exists(temp_file):
+            if temp_dir and os.path.exists(temp_dir):
                 try:
-                    os.unlink(temp_file)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
                 except Exception:
                     pass
 
@@ -416,7 +428,12 @@ class FormatterManager:
                 if "PATH_PREPEND" in tool_runtime and tool_runtime["PATH_PREPEND"]:
                     env["PATH"] = tool_runtime["PATH_PREPEND"] + os.pathsep + env.get("PATH", "")
 
-            cmd = [tool_path, "--replace", temp_file] if not tool_path.lower().endswith(".jar") else [java_exe_to_use, "-jar", tool_path, "--replace", temp_file]
+            extra_args = []
+            effective_tab_size = int(tab_size) if tab_size and int(tab_size) > 0 else 4
+            if effective_tab_size != 2:
+                extra_args.append("--aosp")
+
+            cmd = [tool_path] + extra_args + ["--replace", temp_file] if not tool_path.lower().endswith(".jar") else [java_exe_to_use, "-jar", tool_path] + extra_args + ["--replace", temp_file]
 
             # Diagnostic logging: Section 3 Runtime Details
             print("[JavaRuntime] === FORMATTER SUBPROCESS RUNTIME CONFIGURATION ===")

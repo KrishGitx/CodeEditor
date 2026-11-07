@@ -766,6 +766,24 @@ class AudioEngine:
         # Fallback to play tone via manager
         self._ctx._manager.play_tone(frequency, duration_ms)
 
+    def set_music_volume(self, volume: float):
+        """Set DGX Music Player volume (0.0 to 1.0, or 0 to 100)."""
+        self._ctx._manager.set_music_volume(volume)
+
+    def get_music_volume(self) -> float:
+        """Get current DGX Music Player volume (0.0 to 1.0)."""
+        return self._ctx._manager.get_music_volume()
+
+    def volume_up(self, step: float = 0.05):
+        """Increase DGX Music Player volume by step."""
+        cur = self.get_music_volume()
+        self.set_music_volume(min(1.0, cur + step))
+
+    def volume_down(self, step: float = 0.05):
+        """Decrease DGX Music Player volume by step."""
+        cur = self.get_music_volume()
+        self.set_music_volume(max(0.0, cur - step))
+
 
 class ParticleEngine:
     """Particle effects emitter for editor overlays (confetti, snow, stars, bubbles, hearts)."""

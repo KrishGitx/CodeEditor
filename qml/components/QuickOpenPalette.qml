@@ -7,13 +7,108 @@ Item {
     id: root
 
     property bool isOpen: false
-    property string mode: "files" // "files" or "goto"
+    property string mode: "files" // "files", "goto", or "commands"
     property var filesList: []
     property int selectedIndex: 0
 
+    property var builtInCommands: [
+        {
+            id: "workbench.action.reloadWindow",
+            name: "Developer: Reload Window",
+            relPath: "Reload workspace, window, and active extensions",
+            icon: "refresh",
+            iconColor: "#38bdf8",
+            isCommand: true
+        },
+        {
+            id: "extensions.createCustomExtension",
+            name: "Extensions: Create Custom Extension",
+            relPath: "Scaffold a new custom extension with ExtensionSDK",
+            icon: "puzzle",
+            iconColor: "#a855f7",
+            isCommand: true
+        },
+        {
+            id: "workbench.action.terminal.toggleTerminal",
+            name: "View: Toggle Terminal",
+            relPath: "Toggle integrated terminal panel",
+            icon: "terminal",
+            iconColor: "#4ade80",
+            isCommand: true
+        },
+        {
+            id: "workbench.action.files.save",
+            name: "File: Save",
+            relPath: "Save current file to disk",
+            icon: "save",
+            iconColor: "#facc15",
+            isCommand: true
+        },
+        {
+            id: "workbench.action.files.openFolder",
+            name: "File: Open Folder...",
+            relPath: "Open folder in DGX Studio",
+            icon: "folder",
+            iconColor: "#ea580c",
+            isCommand: true
+        }
+    ]
+
     signal fileSelected(string filePath)
     signal lineSelected(int lineNumber)
+    signal previewRequested(string filePath, int lineNumber)
+    signal reloadWindowRequested()
+    signal createCustomExtensionRequested()
+    signal commandSelected(string commandId)
     signal closeRequested()
+
+    onSelectedIndexChanged: {
+        if (isOpen && mode === "files" && filesList && selectedIndex >= 0 && selectedIndex < filesList.length) {
+            var item = filesList[selectedIndex];
+            if (item && !item.isCommand && item.path) {
+                root.previewRequested(item.path, 1);
+            }
+        }
+    }
+
+    function getFileIconInfo(fileName) {
+        if (!fileName) return { icon: "file", color: (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#656565" };
+        var lower = fileName.toLowerCase();
+        var dotIdx = lower.lastIndexOf(".");
+        var ext = dotIdx !== -1 ? lower.substring(dotIdx + 1) : "";
+
+        if (lower === "package.json") return { icon: "file-code", color: "#22c55e" };
+        if (lower === "cargo.toml") return { icon: "file-code", color: "#ea580c" };
+        if (lower === "project.godot") return { icon: "sparkles", color: "#478cbf" };
+        if (lower === "extension.json") return { icon: "puzzle", color: "#a855f7" };
+        if (lower === ".gitignore" || lower === ".gitmodules") return { icon: "file-text", color: "#f97316" };
+        if (lower === "readme.md") return { icon: "file-text", color: "#38bdf8" };
+
+        if (ext === "py" || ext === "pyw") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") return { icon: "file-code", color: "#60a5fa" };
+        if (ext === "c") return { icon: "file-code", color: "#93c5fd" };
+        if (ext === "h" || ext === "hpp" || ext === "hxx") return { icon: "file-code", color: "#a78bfa" };
+        if (ext === "qml") return { icon: "file-code", color: "#4ade80" };
+        if (ext === "js" || ext === "mjs" || ext === "cjs") return { icon: "file-code", color: "#facc15" };
+        if (ext === "jsx") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "ts") return { icon: "file-code", color: "#3b82f6" };
+        if (ext === "tsx") return { icon: "file-code", color: "#60a5fa" };
+        if (ext === "html" || ext === "htm") return { icon: "file-code", color: "#f97316" };
+        if (ext === "css" || ext === "scss" || ext === "less") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "json") return { icon: "file-code", color: "#facc15" };
+        if (ext === "xml" || ext === "svg") return { icon: "file-code", color: "#fb923c" };
+        if (ext === "yaml" || ext === "yml") return { icon: "file-code", color: "#ef4444" };
+        if (ext === "rs") return { icon: "file-code", color: "#ea580c" };
+        if (ext === "go") return { icon: "file-code", color: "#06b6d4" };
+        if (ext === "java") return { icon: "file-code", color: "#f87171" };
+        if (ext === "cs") return { icon: "file-code", color: "#38bdf8" };
+        if (ext === "sln" || ext === "slnx" || ext === "csproj") return { icon: "file-code", color: "#a855f7" };
+        if (ext === "unity" || ext === "prefab" || ext === "asset" || ext === "mat" || ext === "shader") return { icon: "sparkles", color: "#e2e8f0" };
+        if (ext === "gd") return { icon: "file-code", color: "#478cbf" };
+        if (ext === "meta") return { icon: "file-text", color: "#64748b" };
+        if (ext === "md" || ext === "markdown" || ext === "txt") return { icon: "file-text", color: "#38bdf8" };
+        return { icon: "file", color: (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#656565" };
+    }
 
     anchors.fill: parent
     visible: isOpen
@@ -23,6 +118,22 @@ Item {
     MouseArea {
         anchors.fill: parent
         onClicked: root.close()
+        onWheel: function(wheel) {
+            // Forward mouse wheel scrolling to editor flickable behind the palette
+            if (typeof root.parent !== "undefined" && root.parent && root.parent.activeEditorPane && root.parent.activeEditorPane.editorFlickable) {
+                var f = root.parent.activeEditorPane.editorFlickable;
+                var delta = wheel.angleDelta.y;
+                if (delta !== 0) {
+                    var lineH = root.parent.activeEditorPane.paneLineHeight || 18.0;
+                    var step = (delta / 120.0) * lineH * 3.0;
+                    var maxY = Math.max(0, f.contentHeight - f.height);
+                    f.contentY = Math.max(0, Math.min(maxY, f.contentY - step));
+                    wheel.accepted = true;
+                }
+            } else {
+                wheel.accepted = false;
+            }
+        }
     }
 
     function openQuickOpen() {
@@ -30,6 +141,15 @@ Item {
         searchInput.text = "";
         selectedIndex = 0;
         updateFileList("");
+        isOpen = true;
+        searchInput.forceActiveFocus();
+    }
+
+    function openCommands() {
+        mode = "commands";
+        searchInput.text = ">";
+        selectedIndex = 0;
+        updateFileList(">");
         isOpen = true;
         searchInput.forceActiveFocus();
     }
@@ -49,10 +169,44 @@ Item {
     }
 
     function updateFileList(query) {
+        var trimmed = query ? query.trim() : "";
+        var results = [];
+
+        if (trimmed.startsWith(">")) {
+            mode = "commands";
+            var cmdQuery = trimmed.substring(1).trim().toLowerCase();
+            for (var i = 0; i < builtInCommands.length; i++) {
+                var cmd = builtInCommands[i];
+                if (!cmdQuery || cmd.name.toLowerCase().indexOf(cmdQuery) !== -1 || cmd.relPath.toLowerCase().indexOf(cmdQuery) !== -1) {
+                    results.push(cmd);
+                }
+            }
+            filesList = results;
+            selectedIndex = 0;
+            return;
+        }
+
+        // Match commands if query includes keywords like "reload", "extension", "custom", "terminal", "window", etc.
+        var lowerQuery = trimmed.toLowerCase();
+        var matchingCmds = [];
+        if (lowerQuery.length >= 2) {
+            for (var c = 0; c < builtInCommands.length; c++) {
+                var bCmd = builtInCommands[c];
+                if (bCmd.name.toLowerCase().indexOf(lowerQuery) !== -1 || bCmd.relPath.toLowerCase().indexOf(lowerQuery) !== -1) {
+                    matchingCmds.push(bCmd);
+                }
+            }
+        }
+
+        var workspaceFiles = [];
         if (typeof backend !== "undefined" && backend && backend.get_workspace_files) {
-            filesList = backend.get_workspace_files(query) || [];
+            workspaceFiles = backend.get_workspace_files(trimmed) || [];
+        }
+
+        if (matchingCmds.length > 0) {
+            filesList = matchingCmds.concat(workspaceFiles);
         } else {
-            filesList = [];
+            filesList = workspaceFiles;
         }
         selectedIndex = 0;
     }
@@ -70,8 +224,18 @@ Item {
         } else {
             if (filesList && filesList.length > 0 && selectedIndex >= 0 && selectedIndex < filesList.length) {
                 var selectedItem = filesList[selectedIndex];
-                root.fileSelected(selectedItem.path);
-                root.close();
+                if (selectedItem.isCommand) {
+                    root.commandSelected(selectedItem.id);
+                    if (selectedItem.id === "workbench.action.reloadWindow") {
+                        root.reloadWindowRequested();
+                    } else if (selectedItem.id === "extensions.createCustomExtension") {
+                        root.createCustomExtensionRequested();
+                    }
+                    root.close();
+                } else if (selectedItem.path) {
+                    root.fileSelected(selectedItem.path);
+                    root.close();
+                }
             }
         }
     }
@@ -121,7 +285,7 @@ Item {
                     spacing: 6
 
                     VectorIcon {
-                        name: root.mode === "goto" ? "zen" : "search"
+                        name: root.mode === "goto" ? "zen" : (root.mode === "commands" ? "terminal" : "search")
                         size: 13
                         color: (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#71717a"
                     }
@@ -137,7 +301,7 @@ Item {
                         clip: true
 
                         Text {
-                            text: root.mode === "goto" ? "Type line number to navigate..." : "Search files by name (type : to go to line)..."
+                            text: root.mode === "goto" ? "Type line number to navigate..." : (root.mode === "commands" ? "Type command name to execute..." : "Search files by name (type > for commands, : for line)...")
                             color: (typeof theme !== "undefined" && theme && theme.textMuted) ? theme.textMuted : "#52525b"
                             font.pixelSize: 11
                             font.family: (typeof theme !== "undefined" && theme && theme.fontFamilyUi) ? theme.fontFamilyUi : "sans-serif"
@@ -148,6 +312,15 @@ Item {
                         onTextChanged: {
                             if (text.startsWith(":")) {
                                 root.mode = "goto";
+                                var rawNum = text.substring(1).trim();
+                                var parts = rawNum.split(":");
+                                var lNum = parseInt(parts[0], 10);
+                                if (!isNaN(lNum) && lNum > 0) {
+                                    root.previewRequested("", lNum);
+                                }
+                            } else if (text.startsWith(">")) {
+                                root.mode = "commands";
+                                root.updateFileList(text);
                             } else {
                                 root.mode = "files";
                                 root.updateFileList(text);
@@ -184,7 +357,7 @@ Item {
                 id: fileListView
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: root.mode === "files" && root.filesList.length > 0
+                visible: (root.mode === "files" || root.mode === "commands") && root.filesList.length > 0
                 clip: true
                 model: root.filesList
                 spacing: 1
@@ -195,6 +368,8 @@ Item {
                     radius: 3
                     color: index === root.selectedIndex ? ((typeof theme !== "undefined" && theme && theme.selectionBackground) ? theme.selectionBackground : "#094771") : (itemMouseArea.containsMouse ? ((typeof theme !== "undefined" && theme && theme.bgSurfaceHover) ? theme.bgSurfaceHover : "#24242a") : "transparent")
 
+                    readonly property var iconInfo: root.getFileIconInfo(modelData.name)
+
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 8
@@ -202,19 +377,9 @@ Item {
                         spacing: 8
 
                         VectorIcon {
-                            name: {
-                                var n = modelData.name.toLowerCase();
-                                if (n.endsWith(".py")) return "code";
-                                if (n.endsWith(".js") || n.endsWith(".ts")) return "code";
-                                if (n.endsWith(".html")) return "file";
-                                if (n.endsWith(".css")) return "sparkles";
-                                if (n.endsWith(".cpp") || n.endsWith(".h")) return "code";
-                                if (n.endsWith(".qml")) return "sparkles";
-                                if (n.endsWith(".json")) return "settings";
-                                return "file";
-                            }
-                            size: 13
-                            color: index === root.selectedIndex ? "#ffffff" : ((typeof theme !== "undefined" && theme && theme.textSecondary) ? theme.textSecondary : "#a1a1aa")
+                            name: (modelData && modelData.isCommand) ? modelData.icon : iconInfo.icon
+                            size: 14
+                            color: (modelData && modelData.isCommand) ? modelData.iconColor : iconInfo.color
                         }
 
                         Text {

@@ -49,7 +49,7 @@ Rectangle {
 
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "DGX Studio"
+                    text: "Pod Studio"
                     color: theme ? theme.textBright : "#ffffff"
                     font.pixelSize: 24
                     font.bold: true

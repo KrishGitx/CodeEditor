@@ -22,7 +22,7 @@ Rectangle {
     property int totalDurationSec: 225 // 3m 45s default
 
     // Responsive layout check
-    readonly property bool isTallLayout: root.height >= 460
+    // readonly property bool isTallLayout (disabled to prevent stacking)
 
     signal closeRequested()
 
@@ -59,7 +59,7 @@ Rectangle {
         }
     }
 
-    // Dreamy, Gloomy Animated Ambient Floating Gradient Background
+    // Dreamy, Gloomy Animated Ambient Floating Green Aura Background
     Item {
         anchors.fill: parent
         z: 0
@@ -72,11 +72,11 @@ Rectangle {
             property real timePhase: 0.0
 
             Timer {
-                interval: 40
+                interval: 35
                 running: true
                 repeat: true
                 onTriggered: {
-                    dreamyBgCanvas.timePhase += 0.007; // ultra-smooth, slow dreamy breathing speed
+                    dreamyBgCanvas.timePhase += 0.008; // slow organic dreamy float
                     dreamyBgCanvas.requestPaint();
                 }
             }
@@ -86,52 +86,85 @@ Rectangle {
                 ctx.reset();
                 ctx.clearRect(0, 0, width, height);
 
-                // Base vertical gloomy gradient: transparent at top -> moody deep dusk at bottom
+                // Base background color
+                var baseColor = (typeof theme !== "undefined" && theme && theme.bgSidebar) ? theme.bgSidebar : "#181818";
+                ctx.fillStyle = baseColor;
+                ctx.fillRect(0, 0, width, height);
+
+                // Determine CD vinyl center if available
+                var vinylCx = width * 0.5;
+                var vinylCy = height * 0.62;
+                if (root.viewMode === "player" && heroVinyl && heroVinyl.visible) {
+                    try {
+                        var pt = heroVinyl.mapToItem(dreamyBgCanvas, heroVinyl.width * 0.5, heroVinyl.height * 0.5);
+                        if (pt && pt.y > 0 && pt.y < height) {
+                            vinylCx = pt.x;
+                            vinylCy = pt.y;
+                        }
+                    } catch (e) {}
+                }
+
+                var p = dreamyBgCanvas.timePhase;
+                var extraHeight = Math.max(0, height - 380);
+
+                // Subtle deep moody gradient: dark at top, richer dusky tint toward bottom
                 var baseGrad = ctx.createLinearGradient(0, 0, 0, height);
                 baseGrad.addColorStop(0.0, "transparent");
-                baseGrad.addColorStop(0.25, "transparent");
-                baseGrad.addColorStop(0.6, "#150d2460");
-                baseGrad.addColorStop(1.0, "#0c0817b0");
+                baseGrad.addColorStop(0.4, "#06130e40");
+                baseGrad.addColorStop(0.8, "#091e1630");
+                baseGrad.addColorStop(1.0, "#050b0850");
                 ctx.fillStyle = baseGrad;
                 ctx.fillRect(0, 0, width, height);
 
-                // Floating Glowing Ambient Aurora Orbs (slow organic floating motion)
-                var p = dreamyBgCanvas.timePhase;
+                // =================================================================
+                // 1. Core Floaty Green Aura directly behind the CD Vinyl
+                // =================================================================
+                var drift1X = vinylCx + (14 * Math.sin(p * 0.8));
+                var drift1Y = vinylCy + (10 * Math.cos(p * 0.6));
+                // Green aura radius increases with height!
+                var orb1R = Math.max(130, Math.min(width * 1.05, 135 + extraHeight * 0.38));
 
-                // Orb 1: Moody Deep Amethyst / Magenta Glowing Aura behind vinyl & controls
-                var orb1X = width * (0.4 + 0.3 * Math.sin(p * 0.8));
-                var orb1Y = height * (0.65 + 0.18 * Math.cos(p * 0.6));
-                var orb1R = Math.max(140, width * 0.85);
-
-                var grad1 = ctx.createRadialGradient(orb1X, orb1Y, 15, orb1X, orb1Y, orb1R);
-                grad1.addColorStop(0.0, "#701a7575"); // Rich moody Magenta
-                grad1.addColorStop(0.45, "#3b076445"); // Deep purple aura
+                var grad1 = ctx.createRadialGradient(drift1X, drift1Y, 15, drift1X, drift1Y, orb1R);
+                grad1.addColorStop(0.0, "#1e523e38");  // Soft, muted moss / sage glow
+                grad1.addColorStop(0.40, "#143d2e25"); // Deep gloomy forest tone
+                grad1.addColorStop(0.75, "#0b261d12"); // Subtle ambient fade
                 grad1.addColorStop(1.0, "transparent");
                 ctx.fillStyle = grad1;
                 ctx.beginPath();
-                ctx.arc(orb1X, orb1Y, orb1R, 0, Math.PI * 2);
+                ctx.arc(drift1X, drift1Y, orb1R, 0, Math.PI * 2);
                 ctx.fill();
 
-                // Orb 2: Dreamy Twilight Teal / Ocean Glow
-                var orb2X = width * (0.6 - 0.28 * Math.cos(p * 0.7));
-                var orb2Y = height * (0.78 + 0.14 * Math.sin(p * 0.9));
-                var orb2R = Math.max(150, width * 0.9);
+                // =================================================================
+                // 2. Rising / Increasing Floaty Green Aura into the spacious upper zone
+                //    (Expands and increases when panel is tall without AI panel)
+                // =================================================================
+                if (extraHeight > 15) {
+                    var riseY = Math.max(height * 0.18, vinylCy - (90 + extraHeight * 0.42));
+                    var drift2X = width * (0.5 + 0.16 * Math.cos(p * 0.7));
+                    var drift2Y = riseY + (16 * Math.sin(p * 0.5));
+                    var orb2R = Math.max(140, width * 0.9 + extraHeight * 0.40);
 
-                var grad2 = ctx.createRadialGradient(orb2X, orb2Y, 15, orb2X, orb2Y, orb2R);
-                grad2.addColorStop(0.0, "#0891b265"); // Dreamy Deep Teal
-                grad2.addColorStop(0.5, "#155e7535");
-                grad2.addColorStop(1.0, "transparent");
-                ctx.fillStyle = grad2;
-                ctx.beginPath();
-                ctx.arc(orb2X, orb2Y, orb2R, 0, Math.PI * 2);
-                ctx.fill();
+                    var grad2 = ctx.createRadialGradient(drift2X, drift2Y, 20, drift2X, drift2Y, orb2R);
+                    grad2.addColorStop(0.0, "#285e4828");  // Soft atmospheric ambient mist
+                    grad2.addColorStop(0.45, "#1640301a"); // Deep muted sage
+                    grad2.addColorStop(0.80, "#0d261c10"); // Ethereal twilight fade
+                    grad2.addColorStop(1.0, "transparent");
+                    ctx.fillStyle = grad2;
+                    ctx.beginPath();
+                    ctx.arc(drift2X, drift2Y, orb2R, 0, Math.PI * 2);
+                    ctx.fill();
+                }
 
-                // Orb 3: Soft subtle bottom indigo glow
-                var orb3X = width * 0.5;
-                var orb3Y = height * 0.92;
-                var orb3R = width * 0.8;
-                var grad3 = ctx.createRadialGradient(orb3X, orb3Y, 10, orb3X, orb3Y, orb3R);
-                grad3.addColorStop(0.0, "#4338ca40");
+                // =================================================================
+                // 3. Ethereal Cyan-Teal / Green Drift Pulse on the perimeter
+                // =================================================================
+                var orb3X = width * (0.55 - 0.22 * Math.sin(p * 0.65));
+                var orb3Y = vinylCy - 20 + (12 * Math.sin(p * 0.9));
+                var orb3R = Math.max(110, width * 0.75 + extraHeight * 0.18);
+
+                var grad3 = ctx.createRadialGradient(orb3X, orb3Y, 15, orb3X, orb3Y, orb3R);
+                grad3.addColorStop(0.0, "#16473d22");  // Subtle teal-forest tint
+                grad3.addColorStop(0.60, "#0c2b2410");
                 grad3.addColorStop(1.0, "transparent");
                 ctx.fillStyle = grad3;
                 ctx.beginPath();
@@ -263,33 +296,7 @@ Rectangle {
                 anchors.rightMargin: 8
                 spacing: 6
 
-                // Back Button (<) - Switch view mode in compact view
-                Rectangle {
-                    width: 22
-                    height: 22
-                    radius: 3
-                    color: backMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-                    visible: !root.isTallLayout
-
-                    VectorIcon {
-                        anchors.centerIn: parent
-                        name: root.viewMode === "player" ? "back" : "disc"
-                        size: 11
-                        color: theme ? theme.textBright : "#ffffff"
-                    }
-
-                    MouseArea {
-                        id: backMa
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.viewMode = (root.viewMode === "player") ? "search" : "player";
-                        }
-                    }
-                }
-
-                // Header Title or Search Toggle
+                // Header Title
                 Text {
                     text: root.viewMode === "player" ? (root.currentTitle ? root.currentTitle : "Now Playing") : "Search Songs"
                     color: theme ? theme.textBright : "#ffffff"
@@ -299,13 +306,13 @@ Rectangle {
                     Layout.fillWidth: true
                 }
 
-                // Switch to Search/List Button (when in Player mode)
+                // View Mode Toggle (Disc for player, Search for song search)
                 Rectangle {
                     width: 22
                     height: 22
                     radius: 3
                     color: modeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-                    visible: !root.isTallLayout
+                    visible: true
 
                     VectorIcon {
                         anchors.centerIn: parent
@@ -313,6 +320,9 @@ Rectangle {
                         size: 11
                         color: theme ? theme.textSecondary : "#858585"
                     }
+
+                    ToolTip.visible: modeMa.containsMouse
+                    ToolTip.text: root.viewMode === "player" ? "Search Songs" : "Now Playing"
 
                     MouseArea {
                         id: modeMa
@@ -363,27 +373,38 @@ Rectangle {
         Rectangle {
             id: playerHeroSection
             Layout.fillWidth: true
-            Layout.preferredHeight: (root.isTallLayout || root.viewMode === "player") ? (root.isTallLayout ? 260 : -1) : 0
-            Layout.fillHeight: (!root.isTallLayout && root.viewMode === "player")
-            visible: root.isTallLayout || root.viewMode === "player"
+            Layout.preferredHeight: (root.viewMode === "player") ? -1 : 0
+            Layout.fillHeight: (root.viewMode === "player")
+            visible: (root.viewMode === "player")
             color: "transparent"
             clip: true
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 12
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 8
+                anchors.bottomMargin: 12
                 spacing: 8
 
-                // Center Spinning Vinyl Record (Large & Prominent)
+                // Top Atmosphere Spacer: absorbs tall panel height without AI panel and keeps CD down
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(130, Math.max(90, playerHeroSection.height - 140))
-                    Layout.fillHeight: !root.isTallLayout
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: 8
+                }
+
+                // Center Spinning Vinyl Record (Kept down near track title and controls)
+                Item {
+                    id: vinylContainer
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: heroVinyl.size + 14
+                    Layout.alignment: Qt.AlignHCenter
 
                     VinylRecord {
                         id: heroVinyl
                         anchors.centerIn: parent
-                        size: Math.min(parent.height, 130)
+                        size: Math.min(156, Math.max(96, playerHeroSection.height > 520 ? 148 : (playerHeroSection.height > 380 ? 128 : 100)))
                         isPlaying: root.playbackState === "playing"
                         trackTitle: root.currentTitle
                         trackArtist: root.currentArtist
@@ -462,9 +483,9 @@ Rectangle {
                                 var barWidth = Math.max(2, (width - totalSpacing) / barCount);
 
                                 var grad = ctx.createLinearGradient(0, 0, 0, height);
-                                grad.addColorStop(0.0, "#4ec9b0"); // Teal/Cyan
-                                grad.addColorStop(0.5, "#0078d4"); // Electric Blue
-                                grad.addColorStop(1.0, "#a855f7"); // Vibrant Purple
+                                grad.addColorStop(0.0, "#38bdf880"); // Soft muted sky blue
+                                grad.addColorStop(0.5, "#4338ca65"); // Deep indigo
+                                grad.addColorStop(1.0, "#6366f150"); // Muted dusk violet
 
                                 ctx.fillStyle = grad;
 
@@ -493,7 +514,7 @@ Rectangle {
                                 // Subtle Progress Line at bottom
                                 ctx.fillStyle = "#ffffff30";
                                 ctx.fillRect(0, height - 1.5, width, 1.5);
-                                ctx.fillStyle = "#0078d4";
+                                ctx.fillStyle = theme ? (theme.accentMuted || "#3b5e82") : "#3b5e82";
                                 ctx.fillRect(0, height - 1.5, width * progressRatio, 1.5);
                             }
                         }
@@ -505,7 +526,7 @@ Rectangle {
 
                         Text {
                             text: root.formatTime(root.currentPositionSec)
-                            color: theme ? theme.accent : "#0078d4"
+                            color: theme ? theme.textSecondary : "#94a3b8"
                             font.pixelSize: 9
                             font.bold: true
                             font.family: theme ? theme.fontFamilyMono : "monospace"
@@ -515,7 +536,7 @@ Rectangle {
 
                         Text {
                             text: root.playbackState === "playing" ? "FREQUENCY EQ ON" : "STUDIO OFF"
-                            color: root.playbackState === "playing" ? (theme ? theme.success : "#4ec9b0") : (theme ? theme.textMuted : "#656565")
+                            color: root.playbackState === "playing" ? (theme ? (theme.successMuted || "#5e817a") : "#5e817a") : (theme ? theme.textMuted : "#656565")
                             font.pixelSize: 8
                             font.bold: true
                             font.letterSpacing: 0.5
@@ -570,7 +591,7 @@ Rectangle {
                         width: 32
                         height: 32
                         radius: 16
-                        color: theme ? theme.accent : "#0078d4"
+                        color: playMa.containsMouse ? (theme ? (theme.accentHover || "#3d5e7d") : "#3d5e7d") : (theme ? (theme.accentMuted || "#2e4a62") : "#2e4a62")
 
                         VectorIcon {
                             anchors.centerIn: parent
@@ -580,6 +601,7 @@ Rectangle {
                         }
 
                         MouseArea {
+                            id: playMa
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
@@ -646,14 +668,14 @@ Rectangle {
                         height: 26
                         radius: 13
                         color: likeMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
-                        border.color: root.isCurrentLiked ? "#f43f5e" : (theme ? theme.borderNormal : "#333333")
+                        border.color: root.isCurrentLiked ? "#9e4a57" : (theme ? theme.borderNormal : "#333333")
                         border.width: 1
 
                         VectorIcon {
                             anchors.centerIn: parent
                             name: root.isCurrentLiked ? "heart-filled" : "heart"
                             size: 11
-                            color: root.isCurrentLiked ? "#f43f5e" : (theme ? theme.textSecondary : "#858585")
+                            color: root.isCurrentLiked ? "#b85d6e" : (theme ? theme.textSecondary : "#858585")
                         }
 
                         ToolTip.visible: likeMa.containsMouse
@@ -686,14 +708,14 @@ Rectangle {
                         height: 26
                         radius: 13
                         color: (infoMa.containsMouse || root.showInfoCard) ? (theme ? theme.bgSurfaceActive : "#37373d") : "transparent"
-                        border.color: root.showInfoCard ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+                        border.color: root.showInfoCard ? (theme ? (theme.accentMuted || "#4b6a8a") : "#4b6a8a") : (theme ? theme.borderNormal : "#333333")
                         border.width: 1
 
                         VectorIcon {
                             anchors.centerIn: parent
                             name: "info"
                             size: 12
-                            color: root.showInfoCard ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textSecondary : "#858585")
+                            color: root.showInfoCard ? (theme ? (theme.accentMuted || "#4b6a8a") : "#4b6a8a") : (theme ? theme.textSecondary : "#858585")
                         }
 
                         MouseArea {
@@ -760,7 +782,7 @@ Rectangle {
             Layout.fillWidth: true
             height: 1
             color: theme ? theme.borderSubtle : "#282828"
-            visible: root.isTallLayout
+            visible: false
         }
 
         // =====================================================================
@@ -769,8 +791,8 @@ Rectangle {
         Rectangle {
             id: searchListSection
             Layout.fillWidth: true
-            Layout.fillHeight: (root.isTallLayout || root.viewMode === "search")
-            visible: root.isTallLayout || root.viewMode === "search"
+            Layout.fillHeight: (root.viewMode === "search")
+            visible: (root.viewMode === "search")
             color: "transparent"
 
             ColumnLayout {
@@ -822,7 +844,7 @@ Rectangle {
                                 VectorIcon {
                                     name: "heart-filled"
                                     size: 8
-                                    color: root.activeCategory === "liked" ? "#f43f5e" : (theme ? theme.textMuted : "#888888")
+                                    color: root.activeCategory === "liked" ? "#b85d6e" : (theme ? theme.textMuted : "#888888")
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
@@ -853,7 +875,7 @@ Rectangle {
 
                             Text {
                                 anchors.centerIn: parent
-                                text: "✦ Recommended"
+                                text: "Recommended"
                                 color: root.activeCategory === "recommended" ? (theme ? theme.accent : "#38bdf8") : (theme ? theme.textMuted : "#888888")
                                 font.pixelSize: 10
                                 font.bold: root.activeCategory === "recommended"
@@ -874,27 +896,32 @@ Rectangle {
                 // Search Input Field (Visible in search category)
                 Rectangle {
                     Layout.fillWidth: true
-                    height: 30
-                    color: theme ? theme.bgPanel : "#181818"
+                    height: 28
+                    radius: theme ? theme.radiusSm : 3
+                    color: theme ? theme.bgInput : "#1e1e1e"
+                    border.color: musicSearchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderSubtle : "#282828")
+                    border.width: 1
                     visible: root.activeCategory === "search"
 
                     RowLayout {
                         anchors.fill: parent
-                        anchors.margins: 4
-                        spacing: 4
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 6
 
                         VectorIcon {
                             name: "search"
                             size: 11
-                            color: theme ? theme.textMuted : "#656565"
+                            color: musicSearchInput.activeFocus ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textMuted : "#656565")
                         }
 
                         TextInput {
                             id: musicSearchInput
                             Layout.fillWidth: true
                             verticalAlignment: TextInput.AlignVCenter
-                            color: theme ? theme.textPrimary : "#cccccc"
+                            color: theme ? theme.textBright : "#ffffff"
                             font.pixelSize: 11
+                            font.family: theme ? theme.fontFamilyUi : "sans-serif"
                             selectByMouse: true
 
                             Text {
@@ -903,6 +930,7 @@ Rectangle {
                                 text: "Search songs / artists..."
                                 color: theme ? theme.textMuted : "#656565"
                                 font.pixelSize: 11
+                                font.family: theme ? theme.fontFamilyUi : "sans-serif"
                                 visible: !musicSearchInput.text && !musicSearchInput.activeFocus
                             }
 
@@ -1026,7 +1054,7 @@ Rectangle {
                                     VectorIcon {
                                         name: "heart-filled"
                                         size: 9
-                                        color: "#f43f5e"
+                                        color: "#b85d6e"
                                         visible: (typeof musicPlayer !== "undefined" && musicPlayer && musicPlayer.is_liked) ? musicPlayer.is_liked(model.videoId) : false
                                     }
                                 }
@@ -1042,6 +1070,120 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+                }
+
+                // Compact Now-Playing Bar at bottom of search view
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: (root.currentVideoId !== "") ? 42 : 0
+                    visible: height > 0
+                    color: theme ? theme.bgSurface : "#202022"
+                    border.color: theme ? theme.borderSubtle : "#282828"
+                    border.width: 1
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 8
+
+                        // Mini Cover or Disc Icon
+                        Rectangle {
+                            width: 26
+                            height: 26
+                            radius: 13
+                            color: theme ? theme.bgHeader : "#181818"
+                            border.color: theme ? theme.borderNormal : "#333333"
+                            border.width: 1
+
+                            VectorIcon {
+                                anchors.centerIn: parent
+                                name: root.playbackState === "playing" ? "disc" : "music"
+                                size: 12
+                                color: theme ? (theme.accentMuted || "#4b6a8a") : "#4b6a8a"
+                            }
+                        }
+
+                        // Track title & artist
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            Text {
+                                text: root.currentTitle
+                                color: theme ? theme.textBright : "#ffffff"
+                                font.pixelSize: 10
+                                font.bold: true
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+
+                            Text {
+                                text: root.currentArtist
+                                color: theme ? theme.textMuted : "#858585"
+                                font.pixelSize: 9
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        // Mini Play / Pause
+                        Rectangle {
+                            width: 24
+                            height: 24
+                            radius: 12
+                            color: miniPlayMa.containsMouse ? (theme ? (theme.accentHover || "#3d5e7d") : "#3d5e7d") : (theme ? (theme.accentMuted || "#2e4a62") : "#2e4a62")
+
+                            VectorIcon {
+                                anchors.centerIn: parent
+                                name: root.playbackState === "playing" ? "pause" : "play"
+                                size: 10
+                                color: "#ffffff"
+                            }
+
+                            MouseArea {
+                                id: miniPlayMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.togglePlayPause()
+                            }
+                        }
+
+                        // Open Player View Button
+                        Rectangle {
+                            width: 24
+                            height: 24
+                            radius: 4
+                            color: expandMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : "transparent"
+
+                            VectorIcon {
+                                anchors.centerIn: parent
+                                name: "disc"
+                                size: 11
+                                color: theme ? theme.textSecondary : "#858585"
+                            }
+
+                            ToolTip.visible: expandMa.containsMouse
+                            ToolTip.text: "Open Vinyl Player"
+
+                            MouseArea {
+                                id: expandMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.viewMode = "player"
+                            }
+                        }
+                    }
+
+                    // Click area on bar to open full player
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.rightMargin: 60
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.viewMode = "player"
                     }
                 }
             }

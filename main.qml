@@ -6,10 +6,10 @@ import QtQuick.Controls 2.15
 import QtQuick.Dialogs
 import QtCore
 
-import "qml"
-import "qml/components"
-import "qml/ai"
-import "qml/music"
+import "."
+import "components"
+import "ai"
+import "music"
 
 Window {
     id: mainWindow
@@ -19,21 +19,30 @@ Window {
     minimumWidth: 800
     minimumHeight: 600
     visible: true
-    title: qsTr("DGX Studio")
+    title: qsTr("Pod Studio")
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
     color: theme.bgRoot
 
     Theme {
         id: theme
+        objectName: "appTheme"
     }
+    property alias appTheme: theme
 
-    onVisibilityChanged: {
-        if (visibility === Window.Maximized) {
-            appHeader.isMaximized = true;
-        } else if (visibility === Window.Windowed) {
-            appHeader.isMaximized = false;
+    function syncMaximizeState() {
+        var isMax = (mainWindow.visibility === Window.Maximized || mainWindow.visibility === Window.FullScreen || mainWindow.windowState === Qt.WindowMaximized);
+        if (typeof Screen !== "undefined" && Screen.desktopAvailableWidth && mainWindow.width < Screen.desktopAvailableWidth - 30) {
+            isMax = false;
+        }
+        if (appHeader) {
+            appHeader.isMaximized = isMax;
         }
     }
+
+    onVisibilityChanged: syncMaximizeState()
+    onWindowStateChanged: syncMaximizeState()
+    onWidthChanged: syncMaximizeState()
+    onHeightChanged: syncMaximizeState()
 
     // Panel Resizing & Layout Properties
     property real explorerWidth: 220
@@ -48,10 +57,53 @@ Window {
     property bool aiVisible: false
     property bool musicVisible: true
     property bool zenMode: false
+    property bool editorMaximized: false
     property bool whiteboardVisible: false
+    property string currentSidebarView: "explorer" // "explorer" or "extensions"
 
     // Presets
     property string currentPreset: "Full"
+
+    // Layout memory for un-maximizing
+    property bool preMaxExplorerVisible: true
+    property bool preMaxRightPanelVisible: false
+    property bool preMaxAiVisible: false
+    property bool preMaxMusicVisible: false
+    property bool preMaxTerminalVisible: false
+    property bool preMaxWindowMaximized: false
+
+    function toggleMaximizeEditor() {
+        if (!editorMaximized) {
+            preMaxExplorerVisible = mainWindow.explorerVisible;
+            preMaxRightPanelVisible = mainWindow.rightPanelVisible;
+            preMaxAiVisible = mainWindow.aiVisible;
+            preMaxMusicVisible = mainWindow.musicVisible;
+            preMaxTerminalVisible = mainWindow.terminalVisible;
+            preMaxWindowMaximized = (mainWindow.visibility === Window.Maximized);
+
+            editorMaximized = true;
+            zenMode = true;
+            mainWindow.explorerVisible = false;
+            mainWindow.rightPanelVisible = false;
+            mainWindow.aiVisible = false;
+            mainWindow.musicVisible = false;
+            mainWindow.terminalVisible = false;
+            if (mainWindow.visibility !== Window.Maximized) {
+                mainWindow.showMaximized();
+            }
+        } else {
+            editorMaximized = false;
+            zenMode = false;
+            mainWindow.explorerVisible = preMaxExplorerVisible;
+            mainWindow.rightPanelVisible = preMaxRightPanelVisible;
+            mainWindow.aiVisible = preMaxAiVisible;
+            mainWindow.musicVisible = preMaxMusicVisible;
+            mainWindow.terminalVisible = preMaxTerminalVisible;
+            if (!preMaxWindowMaximized && mainWindow.visibility === Window.Maximized) {
+                mainWindow.showNormal();
+            }
+        }
+    }
 
     // Clamping Limits
     readonly property real explorerMinWidth: 160
@@ -62,9 +114,9 @@ Window {
     readonly property real terminalMaxHeight: 440
 
     // Dynamic Layout Dimensions
-    readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode) ? explorerWidth : 0
-    readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && (aiVisible || musicVisible)) ? rightPanelWidth : 0
-    readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode) ? terminalHeight : 0
+    readonly property real effectiveExplorerWidth: (explorerVisible && !zenMode && !editorMaximized) ? explorerWidth : 0
+    readonly property real effectiveRightWidth: (rightPanelVisible && !zenMode && !editorMaximized && (aiVisible || musicVisible)) ? rightPanelWidth : 0
+    readonly property real effectiveTerminalHeight: (terminalVisible && !zenMode && !editorMaximized) ? terminalHeight : 0
 
     // Connect to Python Backend Services
     Connections {
@@ -78,6 +130,9 @@ Window {
         function onFileOpened(path, content) {
             editorArea.loadFile(path, content);
             appHeader.activeFilePath = path;
+            if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectAndRevealFile && path) {
+                explorerPanel.selectAndRevealFile(path);
+            }
         }
 
         function onFileSaved(path, success) {
@@ -92,13 +147,31 @@ Window {
         function onCurrentLanguageChanged(lang) {
             statusBar.currentLanguage = lang;
         }
+
+        function onNotificationRequested(msg, type, title) {
+            mainWindow.showNotification(msg, type, title);
+        }
+
+        function onWindowMaximizedChanged(isMax) {
+            if (appHeader) {
+                appHeader.isMaximized = isMax;
+            }
+        }
     }
 
+    Connections {
+        target: typeof aiBackend !== "undefined" ? aiBackend : null
+        ignoreUnknownSignals: true
+
+        function onErrorOccurred(err) {
+            mainWindow.showNotification(err, "error", "AI Assistant");
+        }
+    }
 
     // Native File Dialogs
     FileDialog {
         id: openFileDialog
-        title: "Open File in DGX Studio"
+        title: "Open File in Pod Studio"
         currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
         onAccepted: {
             if (typeof backend !== "undefined" && backend && backend.open_file) {
@@ -132,6 +205,10 @@ Window {
     // SINGLE OWNER KEYBOARD SHORTCUTS (DYNAMICALLY CUSTOMIZABLE)
     // =========================================================================
     Shortcut {
+        sequence: "F2"
+        onActivated: mainWindow.renameActiveOrSelectedFile()
+    }
+    Shortcut {
         sequence: (theme && theme.shortcutNewFile) ? theme.shortcutNewFile : "Ctrl+N"
         onActivated: editorArea.createNewFile()
     }
@@ -158,7 +235,7 @@ Window {
     }
     Shortcut {
         sequence: (theme && theme.shortcutCloseTab) ? theme.shortcutCloseTab : "Ctrl+W"
-        onActivated: editorArea.closeTab(editorArea.activeTabIndex)
+        onActivated: editorArea.closeActiveTab()
     }
     Shortcut {
         sequence: (theme && theme.shortcutFind) ? theme.shortcutFind : "Ctrl+F"
@@ -198,11 +275,57 @@ Window {
     }
     Shortcut {
         sequence: (theme && theme.shortcutZenMode) ? theme.shortcutZenMode : "Ctrl+K Z"
-        onActivated: mainWindow.zenMode = !mainWindow.zenMode
+        onActivated: mainWindow.toggleMaximizeEditor()
+    }
+    Shortcut {
+        sequences: ["Ctrl+=", "Ctrl++", StandardKey.ZoomIn]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            var th = (typeof theme !== "undefined" && theme) ? theme : null;
+            var sz = th ? th.editorFontSize : 14;
+            editorArea.setEditorZoom(sz + 1);
+        }
+    }
+    Shortcut {
+        sequences: ["Ctrl+-", StandardKey.ZoomOut]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            var th = (typeof theme !== "undefined" && theme) ? theme : null;
+            var sz = th ? th.editorFontSize : 14;
+            editorArea.setEditorZoom(sz - 1);
+        }
+    }
+    Shortcut {
+        sequences: ["Ctrl+0"]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            editorArea.setEditorZoom(14);
+        }
+    }
+    Shortcut {
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            if (mainWindow.visibility === Window.FullScreen || mainWindow.visibility === Window.Maximized) {
+                mainWindow.showNormal();
+            } else {
+                mainWindow.showFullScreen();
+            }
+        }
     }
     Shortcut {
         sequence: (theme && theme.shortcutSettings) ? theme.shortcutSettings : "Ctrl+,"
         onActivated: settingsOverlay.visible = true
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+X"
+        onActivated: {
+            if (extensionsOverlay.visible) {
+                extensionsOverlay.visible = false;
+            } else {
+                mainWindow.showExtensions();
+            }
+        }
     }
     Shortcut {
         sequence: (theme && theme.shortcutToggleAI) ? theme.shortcutToggleAI : "Ctrl+Shift+A"
@@ -239,6 +362,15 @@ Window {
         onActivated: editorArea.toggleSplitEditor()
     }
     Shortcut {
+        sequence: "Alt+Z"
+        onActivated: {
+            if (theme) {
+                theme.enableWordWrap = !theme.enableWordWrap;
+                theme.saveSettings();
+            }
+        }
+    }
+    Shortcut {
         sequence: "Escape"
         onActivated: {
             if (settingsOverlay.visible) {
@@ -258,10 +390,14 @@ Window {
         AppHeader {
             id: appHeader
             Layout.fillWidth: true
+            isMaximized: (mainWindow.visibility === Window.Maximized || mainWindow.visibility === Window.FullScreen || mainWindow.windowState === Qt.WindowMaximized) && (typeof Screen !== "undefined" && Screen.desktopAvailableWidth ? mainWindow.width >= Screen.desktopAvailableWidth - 30 : true)
             activeProjectName: explorerPanel.workspaceName
             activeFileName: editorArea.activeFileName
             activeFilePath: editorArea.activeFilePath
             isDirty: editorArea.isCurrentFileDirty
+            explorerVisible: mainWindow.explorerVisible
+            terminalVisible: mainWindow.terminalVisible
+            aiVisible: mainWindow.aiVisible
 
             onNewFileRequested: editorArea.createNewFile()
             onOpenFileRequested: openFileDialog.open()
@@ -271,12 +407,12 @@ Window {
                 if (!s) saveAsDialog.open();
             }
             onSaveAsRequested: saveAsDialog.open()
-            onCloseTabRequested: editorArea.closeTab(editorArea.activeTabIndex)
+            onCloseTabRequested: editorArea.closeActiveTab()
             onToggleExplorerRequested: mainWindow.explorerVisible = !mainWindow.explorerVisible
             onToggleTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
             onToggleAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
             onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
-            onToggleZenRequested: mainWindow.zenMode = !mainWindow.zenMode
+            onToggleZenRequested: mainWindow.toggleMaximizeEditor()
             onToggleSplitEditorRequested: editorArea.toggleSplitEditor()
             onToggleWhiteboardRequested: editorArea.openWhiteboardTab()
             onOpenWebPreviewRequested: editorArea.openWebPreviewTab()
@@ -287,6 +423,7 @@ Window {
             onUndoRequested: editorArea.undo()
             onRedoRequested: editorArea.redo()
             onSettingsRequested: settingsOverlay.visible = true
+            onExtensionsRequested: mainWindow.showExtensions()
             onRunFileRequested: mainWindow.runActiveFile()
             onPresetSelected: function(preset) { mainWindow.applyPreset(preset); }
             onThemeSelected: function(tName) { theme.setTheme(tName); }
@@ -303,24 +440,79 @@ Window {
                 anchors.fill: parent
                 spacing: 0
 
-                // Left: Explorer Panel
-                ExplorerPanel {
-                    id: explorerPanel
-                    objectName: "explorerPanel"
+                // Far Left: Activity Bar (VS Code style navigation)
+                ActivityBar {
+                    id: activityBar
+                    Layout.fillHeight: true
+                    visible: !mainWindow.zenMode && !mainWindow.editorMaximized
+                    explorerActive: mainWindow.explorerVisible && mainWindow.currentSidebarView === "explorer"
+                    extensionsActive: mainWindow.explorerVisible && mainWindow.currentSidebarView === "extensions"
+                    settingsActive: settingsOverlay.visible
+                    musicActive: mainWindow.musicVisible
+                    aiActive: mainWindow.aiVisible
+                    terminalActive: mainWindow.terminalVisible
+
+                    onToggleExplorerRequested: {
+                        if (mainWindow.explorerVisible && mainWindow.currentSidebarView === "explorer") {
+                            mainWindow.explorerVisible = false;
+                        } else {
+                            mainWindow.currentSidebarView = "explorer";
+                            mainWindow.explorerVisible = true;
+                        }
+                    }
+                    onExtensionsRequested: {
+                        if (mainWindow.explorerVisible && mainWindow.currentSidebarView === "extensions") {
+                            mainWindow.explorerVisible = false;
+                        } else {
+                            mainWindow.currentSidebarView = "extensions";
+                            mainWindow.explorerVisible = true;
+                        }
+                    }
+                    onMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+                    onAiRequested: mainWindow.aiVisible = !mainWindow.aiVisible
+                    onTerminalRequested: mainWindow.terminalVisible = !mainWindow.terminalVisible
+                    onSettingsRequested: settingsOverlay.visible = true
+                }
+
+                // Left Sidebar: Multi-View Container (File Explorer / Extensions)
+                Item {
+                    id: leftSidebarContainer
                     Layout.preferredWidth: mainWindow.effectiveExplorerWidth
                     Layout.fillHeight: true
                     visible: mainWindow.effectiveExplorerWidth > 0
+                    clip: true
 
-                    onFileClicked: function(path) {
-                        if (typeof backend !== "undefined" && backend && backend.open_file) {
-                            backend.open_file(path);
+                    // 1. File Explorer View
+                    ExplorerPanel {
+                        id: explorerPanel
+                        objectName: "explorerPanel"
+                        anchors.fill: parent
+                        visible: mainWindow.currentSidebarView === "explorer"
+
+                        onFileClicked: function(path) {
+                            if (typeof backend !== "undefined" && backend && backend.open_file) {
+                                backend.open_file(path);
+                            }
+                        }
+                        onOpenFolderRequested: openFolderDialog.open()
+                        // onNewFolderRequested handled directly by ExplorerPanel
+                        onRefreshRequested: {
+                            if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
+                                backend.open_Workspace(explorerPanel.workspacePath);
+                            }
                         }
                     }
-                    onOpenFolderRequested: openFolderDialog.open()
-                    // onNewFolderRequested handled directly by ExplorerPanel
-                    onRefreshRequested: {
-                        if (typeof backend !== "undefined" && backend && explorerPanel.workspacePath) {
-                            backend.open_Workspace(explorerPanel.workspacePath);
+
+                    // 2. Extensions View (Shows right in the sidebar like VS Code)
+                    ExtensionsSidebarPanel {
+                        id: extensionsSidebarPanel
+                        objectName: "extensionsSidebarPanel"
+                        anchors.fill: parent
+                        visible: mainWindow.currentSidebarView === "extensions"
+                        onExtensionSelected: function(extData) {
+                            if (editorArea) {
+                                editorArea.openExtensionDetailsTab(extData);
+                            }
                         }
                     }
                 }
@@ -345,8 +537,13 @@ Window {
 
                     EditorArea {
                         id: editorArea
+                        objectName: "editorArea"
                         anchors.fill: parent
+                        theme: theme
+                        isEditorMaximized: mainWindow.editorMaximized
+                        onToggleMaximizeEditorRequested: mainWindow.toggleMaximizeEditor()
 
+                        onSettingsPopupRequested: settingsOverlay.visible = true
                         onRequestOpenFile: openFileDialog.open()
                         onRequestOpenFolder: openFolderDialog.open()
                         onRequestRunFile: mainWindow.runActiveFile()
@@ -363,11 +560,22 @@ Window {
                             }
                         }
 
+                        onSendAiPrompt: function(prompt) {
+                            if (!mainWindow.rightPanelVisible) {
+                                mainWindow.rightPanelVisible = true;
+                            }
+                            mainWindow.aiVisible = true;
+                            aiWorkspace.sendDirectPrompt(prompt);
+                        }
+
                         onActiveFileChanged: function(path, name, lang, dirty) {
                             appHeader.activeFileName = name;
                             appHeader.activeFilePath = path;
                             appHeader.isDirty = dirty;
                             statusBar.currentLanguage = lang;
+                            if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectAndRevealFile && path) {
+                                explorerPanel.selectAndRevealFile(path);
+                            }
                         }
 
                         onCursorPositionChanged: function(line, col) {
@@ -477,6 +685,9 @@ Window {
             visible: mainWindow.effectiveTerminalHeight > 0
 
             onCloseRequested: mainWindow.terminalVisible = false
+            onProblemSelected: function(filePath, line, column) {
+                editorArea.jumpToLineAndCol(line, column);
+            }
         }
 
         // 4. Status Bar
@@ -496,6 +707,24 @@ Window {
 
             onSettingsRequested: settingsOverlay.visible = true
             onThemeSelected: function(tName) { theme.setTheme(tName); }
+            onToggleMusicRequested: mainWindow.musicVisible = !mainWindow.musicVisible
+            onProfilerRequested: profilerDialog.visible = !profilerDialog.visible
+        }
+    }
+
+    // =========================================================================
+    // SMART INSTALL MODAL OVERLAY
+    // =========================================================================
+    SmartInstallDialog {
+        id: smartInstallDialog
+        objectName: "smartInstallDialog"
+        z: 9990
+        onRetryRequested: function(action, filePath, langId) {
+            if (action === "format") {
+                editorArea.formatDocument();
+            } else if (action === "run") {
+                mainWindow.runActiveFile();
+            }
         }
     }
 
@@ -504,6 +733,7 @@ Window {
     // =========================================================================
     Rectangle {
         id: settingsOverlay
+        objectName: "settingsOverlay"
         anchors.fill: parent
         color: Qt.rgba(0, 0, 0, 0.70)
         visible: false
@@ -514,11 +744,20 @@ Window {
             NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
         }
 
+        onVisibleChanged: {
+            if (visible) {
+                settingsDialog.x = Math.round((settingsOverlay.width - settingsDialog.width) / 2);
+                settingsDialog.y = Math.round((settingsOverlay.height - settingsDialog.height) / 2);
+            }
+        }
+
+        // Click outside on backdrop to dismiss ("click off" backdrop)
         MouseArea {
             anchors.fill: parent
             onClicked: settingsOverlay.visible = false
         }
 
+        // Ambient dialog drop shadow
         Rectangle {
             x: settingsDialog.x - 6
             y: settingsDialog.y - 6
@@ -533,7 +772,9 @@ Window {
 
         SettingsDialog {
             id: settingsDialog
-            anchors.centerIn: parent
+            objectName: "settingsDialog"
+            x: Math.round((parent.width - width) / 2)
+            y: Math.round((parent.height - height) / 2)
             scale: settingsOverlay.visible ? 1.0 : 0.98
 
             Behavior on scale {
@@ -541,9 +782,73 @@ Window {
             }
 
             onCloseRequested: settingsOverlay.visible = false
+            onOpenAsTabRequested: {
+                settingsOverlay.visible = false;
+                editorArea.openSettingsTab();
+            }
+            onExtensionsRequested: {
+                settingsOverlay.visible = false;
+                mainWindow.showExtensions();
+            }
             onThemeSelected: function(tName) {
                 theme.setTheme(tName);
             }
+        }
+    }
+
+    // =========================================================================
+    // EXTENSIONS MANAGER MODAL OVERLAY
+    // =========================================================================
+    Rectangle {
+        id: extensionsOverlay
+        anchors.fill: parent
+        color: Qt.rgba(0, 0, 0, 0.70)
+        visible: false
+        z: 220
+        opacity: visible ? 1.0 : 0.0
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+        }
+
+        onVisibleChanged: {
+            if (visible) {
+                extensionsDialog.x = Math.round((extensionsOverlay.width - extensionsDialog.width) / 2);
+                extensionsDialog.y = Math.round((extensionsOverlay.height - extensionsDialog.height) / 2);
+                extensionsDialog.refreshExtensions();
+            }
+        }
+
+        // Click outside on backdrop to dismiss ("click off" backdrop)
+        MouseArea {
+            anchors.fill: parent
+            onClicked: extensionsOverlay.visible = false
+        }
+
+        // Ambient dialog drop shadow
+        Rectangle {
+            x: extensionsDialog.x - 6
+            y: extensionsDialog.y - 6
+            width: extensionsDialog.width + 12
+            height: extensionsDialog.height + 12
+            radius: extensionsDialog.radius + 6
+            color: "transparent"
+            border.color: "#00000066"
+            border.width: 6
+            visible: extensionsOverlay.visible
+        }
+
+        ExtensionsDialog {
+            id: extensionsDialog
+            x: Math.round((parent.width - width) / 2)
+            y: Math.round((parent.height - height) / 2)
+            scale: extensionsOverlay.visible ? 1.0 : 0.98
+
+            Behavior on scale {
+                NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+            }
+
+            onCloseRequested: extensionsOverlay.visible = false
         }
     }
 
@@ -577,6 +882,93 @@ Window {
     ParticleEmitterOverlay {
         id: particleEmitterOverlay
         anchors.fill: parent
+    }
+
+    // Process Profiler & LSP Debugger Dialog
+    ProcessProfilerDialog {
+        id: profilerDialog
+    }
+
+    // Ctrl+Shift+M: Toggle Process Profiler & LSP Debugger
+    Shortcut {
+        sequence: "Ctrl+Shift+M"
+        context: Qt.ApplicationShortcut
+        onActivated: profilerDialog.visible = !profilerDialog.visible
+    }
+
+
+
+    function renameActiveOrSelectedFile() {
+        var targetPath = "";
+
+        // If user is currently in the editor, rename the current open file
+        if (typeof editorArea !== "undefined" && editorArea && editorArea.codeTextArea && editorArea.codeTextArea.activeFocus && editorArea.activeFilePath) {
+            targetPath = editorArea.activeFilePath;
+        } else if (typeof explorerPanel !== "undefined" && explorerPanel && explorerPanel.selectedFilePath) {
+            targetPath = explorerPanel.selectedFilePath;
+        } else if (typeof editorArea !== "undefined" && editorArea && editorArea.activeFilePath) {
+            targetPath = editorArea.activeFilePath;
+        }
+
+        if (targetPath && typeof explorerPanel !== "undefined" && explorerPanel) {
+            if (!mainWindow.explorerVisible) {
+                mainWindow.explorerVisible = true;
+            }
+            if (mainWindow.effectiveExplorerWidth <= 0) {
+                mainWindow.explorerWidth = Math.max(200, mainWindow.explorerWidth);
+            }
+            explorerPanel.selectAndRevealFile(targetPath);
+            explorerPanel.startInlineRename(targetPath);
+        }
+    }
+
+    function showExtensions() {
+        mainWindow.currentSidebarView = "extensions";
+        mainWindow.explorerVisible = true;
+    }
+
+    function toggleProfiler() {
+        profilerDialog.visible = !profilerDialog.visible;
+    }
+
+    // =========================================================================
+    // VS CODE-STYLE BOTTOM-RIGHT NOTIFICATION POPUP
+    // =========================================================================
+    NotificationToast {
+        id: notificationToast
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 16
+        anchors.bottomMargin: (statusBar && statusBar.visible ? statusBar.height : 0) + 12
+        z: 99999
+    }
+
+    function showNotification(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb) {
+        notificationToast.show(msg, type, title, duration, actionText, actionCb, secActionText, secActionCb);
+    }
+
+    Connections {
+        target: typeof extensionManager !== "undefined" ? extensionManager : null
+        ignoreUnknownSignals: true
+
+        function onSmartFixAvailable(proposal) {
+            if (!proposal) return;
+            var title = proposal.title || "Smart Fix Available";
+            var msg = proposal.proposedFix || proposal.likelyCause || proposal.description || "A fix is available for review.";
+            var actionLabel = "Review Fix";
+            mainWindow.showNotification(
+                msg,
+                "info",
+                title,
+                10000,
+                actionLabel,
+                function() {
+                    smartInstallDialog.openProposal(proposal);
+                },
+                "Dismiss",
+                function() {}
+            );
+        }
     }
 
     // =========================================================================
@@ -618,33 +1010,59 @@ Window {
             mainWindow.showNotification("Please save the file first before running.", "warning", "Run");
             return;
         }
-        mainWindow.terminalVisible = true;
         var rawPath = editorArea.activeFilePath.replace(/\//g, "\\");
         var ext = editorArea.activeFileName.split(".").pop().toLowerCase();
+        var cmd = "";
+        var requiredDep = "";
+        var depType = "runtime";
+
+        // 1. Check extension-contributed runners
         var extRunner = (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_runner_for_extension) ? extensionManager.get_runner_for_extension(ext) : null;
         if (extRunner && extRunner.command) {
             cmd = extRunner.command.replace(/\$\{filePath\}/g, rawPath);
+            requiredDep = extRunner.executable || "";
+            depType = "runner";
         } else if (ext === "py" || ext === "pyw") {
+            requiredDep = "python";
+            depType = "interpreter";
             cmd = 'python "' + rawPath + '"';
         } else if (ext === "cpp" || ext === "cc" || ext === "cxx" || ext === "c++") {
+            requiredDep = "g++";
+            depType = "compiler";
             cmd = 'g++ -std=c++17 "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "c") {
+            requiredDep = "gcc";
+            depType = "compiler";
             cmd = 'gcc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "js" || ext === "mjs" || ext === "cjs") {
+            requiredDep = "node";
+            depType = "runtime";
             cmd = 'node "' + rawPath + '"';
         } else if (ext === "ts" || ext === "tsx") {
+            requiredDep = "npx";
+            depType = "cli";
             cmd = 'npx tsx "' + rawPath + '"';
         } else if (ext === "java") {
+            requiredDep = "java";
+            depType = "runtime";
             cmd = 'java "' + rawPath + '"';
         } else if (ext === "rs") {
+            requiredDep = "rustc";
+            depType = "compiler";
             cmd = 'rustc "' + rawPath + '" -o output.exe; if ($?) { .\\output.exe }';
         } else if (ext === "go") {
+            requiredDep = "go";
+            depType = "sdk";
             cmd = 'go run "' + rawPath + '"';
         } else if (ext === "cs") {
+            requiredDep = "dotnet";
+            depType = "sdk";
             cmd = 'dotnet run';
         } else if (ext === "ps1") {
             cmd = 'powershell -ExecutionPolicy Bypass -File "' + rawPath + '"';
         } else if (ext === "sh" || ext === "bash") {
+            requiredDep = "bash";
+            depType = "cli";
             cmd = 'bash "' + rawPath + '"';
         } else if (ext === "html" || ext === "htm") {
             var target = (theme && theme.htmlRunTarget) ? theme.htmlRunTarget : "built_in";
@@ -660,10 +1078,97 @@ Window {
             // Clean application-level unsupported runner error
             var cleanErr = "No runner configured for ." + ext + " files.";
             terminalPanel.addOutputLog("Build/Run", cleanErr);
-            mainWindow.showNotification(cleanErr, "warning", "Run");
+
+            var runnerCtx = null;
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_smart_install_context) {
+                runnerCtx = extensionManager.create_smart_install_context(
+                    "Run ." + ext + " file",
+                    "runner",
+                    editorArea.currentLanguageId,
+                    rawPath,
+                    "",
+                    ext + " runner",
+                    0,
+                    "",
+                    cleanErr,
+                    cleanErr,
+                    "No runner configured",
+                    ext + " runner",
+                    "run"
+                );
+            }
+
+            mainWindow.showNotification(
+                cleanErr,
+                "warning",
+                "Run",
+                9000,
+                "Smart Install",
+                function() {
+                    console.log("[SmartInstall] Smart Install clicked");
+                    if (runnerCtx) {
+                        smartInstallDialog.openContext(runnerCtx);
+                    } else if (extensionManager && extensionManager.suggest_smart_install) {
+                        smartInstallDialog.openProposal(extensionManager.suggest_smart_install("runner", ext + " runner", editorArea.currentLanguageId, ext, rawPath));
+                    }
+                },
+                "Close",
+                function() {}
+            );
             return;
         }
 
+        // Check if required dependency executable is installed before executing
+        if (requiredDep && typeof extensionManager !== "undefined" && extensionManager) {
+            var execFound = extensionManager.locate_executable ? extensionManager.locate_executable(requiredDep, "") : "";
+            if (!execFound) {
+                if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+                    if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                        smartInstallDialog.reportRetryResult(false, "Required dependency '" + requiredDep + "' is not installed.");
+                        return;
+                    }
+                }
+
+                var depCtx = extensionManager.create_smart_install_context(
+                    "Run " + (editorArea.activeFileName || "program"),
+                    depType,
+                    editorArea.currentLanguageId,
+                    rawPath,
+                    cmd,
+                    requiredDep,
+                    0,
+                    "",
+                    "Required dependency '" + requiredDep + "' is not installed.",
+                    "Required dependency '" + requiredDep + "' is not installed.",
+                    "Missing runtime / executable",
+                    requiredDep,
+                    "run"
+                );
+                mainWindow.showNotification(
+                    "Required dependency '" + requiredDep + "' is not installed.",
+                    "warning",
+                    "Run",
+                    9000,
+                    "Smart Install",
+                    function() {
+                        console.log("[SmartInstall] Smart Install clicked");
+                        smartInstallDialog.openContext(depCtx);
+                    },
+                    "Close",
+                    function() {}
+                );
+                return;
+            }
+        }
+
+        if (typeof smartInstallDialog !== "undefined" && smartInstallDialog && smartInstallDialog.isOpen) {
+            if (smartInstallDialog.dialogState === "retrying" || smartInstallDialog.dialogState === "installing") {
+                smartInstallDialog.reportRetryResult(true, "Execution started.");
+            }
+        }
+
+        mainWindow.terminalVisible = true;
+        terminalPanel.addOutputLog("Build/Run", "Executing " + (editorArea.activeFileName || "script") + " [" + cmd + "]");
         terminalPanel.executeCommand(cmd);
     }
 }

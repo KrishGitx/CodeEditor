@@ -10,8 +10,8 @@ Rectangle {
 
     signal closeRequested()
 
-    width: 880
-    height: 620
+    width: Math.min(880, parent ? Math.max(320, parent.width - 32) : 880)
+    height: Math.min(560, parent ? Math.max(280, parent.height - 32) : 560)
     radius: theme ? theme.radiusMd : 6
     color: theme ? theme.bgPopup : "#1e1e1e"
     border.color: theme ? theme.borderNormal : "#333333"
@@ -35,7 +35,10 @@ Rectangle {
         onTriggered: root.copyFeedbackText = ""
     }
 
+    property string selectedId: ""
+
     function refreshExtensions() {
+        var curId = root.selectedId || (root.selectedExt ? root.selectedExt.id : "");
         if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_installed_extensions) {
             allExtensions = extensionManager.get_installed_extensions();
         } else if (typeof backend !== "undefined" && backend && backend.get_installed_extensions) {
@@ -44,12 +47,27 @@ Rectangle {
             allExtensions = [];
         }
 
-        // Keep selection valid
-        if (allExtensions.length > 0) {
-            if (selectedIndex >= allExtensions.length || selectedIndex < 0) selectedIndex = 0;
-            selectedExt = allExtensions[selectedIndex];
+        // Keep selection valid by ID
+        if (allExtensions && allExtensions.length > 0) {
+            var found = null;
+            if (curId) {
+                for (var i = 0; i < allExtensions.length; i++) {
+                    if (allExtensions[i].id === curId) {
+                        found = allExtensions[i];
+                        root.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                if (root.selectedIndex >= allExtensions.length || root.selectedIndex < 0) root.selectedIndex = 0;
+                found = allExtensions[root.selectedIndex];
+            }
+            root.selectedExt = found;
+            root.selectedId = found ? found.id : "";
         } else {
-            selectedExt = null;
+            root.selectedExt = null;
+            root.selectedId = "";
         }
     }
 
@@ -531,6 +549,24 @@ Rectangle {
                                                     Layout.fillWidth: true
                                                 }
 
+                                                Rectangle {
+                                                    height: 14
+                                                    width: 44
+                                                    radius: 2
+                                                    visible: !modelData.enabled
+                                                    color: "#451a1a"
+                                                    border.color: "#dc2626"
+                                                    border.width: 1
+
+                                                    Text {
+                                                        anchors.centerIn: parent
+                                                        text: "Disabled"
+                                                        font.pixelSize: 8
+                                                        font.bold: true
+                                                        color: "#fca5a5"
+                                                    }
+                                                }
+
                                                 Text {
                                                     text: "v" + modelData.version
                                                     font.pixelSize: 9
@@ -575,7 +611,9 @@ Rectangle {
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: {
+                                            root.selectedId = modelData.id;
                                             root.selectedExt = modelData;
+                                            root.selectedIndex = index;
                                         }
                                     }
                                 }
@@ -662,6 +700,25 @@ Rectangle {
                                                 font.bold: true
                                             }
                                         }
+
+                                        Rectangle {
+                                            height: 18
+                                            width: disabledBadgeDetailText.width + 10
+                                            radius: 3
+                                            visible: root.selectedExt && !root.selectedExt.enabled
+                                            color: "#5c1d1d"
+                                            border.color: "#ef4444"
+                                            border.width: 1
+
+                                            Text {
+                                                id: disabledBadgeDetailText
+                                                anchors.centerIn: parent
+                                                text: "Disabled"
+                                                font.pixelSize: 9
+                                                color: "#fca5a5"
+                                                font.bold: true
+                                            }
+                                        }
                                     }
 
                                     Text {
@@ -711,13 +768,18 @@ Rectangle {
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: {
                                             if (!root.selectedExt) return;
+                                            var extId = root.selectedExt.id;
                                             var newEnabled = !root.selectedExt.enabled;
+                                            root.selectedId = extId;
                                             if (typeof extensionManager !== "undefined" && extensionManager) {
-                                                extensionManager.toggle_extension(root.selectedExt.id, newEnabled);
+                                                extensionManager.toggle_extension(extId, newEnabled);
                                             } else if (typeof backend !== "undefined" && backend) {
-                                                backend.toggle_extension(root.selectedExt.id, newEnabled);
+                                                backend.toggle_extension(extId, newEnabled);
                                             }
                                             root.refreshExtensions();
+                                            if (typeof mainWindow !== "undefined" && mainWindow.showNotification) {
+                                                mainWindow.showNotification((root.selectedExt ? root.selectedExt.name : extId) + (newEnabled ? " enabled." : " disabled."), newEnabled ? "success" : "info", "Extensions");
+                                            }
                                         }
                                     }
                                 }

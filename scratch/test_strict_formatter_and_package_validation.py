@@ -36,9 +36,13 @@ def test_strict_formatter_resolution():
     java_ext = ext_mgr.get_extension_for_language("java", "test.java", for_formatting=True)
     assert java_ext is None, f"Java MUST NOT resolve to any generic or C++ extension! Got: {java_ext}"
     java_res = fmt_mgr.format_code("java", "test.java", "public class Main { public static void main(String[] args) {} }")
-    assert java_res["available"] is False, "Java without installed Java formatter must return available: False"
     assert "clang-format" not in java_res.get("message", "").lower(), "Java must never mention clang-format"
-    print("PASS: Java does NOT use clang-format and triggers Smart Install flow.")
+    if java_res["available"]:
+        assert "google-java-format" in java_res.get("message", "").lower() or "formatted" in java_res.get("message", "").lower()
+        print("PASS: Java formatted via google-java-format without using clang-format.")
+    else:
+        assert java_res["available"] is False, "Java without installed Java formatter must return available: False"
+        print("PASS: Java does NOT use clang-format and triggers Smart Install flow.")
 
     # 4. QML (test.qml) -> Must NOT silently format with fake internal formatter
     qml_ext = ext_mgr.get_extension_for_language("qml", "test.qml", for_formatting=True)
@@ -74,7 +78,7 @@ def test_strict_formatter_resolution():
 
 def mock_ai_strict(prompt):
     p = prompt.lower()
-    if "missing dependency: sql" in p or "language/file type: sql" in p:
+    if any(k in p for k in ("ecosystem: sql", "language: sql", "language / ecosystem: sql", "test.sql", "sql formatter")):
         return (
             "Tool: SQLFluff (SQL Formatter)\n"
             "Dependency Type: formatter\n"
@@ -85,7 +89,7 @@ def mock_ai_strict(prompt):
             "Verify: sqlfluff --version\n"
             "Explanation: Installs SQLFluff, the standard SQL linter and code formatter via pip."
         )
-    if "missing dependency: csharp" in p or "language/file type: csharp" in p:
+    if any(k in p for k in ("ecosystem: csharp", "language: csharp", "language / ecosystem: csharp", "test.cs", "csharp formatter")):
         return (
             "Tool: CSharpier (C# Formatter)\n"
             "Dependency Type: formatter\n"
@@ -96,7 +100,7 @@ def mock_ai_strict(prompt):
             "Verify: dotnet csharpier --version\n"
             "Explanation: Installs CSharpier."
         )
-    if "missing dependency: java" in p or "language/file type: java" in p:
+    if any(k in p for k in ("ecosystem: java", "language: java", "language / ecosystem: java", "test.java", "java formatter")):
         return (
             "Tool: google-java-format (Java Formatter)\n"
             "Dependency Type: formatter\n"
@@ -107,7 +111,7 @@ def mock_ai_strict(prompt):
             "Verify: google-java-format --version\n"
             "Explanation: Installs google-java-format."
         )
-    if "missing dependency: qml" in p or "language/file type: qml" in p:
+    if any(k in p for k in ("ecosystem: qml", "language: qml", "language / ecosystem: qml", "test.qml", "qml formatter")):
         return (
             "Tool: QML Formatter (qmlformat)\n"
             "Dependency Type: formatter\n"

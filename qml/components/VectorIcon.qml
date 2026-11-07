@@ -6,6 +6,7 @@ Item {
     property string name: "file"
     property color color: "#94a3b8"
     property real size: 16
+    property real strokeWidth: -1
 
     width: size
     height: size
@@ -23,7 +24,7 @@ Item {
 
             ctx.strokeStyle = root.color;
             ctx.fillStyle = root.color;
-            ctx.lineWidth = Math.max(1.2, width / 11);
+            ctx.lineWidth = (root.strokeWidth > 0) ? root.strokeWidth : Math.max(1.0, width / 18.0);
             ctx.lineCap = "round";
             ctx.lineJoin = "round";
 
@@ -48,34 +49,95 @@ Item {
                 ctx.lineTo(w - pad, pad + h * 0.25);
                 ctx.stroke();
             }
+            else if (n === "files" || n === "explorer") {
+                // Sleek minimalist double-sheet / document icon
+                var pW = w * 0.58;
+                var pH = h * 0.68;
+                var offX = w * 0.16;
+                var offY = h * 0.16;
+
+                // Background sheet
+                ctx.beginPath();
+                ctx.rect(pad + offX, pad, pW, pH);
+                ctx.stroke();
+
+                // Clear behind foreground sheet
+                ctx.clearRect(pad, pad + offY, pW, pH);
+
+                // Foreground sheet
+                ctx.beginPath();
+                ctx.rect(pad, pad + offY, pW, pH);
+                ctx.stroke();
+            }
+            else if (n === "git" || n === "branch" || n === "source-control") {
+                var cRad = Math.max(1.8, w * 0.1);
+                // Top circle
+                ctx.beginPath();
+                ctx.arc(w * 0.35, pad + cRad, cRad, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Bottom circle
+                ctx.beginPath();
+                ctx.arc(w * 0.35, h - pad - cRad, cRad, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Branch circle (right)
+                ctx.beginPath();
+                ctx.arc(w * 0.68, h * 0.45, cRad, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Main vertical stem
+                ctx.beginPath();
+                ctx.moveTo(w * 0.35, pad + cRad * 2);
+                ctx.lineTo(w * 0.35, h - pad - cRad * 2);
+                ctx.stroke();
+
+                // Curved branch to right circle
+                ctx.beginPath();
+                ctx.moveTo(w * 0.35, h * 0.65);
+                ctx.quadraticCurveTo(w * 0.35, h * 0.45, w * 0.68 - cRad, h * 0.45);
+                ctx.stroke();
+            }
             else if (n === "folder" || n === "folder-closed") {
                 ctx.beginPath();
                 ctx.moveTo(pad, pad + h * 0.2);
-                ctx.lineTo(pad + w * 0.3, pad + h * 0.2);
-                ctx.lineTo(pad + w * 0.45, pad + h * 0.35);
-                ctx.lineTo(w - pad, pad + h * 0.35);
+                ctx.lineTo(pad + w * 0.35, pad + h * 0.2);
+                ctx.lineTo(pad + w * 0.48, pad + h * 0.34);
+                ctx.lineTo(w - pad, pad + h * 0.34);
                 ctx.lineTo(w - pad, h - pad);
                 ctx.lineTo(pad, h - pad);
                 ctx.closePath();
+                ctx.fillStyle = root.color;
+                ctx.globalAlpha = 0.22;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
                 ctx.stroke();
             }
             else if (n === "folder-open") {
                 ctx.beginPath();
                 ctx.moveTo(pad, pad + h * 0.2);
-                ctx.lineTo(pad + w * 0.3, pad + h * 0.2);
-                ctx.lineTo(pad + w * 0.42, pad + h * 0.35);
-                ctx.lineTo(w - pad, pad + h * 0.35);
+                ctx.lineTo(pad + w * 0.35, pad + h * 0.2);
+                ctx.lineTo(pad + w * 0.45, pad + h * 0.34);
+                ctx.lineTo(w - pad, pad + h * 0.34);
                 ctx.lineTo(w - pad, h - pad);
                 ctx.lineTo(pad, h - pad);
                 ctx.closePath();
+                ctx.fillStyle = root.color;
+                ctx.globalAlpha = 0.18;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
                 ctx.stroke();
 
                 ctx.beginPath();
                 ctx.moveTo(pad * 0.8, h - pad);
-                ctx.lineTo(pad * 1.6, pad + h * 0.45);
-                ctx.lineTo(w - pad * 0.8, pad + h * 0.45);
-                ctx.lineTo(w - pad * 1.6, h - pad);
+                ctx.lineTo(pad * 1.5, pad + h * 0.44);
+                ctx.lineTo(w - pad * 0.8, pad + h * 0.44);
+                ctx.lineTo(w - pad * 1.5, h - pad);
                 ctx.closePath();
+                ctx.fillStyle = root.color;
+                ctx.globalAlpha = 0.28;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
                 ctx.stroke();
             }
             else if (n === "new-file") {
@@ -215,19 +277,58 @@ Item {
                 ctx.stroke();
             }
             else if (n === "settings" || n === "gear") {
+                var cx = w / 2;
+                var cy = h / 2;
+                var numTeeth = 6;
+                var rOuter = w * 0.40;
+                var rInner = w * 0.28;
+                var rHole = w * 0.14;
+
                 ctx.beginPath();
-                ctx.arc(w / 2, h / 2, w * 0.16, 0, Math.PI * 2);
+                for (var ti = 0; ti < numTeeth; ti++) {
+                    var a0 = (ti * 2 * Math.PI) / numTeeth - Math.PI / 14;
+                    var a1 = (ti * 2 * Math.PI) / numTeeth + Math.PI / 14;
+
+                    var x0 = cx + Math.cos(a0) * rInner;
+                    var y0 = cy + Math.sin(a0) * rInner;
+                    var x1 = cx + Math.cos(a0) * rOuter;
+                    var y1 = cy + Math.sin(a0) * rOuter;
+                    var x2 = cx + Math.cos(a1) * rOuter;
+                    var y2 = cy + Math.sin(a1) * rOuter;
+                    var x3 = cx + Math.cos(a1) * rInner;
+                    var y3 = cy + Math.sin(a1) * rInner;
+
+                    if (ti === 0) {
+                        ctx.moveTo(x0, y0);
+                    } else {
+                        ctx.lineTo(x0, y0);
+                    }
+                    ctx.lineTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    ctx.lineTo(x3, y3);
+                }
+                ctx.closePath();
                 ctx.stroke();
 
-                for (var i = 0; i < 6; i++) {
-                    var angle = (i * Math.PI) / 3;
-                    var cos = Math.cos(angle);
-                    var sin = Math.sin(angle);
-                    ctx.beginPath();
-                    ctx.moveTo(w / 2 + cos * w * 0.26, h / 2 + sin * h * 0.26);
-                    ctx.lineTo(w / 2 + cos * w * 0.4, h / 2 + sin * h * 0.4);
-                    ctx.stroke();
-                }
+                // Center hole
+                ctx.beginPath();
+                ctx.arc(cx, cy, rHole, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            else if (n === "split-horizontal" || n === "split" || n === "split-editor") {
+                var sPadX = pad * 0.8;
+                var sPadY = pad * 1.0;
+                var sW = w - sPadX * 2;
+                var sH = h - sPadY * 2;
+                // Outer pane outline
+                ctx.beginPath();
+                ctx.rect(sPadX, sPadY, sW, sH);
+                ctx.stroke();
+                // Vertical divider splitting into left & right panes
+                ctx.beginPath();
+                ctx.moveTo(w / 2, sPadY);
+                ctx.lineTo(w / 2, sPadY + sH);
+                ctx.stroke();
             }
             else if (n === "sparkles" || n === "ai") {
                 // 4-point star
@@ -289,7 +390,7 @@ Item {
                 ctx.closePath();
                 ctx.fill();
             }
-            else if (n === "download") {
+            else if (n === "download" || n === "install") {
                 ctx.beginPath();
                 ctx.moveTo(w / 2, pad);
                 ctx.lineTo(w / 2, h * 0.65);
@@ -402,16 +503,65 @@ Item {
                 ctx.arc(w / 2, h / 2, w * 0.12, 0, Math.PI * 2);
                 ctx.fill();
             }
-            else if (n === "music" || n === "disc") {
+            else if (n === "vinyl" || n === "record" || n === "disc") {
+                // Classic vinyl record with groove track and center spindle
+                var cx = w / 2;
+                var cy = h / 2;
+                var rOuter = w * 0.44;
+
+                // Outer vinyl rim
                 ctx.beginPath();
-                ctx.arc(w / 2, h / 2, w * 0.38, 0, Math.PI * 2);
+                ctx.arc(cx, cy, rOuter, 0, Math.PI * 2);
                 ctx.stroke();
+
+                // Concentric groove ring
                 ctx.beginPath();
-                ctx.arc(w / 2, h / 2, w * 0.15, 0, Math.PI * 2);
+                ctx.arc(cx, cy, rOuter * 0.70, 0, Math.PI * 2);
                 ctx.stroke();
+
+                // Center record label circle
                 ctx.beginPath();
-                ctx.arc(w / 2, h / 2, w * 0.05, 0, Math.PI * 2);
+                ctx.arc(cx, cy, rOuter * 0.38, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Center spindle hole
+                ctx.beginPath();
+                ctx.arc(cx, cy, rOuter * 0.14, 0, Math.PI * 2);
                 ctx.fill();
+            }
+            else if (n === "music") {
+                // Sleek minimalist beamed eighth notes
+                var bPadX = pad + w * 0.04;
+                var bPadY = pad + h * 0.04;
+                var bW = w - bPadX * 2;
+                var bH = h - bPadY * 2;
+
+                var rHeadW = bW * 0.20;
+                var rHeadH = bH * 0.14;
+
+                // Note head 1 (left)
+                ctx.beginPath();
+                ctx.ellipse ? ctx.ellipse(bPadX + bW * 0.22, bPadY + bH * 0.80, rHeadW, rHeadH, -Math.PI / 8, 0, Math.PI * 2) : ctx.arc(bPadX + bW * 0.22, bPadY + bH * 0.80, rHeadW, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Note head 2 (right)
+                ctx.beginPath();
+                ctx.ellipse ? ctx.ellipse(bPadX + bW * 0.76, bPadY + bH * 0.68, rHeadW, rHeadH, -Math.PI / 8, 0, Math.PI * 2) : ctx.arc(bPadX + bW * 0.76, bPadY + bH * 0.68, rHeadW, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Stems
+                ctx.beginPath();
+                ctx.moveTo(bPadX + bW * 0.38, bPadY + bH * 0.78);
+                ctx.lineTo(bPadX + bW * 0.38, bPadY + bH * 0.14);
+                ctx.moveTo(bPadX + bW * 0.92, bPadY + bH * 0.66);
+                ctx.lineTo(bPadX + bW * 0.92, bPadY + bH * 0.04);
+                ctx.stroke();
+
+                // Beam connecting notes
+                ctx.beginPath();
+                ctx.moveTo(bPadX + bW * 0.38, bPadY + bH * 0.16);
+                ctx.lineTo(bPadX + bW * 0.92, bPadY + bH * 0.06);
+                ctx.stroke();
             }
             else if (n === "undo") {
                 ctx.beginPath();
@@ -686,4 +836,5 @@ Item {
     onColorChanged: canvas.requestPaint()
     onNameChanged: canvas.requestPaint()
     onSizeChanged: canvas.requestPaint()
+    onStrokeWidthChanged: canvas.requestPaint()
 }

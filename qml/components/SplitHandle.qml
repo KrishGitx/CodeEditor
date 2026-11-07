@@ -10,7 +10,6 @@ Item {
     property color hoverColor: theme ? theme.accent : "#0078d4"
 
     signal moved(real delta)
-    property bool enabled: true
 
     width: orientation === Qt.Horizontal ? thickness : undefined
     height: orientation === Qt.Vertical ? thickness : undefined

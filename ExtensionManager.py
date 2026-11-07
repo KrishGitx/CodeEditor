@@ -46,7 +46,7 @@ import hashlib
 
 from typing import Dict, List, Optional, Any, Callable
 
-from PySide6.QtCore import QObject, Signal, Slot, Property
+from PySide6.QtCore import QObject, Signal, Slot, Property, QUrl
 
 from PySide6.QtGui import QGuiApplication, QKeySequence
 
@@ -2908,6 +2908,9 @@ class ExtensionManager(QObject):
 
     notificationRequested = Signal(str, str, str, str, str, list)  # ext_id, title, msg, icon, sound, actions
 
+    # File & Folder Icon Themes Signal
+    iconThemeChanged = Signal()
+
 
 
     _custom_ai_resolver: Optional[Callable[[str], str]] = None
@@ -2993,6 +2996,7 @@ class ExtensionManager(QObject):
         self.extension_settings_file = os.path.join(os.path.expanduser("~"), ".dgx", "extension_settings.json")
 
         self._load_saved_custom_settings()
+        self._ensure_sdk_installed()
 
         self._installing_formatters = set()
 
@@ -3009,6 +3013,11 @@ class ExtensionManager(QObject):
         self._contributed_runners: Dict[str, dict] = {}
 
         self._contributed_file_icons: List[dict] = []
+
+        self._contributed_icon_themes: Dict[str, dict] = {}
+        self._icon_theme_config_file = os.path.join(os.path.expanduser("~"), ".dgx", "icon_theme_config.json")
+        self._active_icon_theme_id: str = "none"
+        self._active_icon_cache: dict = {}
 
         self._contributed_radial_actions: List[dict] = []
 
@@ -3364,6 +3373,8 @@ class ExtensionManager(QObject):
 
         self._contributed_file_icons.clear()
 
+        self._contributed_icon_themes.clear()
+
         self._contributed_radial_actions.clear()
 
         self._contributed_tool_dependencies.clear()
@@ -3412,6 +3423,8 @@ class ExtensionManager(QObject):
 
 
 
+        self._load_active_icon_theme()
+
         print(f"[ExtensionManager] Loaded {len(self._extensions)} extensions: {list(self._extensions.keys())}")
 
         self.refresh_marketplace_catalog()
@@ -3443,6 +3456,21 @@ class ExtensionManager(QObject):
                     ext_id = manifest.get("id", manifest.get("name", item))
 
                     if ext_id:
+                        # Filter out Node.js-only VS Code extensions that lack declarative Studio support
+                        if manifest.get("is_vscode_extension"):
+                            contribs = manifest.get("contributes", {})
+                            has_supported = bool(
+                                contribs.get("themes") or 
+                                contribs.get("grammars") or 
+                                contribs.get("languages") or 
+                                contribs.get("iconThemes") or 
+                                contribs.get("fileIconThemes") or 
+                                contribs.get("snippets") or 
+                                contribs.get("formatters")
+                            )
+                            if not has_supported:
+                                print(f"[ExtensionManager] Skipping Node.js extension '{ext_id}' from loading (requires VS Code Node.js extension host).")
+                                continue
 
                         custom_p = self._custom_paths.get(ext_id, "")
 
@@ -3563,6 +3591,291 @@ class ExtensionManager(QObject):
                     "extension_id": ext.id
 
                 }
+
+        # Icon Themes (VS Code / Studio file & folder icon themes)
+        if contribs.get("iconThemes") or contribs.get("fileIconThemes"):
+            self._register_contributed_icon_themes(ext.path, contribs, ext.id)
+
+    def _register_contributed_icon_themes(self, ext_path: str, contributes: dict, ext_id: str = ""):
+        themes = contributes.get("iconThemes") or contributes.get("fileIconThemes") or []
+        if not themes or not isinstance(themes, list):
+            return
+        for it in themes:
+            if not isinstance(it, dict):
+                continue
+            theme_id = it.get("id", "")
+            rel_path = it.get("path", "")
+            label = it.get("label", ext_id or theme_id)
+            if not theme_id or not rel_path:
+                continue
+            theme_file = os.path.normpath(os.path.join(ext_path, rel_path))
+            if os.path.isfile(theme_file):
+                self._contributed_icon_themes[theme_id] = {
+                    "id": theme_id,
+                    "label": label,
+                    "path": theme_file,
+                    "base_dir": os.path.dirname(theme_file),
+                    "extension_id": ext_id
+                }
+                print(f"[ExtensionManager] Contributed icon theme '{theme_id}' ({label}) registered from {theme_file}")
+
+    def _load_active_icon_theme(self):
+        saved_id = None
+        if os.path.exists(self._icon_theme_config_file):
+            try:
+                with open(self._icon_theme_config_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    saved_id = cfg.get("activeThemeId")
+            except Exception:
+                pass
+
+        if saved_id == "none":
+            self._active_icon_theme_id = "none"
+            self._active_icon_cache = {}
+            return
+
+        if saved_id and saved_id in self._contributed_icon_themes:
+            target = saved_id
+        elif self._contributed_icon_themes:
+            target = next(iter(self._contributed_icon_themes.keys()))
+        else:
+            target = "none"
+
+        self._load_icon_theme_by_id(target)
+
+    def _load_icon_theme_by_id(self, theme_id: str):
+        if theme_id == "none" or theme_id not in self._contributed_icon_themes:
+            self._active_icon_theme_id = "none"
+            self._active_icon_cache = {}
+            return
+        theme_info = self._contributed_icon_themes[theme_id]
+        theme_path = theme_info["path"]
+        base_dir = theme_info["base_dir"]
+        try:
+            with open(theme_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            icon_defs = data.get("iconDefinitions", {})
+            resolved_defs = {}
+            for k, v in icon_defs.items():
+                if isinstance(v, dict) and "iconPath" in v:
+                    full_p = os.path.normpath(os.path.join(base_dir, v["iconPath"])).replace("\\", "/")
+                    resolved_defs[k] = QUrl.fromLocalFile(full_p).toString()
+
+            self._active_icon_cache = {
+                "id": theme_id,
+                "icon_defs": resolved_defs,
+                "file_names": {k.lower(): v for k, v in data.get("fileNames", {}).items()},
+                "file_extensions": {k.lower().lstrip('.'): v for k, v in data.get("fileExtensions", {}).items()},
+                "folder_names": {k.lower(): v for k, v in data.get("folderNames", {}).items()},
+                "folder_names_expanded": {k.lower(): v for k, v in data.get("folderNamesExpanded", {}).items()},
+                "file": data.get("file"),
+                "folder": data.get("folder"),
+                "folder_expanded": data.get("folderExpanded", data.get("folder")),
+                "hides_explorer_arrows": data.get("hidesExplorerArrows", False)
+            }
+            self._active_icon_theme_id = theme_id
+            print(f"[ExtensionManager] Loaded icon theme '{theme_id}' with {len(resolved_defs)} icons.")
+        except Exception as e:
+            print(f"[ExtensionManager] Error loading icon theme {theme_id}: {e}")
+            self._active_icon_theme_id = "none"
+            self._active_icon_cache = {}
+
+    @Slot(result=str)
+    def get_active_icon_theme(self) -> str:
+        return self._active_icon_theme_id
+
+    @Slot(str, result=bool)
+    def set_active_icon_theme(self, theme_id: str) -> bool:
+        if theme_id != "none" and theme_id not in self._contributed_icon_themes:
+            return False
+        self._load_icon_theme_by_id(theme_id)
+        try:
+            os.makedirs(os.path.dirname(self._icon_theme_config_file), exist_ok=True)
+            with open(self._icon_theme_config_file, "w", encoding="utf-8") as f:
+                json.dump({"activeThemeId": theme_id}, f, indent=2)
+        except Exception as e:
+            print(f"[ExtensionManager] Error saving icon theme config: {e}")
+        self.iconThemeChanged.emit()
+        return True
+
+    @Slot(result=list)
+    def get_available_icon_themes(self) -> list:
+        themes = [{"id": "none", "label": "Minimalist (Built-in)", "extension_id": ""}]
+        for tid, info in self._contributed_icon_themes.items():
+            themes.append({
+                "id": tid,
+                "label": info.get("label", tid),
+                "extension_id": info.get("extension_id", "")
+            })
+        return themes
+
+    @Slot(str, result=str)
+    def get_file_icon(self, file_name: str) -> str:
+        if not self._active_icon_cache or self._active_icon_theme_id == "none":
+            return ""
+        if not file_name:
+            return ""
+        base = os.path.basename(file_name).lower()
+        file_names = self._active_icon_cache.get("file_names", {})
+        ext_map = self._active_icon_cache.get("file_extensions", {})
+        icon_defs = self._active_icon_cache.get("icon_defs", {})
+
+        # 1. Exact filename match (e.g. package.json, dockerfile)
+        if base in file_names:
+            def_id = file_names[base]
+            if def_id in icon_defs:
+                return icon_defs[def_id]
+
+        # 2. Multi-dot extension (e.g. spec.ts, test.js)
+        parts = base.split(".")
+        if len(parts) > 2:
+            compound_ext = ".".join(parts[1:])
+            if compound_ext in ext_map and ext_map[compound_ext] in icon_defs:
+                return icon_defs[ext_map[compound_ext]]
+
+        # 3. Standard single extension
+        if len(parts) > 1:
+            ext = parts[-1]
+            if ext in ext_map and ext_map[ext] in icon_defs:
+                return icon_defs[ext_map[ext]]
+
+        # 4. Default file icon
+        def_file = self._active_icon_cache.get("file")
+        if def_file and def_file in icon_defs:
+            return icon_defs[def_file]
+
+        return ""
+
+    @Slot(str, bool, result=str)
+    def get_folder_icon(self, folder_name: str, is_collapsed: bool) -> str:
+        if not self._active_icon_cache or self._active_icon_theme_id == "none":
+            return ""
+        if not folder_name:
+            return ""
+        f_lower = os.path.basename(folder_name).lower().strip()
+        folder_names = self._active_icon_cache.get("folder_names", {})
+        folder_open_names = self._active_icon_cache.get("folder_names_expanded", {})
+        icon_defs = self._active_icon_cache.get("icon_defs", {})
+
+        if not is_collapsed:
+            if f_lower in folder_open_names and folder_open_names[f_lower] in icon_defs:
+                return icon_defs[folder_open_names[f_lower]]
+            if f_lower in folder_names and folder_names[f_lower] in icon_defs:
+                return icon_defs[folder_names[f_lower]]
+            def_open = self._active_icon_cache.get("folder_expanded")
+            if def_open and def_open in icon_defs:
+                return icon_defs[def_open]
+        else:
+            if f_lower in folder_names and folder_names[f_lower] in icon_defs:
+                return icon_defs[folder_names[f_lower]]
+            def_folder = self._active_icon_cache.get("folder")
+            if def_folder and def_folder in icon_defs:
+                return icon_defs[def_folder]
+
+        return ""
+
+    def _ensure_sdk_installed(self):
+        """Ensures ExtensionSDK is installed into active Python site-packages and ~/.dgx/sdk so any user extension or script has it built-in."""
+        try:
+            import site
+            import shutil
+            src_sdk = os.path.join(self.base_dir, "ExtensionSDK.py")
+            if not os.path.isfile(src_sdk):
+                return
+
+            sdk_dirs = [
+                os.path.join(os.path.expanduser("~"), ".dgx", "sdk")
+            ]
+            try:
+                sdk_dirs.extend(site.getsitepackages())
+            except Exception:
+                pass
+            try:
+                sdk_dirs.append(site.getusersitepackages())
+            except Exception:
+                pass
+
+            for d in sdk_dirs:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                    dest = os.path.join(d, "ExtensionSDK.py")
+                    shutil.copy2(src_sdk, dest)
+                    pth = os.path.join(d, "dgx_studio_sdk.pth")
+                    with open(pth, "w", encoding="utf-8") as f:
+                        f.write(self.base_dir + "\n")
+                except Exception:
+                    pass
+
+            if self.base_dir not in sys.path:
+                sys.path.insert(0, self.base_dir)
+            user_sdk_dir = os.path.join(os.path.expanduser("~"), ".dgx", "sdk")
+            if user_sdk_dir not in sys.path:
+                sys.path.insert(0, user_sdk_dir)
+        except Exception as e:
+            print(f"[ExtensionManager] Notice ensuring SDK installed: {e}")
+
+    @Slot(str, result=str)
+    def create_custom_extension(self, name: str = "") -> str:
+        """Scaffolds a new user extension with a folder, extension.json, and main.py snippet. Returns path to main.py."""
+        clean_name = name.strip() if name and name.strip() else ""
+        if not clean_name:
+            base_name = "my_custom_extension"
+            clean_name = base_name
+            idx = 1
+            while os.path.exists(os.path.join(self.user_extensions_dir, clean_name)):
+                clean_name = f"{base_name}_{idx}"
+                idx += 1
+
+        ext_dir = os.path.join(self.user_extensions_dir, clean_name)
+        os.makedirs(ext_dir, exist_ok=True)
+
+        manifest = {
+            "id": f"user.{clean_name}",
+            "name": clean_name.replace("_", " ").title(),
+            "version": "1.0.0",
+            "author": "User",
+            "description": f"Custom pure-Python extension: {clean_name}",
+            "main": "main.py",
+            "categories": ["User Extensions"]
+        }
+
+        manifest_file = os.path.join(ext_dir, "extension.json")
+        with open(manifest_file, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+        main_py = os.path.join(ext_dir, "main.py")
+        snippet = f'''"""
+{clean_name} - DGX Studio Custom Extension
+"""
+import os
+import sys
+from ExtensionSDK import DGXExtensionContext
+
+_ctx: DGXExtensionContext = None
+
+def activate(ctx: DGXExtensionContext):
+    global _ctx
+    _ctx = ctx
+    print(f"[{clean_name}] Extension activated!")
+
+    # Show a welcoming Studio notification
+    ctx.notifications.show("{clean_name.replace('_', ' ').title()}", "Extension activated successfully!")
+
+    # Register a global Studio keyboard shortcut (e.g. Ctrl+Alt+E)
+    ctx.shortcuts.register("Ctrl+Alt+E", on_shortcut_triggered, "Toggle {clean_name}")
+
+def on_shortcut_triggered():
+    if _ctx:
+        curr_vol = _ctx.audio.get_music_volume()
+        _ctx.notifications.show("Action", f"Shortcut pressed! Current audio volume: {{curr_vol}}%")
+'''
+        with open(main_py, "w", encoding="utf-8") as f:
+            f.write(snippet)
+
+        # Rescan extensions so Studio loads it immediately
+        self.reload_extensions()
+        print(f"[ExtensionManager] Created new custom extension '{clean_name}' at {ext_dir}")
+        return main_py.replace("\\", "/")
 
 
 
@@ -4260,6 +4573,13 @@ class ExtensionManager(QObject):
                     shutil.move(source_dir, target_dir)
 
                     shutil.rmtree(temp_extract, ignore_errors=True)
+
+                    contribs = manifest.get("contributes", {})
+                    if contribs.get("iconThemes") or contribs.get("fileIconThemes"):
+                        self._register_contributed_icon_themes(target_dir, contribs, ext_id)
+                        new_themes = contribs.get("iconThemes") or contribs.get("fileIconThemes")
+                        if new_themes and isinstance(new_themes, list) and "id" in new_themes[0]:
+                            self.set_active_icon_theme(new_themes[0]["id"])
 
                     self.reload_extensions()
 
@@ -12314,6 +12634,28 @@ RESPONSE FORMAT (JSON ONLY, NO MARKDOWN OUTSIDE JSON):
     def play_tone(self, frequency: int, duration_ms: int):
 
         pass
+
+
+
+    @Slot(result=float)
+    def get_music_volume(self) -> float:
+        """Returns the current Studio music player volume between 0.0 and 1.0 (or 0-100)."""
+        if hasattr(self, "music_player") and self.music_player:
+            vol = getattr(self.music_player, "_volume", 0.8)
+            return float(vol)
+        return 0.8
+
+    @Slot(float, result=bool)
+    def set_music_volume(self, volume: float) -> bool:
+        """Sets the Studio music player volume. Accepts 0.0-1.0 or 0-100."""
+        if hasattr(self, "music_player") and self.music_player:
+            val = float(volume)
+            if val > 1.0:
+                val = val / 100.0
+            val = max(0.0, min(1.0, val))
+            self.music_player.set_volume(val)
+            return True
+        return False
 
 
 

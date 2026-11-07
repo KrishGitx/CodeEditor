@@ -86,4 +86,4 @@ print("\nALL ACCEPTANCE CRITERIA RIGOROUSLY VALIDATED AND PASSING!")
 if backend.lsp_process:
     try: backend.lsp_process.terminate()
     except Exception: pass
-sys.exit(0)
+os._exit(0)

@@ -3,7 +3,9 @@ smart_engine.prompt - System Prompt, Context Assembly & Response Contract Parser
 """
 
 import json
+import os
 import re
+import sys
 from typing import Dict, Any, Tuple, Optional, List
 from smart_engine.actions import SmartSafetyGuard
 
@@ -262,7 +264,31 @@ def parse_smart_response(
             repaired = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_cand)
             data = json.loads(repaired)
         except Exception as ex:
-            return False, {}, f"Invalid JSON format in AI response: {ex}"
+            # Key-value fallback parsing for plain-text AI responses
+            kv_dict = {}
+            for line in text.splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    k_clean = k.strip().lower()
+                    v_clean = v.strip()
+                    if k_clean in ("tool", "tool name"):
+                        kv_dict["tool"] = v_clean
+                    elif k_clean in ("package", "package name"):
+                        kv_dict["package"] = v_clean
+                    elif k_clean == "executable":
+                        kv_dict["executable"] = v_clean
+                    elif k_clean in ("command", "install command"):
+                        kv_dict["command"] = v_clean
+                    elif k_clean in ("verify", "verification", "verify command", "verification command"):
+                        kv_dict["verificationCommand"] = v_clean
+                    elif k_clean in ("explanation", "diagnosis"):
+                        kv_dict[k_clean] = v_clean
+                    elif k_clean in ("resolution type", "resolutiontype"):
+                        kv_dict["resolutionType"] = v_clean
+            if kv_dict and ("command" in kv_dict or "tool" in kv_dict or "package" in kv_dict):
+                data = kv_dict
+            else:
+                return False, {}, f"Invalid JSON format in AI response: {ex}"
 
     if not isinstance(data, dict):
         return False, {}, "AI response root must be a JSON object."
@@ -403,10 +429,20 @@ def parse_smart_response(
         diag_summary = data.get("explanation") or ""
 
     first_cmd = validated_actions[0]["command"] if validated_actions else data.get("command", "")
-    v_cmd = data.get("verificationCommand") or data.get("verify") or f"{fallback_exec or fallback_tool} --version"
+    v_cmd = data.get("verificationCommand") or data.get("verify") or data.get("verifyCommand") or f"{fallback_exec or fallback_tool} --version"
+    t_name = data.get("tool") or data.get("toolName") or fallback_tool
+    pkg_name = data.get("package") or data.get("packageName") or fallback_exec or fallback_tool
+    exec_name = data.get("executable") or fallback_exec or fallback_tool
 
     normalized = {
         "status": status,
+        "tool": t_name,
+        "toolName": t_name,
+        "package": pkg_name,
+        "packageName": pkg_name,
+        "executable": exec_name,
+        "dependencyType": data.get("dependencyType") or data.get("dependency_type") or "tool",
+        "dependency_type": data.get("dependencyType") or data.get("dependency_type") or "tool",
         "title": data.get("title") or (decision_req.get("question") if decision_req else f"Smart Fix: {fallback_tool or 'Workflow'}"),
         "diagnosis": diag_summary,
         "explanation": data.get("explanation") or diag_summary,

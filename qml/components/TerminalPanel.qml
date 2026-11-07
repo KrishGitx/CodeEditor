@@ -21,11 +21,11 @@ Rectangle {
     property string currentCwd: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_cwd) ? terminalBackend.get_cwd() : ((typeof backend !== "undefined" && backend && backend.folder_path) ? backend.folder_path : "C:\\")
     property string currentPrompt: (typeof terminalBackend !== "undefined" && terminalBackend && terminalBackend.get_prompt) ? terminalBackend.get_prompt() : ("PS " + currentCwd + "> ")
     property string terminalBuffer: ""
-    property string outputBuffer: "[DGX Output & Execution Channel Ready]\n"
+    property string outputBuffer: "[Pod Studio Output & Execution Channel Ready]\n"
 
     readonly property var promptMatch: {
         var buf = root.terminalBuffer;
-        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)$/) : null;
+        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)\s*$/) : null;
     }
     readonly property string realPrompt: promptMatch ? promptMatch[1] : (root.currentPrompt || "PS > ")
     readonly property string displayedHistory: {
@@ -41,7 +41,7 @@ Rectangle {
 
     readonly property var secPromptMatch: {
         var buf = root.secTerminalBuffer;
-        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)$/) : null;
+        return buf ? buf.match(/(?:^|\r?\n)(PS [^\r\n>]+> ?|[^\r\n$]+[$#] ?)\s*$/) : null;
     }
     readonly property string secRealPrompt: secPromptMatch ? secPromptMatch[1] : (root.currentPrompt || "PS > ")
     readonly property string secDisplayedHistory: {
@@ -67,8 +67,8 @@ Rectangle {
         if (!raw) return "";
         var esc = escapeHtml(raw);
         var purple = (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7";
-        var styled = esc.replace(/(PS [^&\r\n]+&gt;)/g, '<span style="color: ' + purple + '; font-weight: bold;">$1</span>');
-        return "<pre style='margin: 0; padding: 0; font-family: inherit; font-size: inherit; white-space: pre-wrap; word-wrap: break-word; color: " + (theme ? theme.textPrimary : "#cccccc") + ";'>" + styled + "</pre>";
+        var styled = esc.replace(/(PS [^&\r\n]+&gt;)/g, '<span style="color: ' + purple + '; font-weight: 500;">$1</span>');
+        return "<pre style='margin: 0; padding: 0; font-family: inherit; font-size: inherit; white-space: pre-wrap; word-wrap: break-word; color: " + (theme ? theme.textPrimary : "#cccccc") + "; font-weight: normal;'>" + styled + "</pre>";
     }
 
     readonly property string formattedHistory: formatTerminalHistory(displayedHistory)
@@ -78,28 +78,68 @@ Rectangle {
         id: problemsModel
     }
 
+    property string pendingTerminalChunk: ""
+    property string pendingSecTerminalChunk: ""
+
+    Timer {
+        id: terminalFlushTimer
+        interval: 16
+        repeat: false
+        onTriggered: {
+            if (root.pendingTerminalChunk.length > 0) {
+                root.terminalBuffer += root.pendingTerminalChunk;
+                root.pendingTerminalChunk = "";
+                scrollTimer.restart();
+            }
+            if (root.pendingSecTerminalChunk.length > 0) {
+                root.secTerminalBuffer += root.pendingSecTerminalChunk;
+                root.pendingSecTerminalChunk = "";
+                scrollTimer.restart();
+            }
+        }
+    }
+
+    function appendTerminalText(text, isSec) {
+        if (!text) return;
+        if (text === "__CLEAR_BUFFER__") {
+            if (isSec) {
+                root.pendingSecTerminalChunk = "";
+                root.secTerminalBuffer = "";
+            } else {
+                root.pendingTerminalChunk = "";
+                root.terminalBuffer = "";
+            }
+            return;
+        }
+
+        var normalized = text.replace(/\r\r\n/g, "\n").replace(/\r\n/g, "\n");
+        if (isSec) {
+            root.pendingSecTerminalChunk += normalized;
+            if (root.pendingSecTerminalChunk.length >= 2048) {
+                root.secTerminalBuffer += root.pendingSecTerminalChunk;
+                root.pendingSecTerminalChunk = "";
+                scrollTimer.restart();
+            } else {
+                terminalFlushTimer.restart();
+            }
+        } else {
+            root.pendingTerminalChunk += normalized;
+            if (root.pendingTerminalChunk.length >= 2048) {
+                root.terminalBuffer += root.pendingTerminalChunk;
+                root.pendingTerminalChunk = "";
+                scrollTimer.restart();
+            } else {
+                terminalFlushTimer.restart();
+            }
+        }
+    }
+
     Connections {
         target: typeof terminalBackend !== "undefined" ? terminalBackend : null
         ignoreUnknownSignals: true
 
-                function onSessionOutputReceived(sessionId, text) {
-            if (sessionId === 1) {
-                if (text === "__CLEAR_BUFFER__") {
-                    root.secTerminalBuffer = "";
-                } else {
-                    root.secTerminalBuffer += text;
-                    scrollTimer.restart();
-                }
-            }
-        }
-
-        function onOutputReceived(text) {
-            if (text === "__CLEAR_BUFFER__") {
-                root.terminalBuffer = "";
-            } else {
-                root.terminalBuffer += text;
-                scrollTimer.restart();
-            }
+        function onSessionOutputReceived(sessionId, text) {
+            root.appendTerminalText(text, sessionId === 1);
         }
 
         function onCommandRunningChanged(running) {
@@ -573,7 +613,7 @@ Rectangle {
                                             text: root.realPrompt
                                             color: (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7"
                                             font.pixelSize: 12
-                                            font.bold: true
+                                            font.bold: false
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
                                         }
 
@@ -748,7 +788,7 @@ Rectangle {
                                             text: root.secRealPrompt
                                             color: (typeof theme !== "undefined" && theme && theme.terminalPrompt) ? theme.terminalPrompt : "#a855f7"
                                             font.pixelSize: 12
-                                            font.bold: true
+                                            font.bold: false
                                             font.family: theme ? theme.fontFamilyMono : "monospace"
                                         }
 
@@ -942,6 +982,11 @@ Rectangle {
     }
 
     function executeCommand(customCmd) {
+        root.activeTab = "TERMINAL";
+        if (root.pendingTerminalChunk.length > 0) {
+            root.terminalBuffer += root.pendingTerminalChunk;
+            root.pendingTerminalChunk = "";
+        }
         var cmd = (typeof customCmd !== "undefined") ? customCmd : activeTerminalInput.text;
         if (!customCmd) {
             if (cmd.trim().length > 0) {
@@ -965,7 +1010,7 @@ Rectangle {
             if (!root.isCommandRunning) {
                 root.terminalBuffer += root.currentPrompt + cmd + "\n";
             }
-            root.terminalBuffer += "[DGX Simulated]: " + cmd + "\n";
+            root.terminalBuffer += "[Pod Simulated]: " + cmd + "\n";
             scrollTimer.restart();
         }
     }

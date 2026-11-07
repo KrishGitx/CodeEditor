@@ -24,10 +24,49 @@ Rectangle {
     border.width: 1
     clip: true
 
+    function hexToHsv(hex) {
+        if (!hex) return { h: 0.58, s: 1.0, v: 0.83 };
+        var cleanHex = hex.toString().replace("#", "").trim();
+        if (cleanHex.length === 3) {
+            cleanHex = cleanHex[0] + cleanHex[0] + cleanHex[1] + cleanHex[1] + cleanHex[2] + cleanHex[2];
+        }
+        if (cleanHex.length < 6) return { h: 0.58, s: 1.0, v: 0.83 };
+        var r = parseInt(cleanHex.substring(0, 2), 16) / 255.0;
+        var g = parseInt(cleanHex.substring(2, 4), 16) / 255.0;
+        var b = parseInt(cleanHex.substring(4, 6), 16) / 255.0;
+        if (isNaN(r) || isNaN(g) || isNaN(b)) return { h: 0.58, s: 1.0, v: 0.83 };
+
+        var max = Math.max(r, g, b);
+        var min = Math.min(r, g, b);
+        var delta = max - min;
+
+        var h = 0;
+        var s = (max === 0) ? 0 : (delta / max);
+        var v = max;
+
+        if (delta !== 0) {
+            if (max === r) {
+                h = ((g - b) / delta) % 6;
+            } else if (max === g) {
+                h = ((b - r) / delta) + 2;
+            } else {
+                h = ((r - g) / delta) + 4;
+            }
+            h = h / 6.0;
+            if (h < 0) h += 1.0;
+        }
+        return { h: Math.max(0.0, Math.min(1.0, h)), s: Math.max(0.0, Math.min(1.0, s)), v: Math.max(0.0, Math.min(1.0, v)) };
+    }
+
     function openAtColor(hex) {
         if (hex) {
             root.selectedColor = hex;
             hexField.text = hex.toUpperCase();
+            var hsv = hexToHsv(hex);
+            root.hueVal = hsv.h;
+            root.satVal = hsv.s;
+            root.valVal = hsv.v;
+            satCanvas.requestPaint();
         }
     }
 

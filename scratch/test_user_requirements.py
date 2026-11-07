@@ -29,9 +29,10 @@ def test_qml_properties():
     with open("qml/components/EditorArea.qml", "r", encoding="utf-8") as f:
         ea = f.read()
 
-    assert 'enabled: Boolean(codeTextArea && codeTextArea.activeFocus)' in ea, "EditorArea F2 must be scoped to active editor focus"
-    assert 'mainWindow.showNotification' in ea, "EditorArea F2 has helpful feedback toast when no symbol selected"
-    print("PASS: EditorArea F2 scoped properly without collision")
+    # F2 must ONLY rename file, and never pop up rename symbol/word
+    assert 'root.triggerRenameSymbol()' not in ea or 'sequence: "F2"' not in ea, "EditorArea must not bind F2 to triggerRenameSymbol"
+    assert 'mainWindow.renameActiveOrSelectedFile' in ea, "EditorArea F2 forwards to renameActiveOrSelectedFile"
+    print("PASS: EditorArea F2 exclusively renames file without symbol rename popup")
 
 if __name__ == "__main__":
     test_qml_properties()

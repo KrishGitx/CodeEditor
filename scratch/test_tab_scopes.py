@@ -60,3 +60,5 @@ call_js(editor, "switchToTab", 1)
 app.processEvents()
 s_b2 = get_scopes(editor)
 print("DocB after switch back scopes:", s_b2)
+import os
+os._exit(0)

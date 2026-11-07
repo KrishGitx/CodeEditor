@@ -61,7 +61,7 @@ Item {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "DGX"
+                text: "Pod"
                 color: theme ? theme.textPrimary : "#f1f5f9"
                 font.pixelSize: 11
                 font.bold: true

@@ -1,0 +1,20 @@
+context = browser.new_context(
+    user_agent=(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/142.0.0.0 Safari/537.36"
+    ),
+    viewport={"width": 1920, "height": 1080},
+    locale="en-US",
+    timezone_id="Asia/Kolkata",
+)
+
+page = context.new_page()
+
+page.goto(
+    "https://chatgpt.com/",
+    wait_until="domcontentloaded",
+)
+
+print(page.title())
+print(page.url)

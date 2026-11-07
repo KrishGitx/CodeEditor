@@ -95,7 +95,7 @@ Rectangle {
             append({
                 msgId: "welcome_1",
                 role: "assistant",
-                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code.",
+                content: "Pod AI Assistant ready. Ask questions, generate functions, or debug code.",
                 isSelectionRequest: false,
                 selectionStart: -1,
                 selectionEnd: -1,
@@ -255,7 +255,7 @@ Rectangle {
                             chatHistoryModel.append({
                                 msgId: "welcome_" + Date.now(),
                                 role: "assistant",
-                                content: "DGX AI Assistant ready. Ask questions, generate functions, or debug code.",
+                                content: "Pod AI Assistant ready. Ask questions, generate functions, or debug code.",
                                 isSelectionRequest: false,
                                 selectionStart: -1,
                                 selectionEnd: -1,

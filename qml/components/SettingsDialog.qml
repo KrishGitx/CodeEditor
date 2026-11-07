@@ -213,6 +213,16 @@ Rectangle {
         }
     }
 
+    property int iconThemeVersion: 0
+
+    Connections {
+        target: typeof extensionManager !== "undefined" ? extensionManager : null
+        ignoreUnknownSignals: true
+        function onIconThemeChanged() {
+            root.iconThemeVersion++;
+        }
+    }
+
     property var themeList: (theme && theme.availableThemes && theme.availableThemes.length > 0)
         ? theme.availableThemes
         : (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_available_themes
@@ -721,6 +731,79 @@ Rectangle {
                                                 if (theme) {
                                                     theme.setTheme(modelData.id);
                                                     root.themeSelected(modelData.id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item { width: 1; height: 10 }
+
+                            Text {
+                                text: "File & Folder Icon Theme"
+                                color: theme ? theme.textSecondary : "#858585"
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+
+                            Grid {
+                                width: parent.width
+                                columns: 2
+                                spacing: 10
+
+                                Repeater {
+                                    model: (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_available_icon_themes)
+                                        ? extensionManager.get_available_icon_themes()
+                                        : [{ id: "none", label: "Minimalist (Built-in)" }]
+
+                                    delegate: Rectangle {
+                                        width: (parent.width - 10) / 2
+                                        height: 44
+                                        radius: theme ? theme.radiusSm : 4
+                                        readonly property int iconThemeVer: root.iconThemeVersion
+                                        readonly property bool isActiveTheme: {
+                                            var _ = iconThemeVer;
+                                            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.get_active_icon_theme) {
+                                                return extensionManager.get_active_icon_theme() === modelData.id;
+                                            }
+                                            return modelData.id === "none";
+                                        }
+                                        color: isActiveTheme ? (theme ? theme.bgSurfaceActive : "#37373d") : (iconThemeItemMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#2a2d2e") : (theme ? theme.bgSurface : "#252526"))
+                                        border.color: isActiveTheme ? (theme ? theme.accent : "#0078d4") : (theme ? theme.borderNormal : "#333333")
+                                        border.width: 1
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            anchors.rightMargin: 12
+                                            spacing: 10
+
+                                            VectorIcon {
+                                                name: modelData.id === "none" ? "files" : "puzzle"
+                                                size: 14
+                                                color: isActiveTheme ? (theme ? theme.accent : "#0078d4") : (theme ? theme.textSecondary : "#858585")
+                                            }
+
+                                            Text {
+                                                text: modelData.label
+                                                color: isActiveTheme ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                                font.pixelSize: 12
+                                                font.bold: isActiveTheme
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: iconThemeItemMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.set_active_icon_theme) {
+                                                    extensionManager.set_active_icon_theme(modelData.id);
+                                                    root.iconThemeVersion++;
                                                 }
                                             }
                                         }

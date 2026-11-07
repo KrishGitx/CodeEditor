@@ -4,7 +4,19 @@ QtObject {
     id: root
 
     // Available themes dynamically loaded from themes/*.json
-    property string currentTheme: "obsidian"
+    readonly property var initialThemeObj: {
+        if (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_saved_theme_data) {
+            try {
+                var jsonStr = settingsBackend.get_saved_theme_data();
+                if (jsonStr) return JSON.parse(jsonStr);
+            } catch (e) {
+                console.log("[Theme] Error parsing initial theme data:", e);
+            }
+        }
+        return null;
+    }
+
+    property string currentTheme: (typeof settingsBackend !== "undefined" && settingsBackend && settingsBackend.get_saved_theme_name) ? settingsBackend.get_saved_theme_name() : "nord"
     property var availableThemes: []
 
     function refreshAvailableThemes() {
@@ -12,6 +24,17 @@ QtObject {
             var list = settingsBackend.get_available_themes();
             if (list && list.length > 0) {
                 root.availableThemes = list;
+            }
+        }
+    }
+
+    property var _themeConnections: Connections {
+        target: (typeof settingsBackend !== "undefined" && settingsBackend) ? settingsBackend : null
+        function onAvailableThemesChanged(newList) {
+            if (newList && newList.length > 0) {
+                root.availableThemes = newList;
+            } else {
+                root.refreshAvailableThemes();
             }
         }
     }
@@ -26,9 +49,11 @@ QtObject {
     property bool enableAutocomplete: true
     property bool enableWordWrap: false
     property bool enableMouseWheelZoom: true
-    property int editorFontSize: 13
-    property string editorFontFamily: "Consolas, 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
+    property int editorFontSize: 14
+    property string editorFontFamily: "Consolas"
     property int tabSize: 4
+    property real editorWordSpacing: 3.5
+    property real editorLetterSpacing: 0.5
     property string uiDensity: "compact" // "compact", "normal", "relaxed"
     property string contextMenuStyle: "radial" // "radial", "standard"
     property bool enableAI: true
@@ -181,50 +206,55 @@ QtObject {
     readonly property int animationDurationFast: enableAnimations ? 80 : 0
     readonly property int animationDurationNormal: enableAnimations ? 150 : 0
 
-    // Design Tokens & Colors - Default Obsidian (Clean Dark IDE)
-    property color bgRoot: "#181818"
-    property color bgHeader: "#181818"
-    property color bgPanel: "#181818"
-    property color bgEditor: "#1e1e1e"
-    property color bgSidebar: "#181818"
-    property color bgTerminal: "#181818"
-    property color bgSurface: "#252526"
-    property color bgSurfaceHover: "#2a2d2e"
-    property color bgSurfaceActive: "#37373d"
-    property color bgSelected: "#04395e"
-    property color bgInput: "#252526"
-    property color bgPopup: "#252526"
+    // Design Tokens & Colors - Preloaded from initialThemeObj on Frame 0
+    property color bgRoot: (initialThemeObj && initialThemeObj.bgRoot) ? initialThemeObj.bgRoot : "#242933"
+    property color bgHeader: (initialThemeObj && initialThemeObj.bgHeader) ? initialThemeObj.bgHeader : "#242933"
+    property color bgPanel: (initialThemeObj && initialThemeObj.bgPanel) ? initialThemeObj.bgPanel : "#242933"
+    property color bgEditor: (initialThemeObj && initialThemeObj.bgEditor) ? initialThemeObj.bgEditor : "#2e3440"
+    property color bgSidebar: (initialThemeObj && initialThemeObj.bgSidebar) ? initialThemeObj.bgSidebar : "#242933"
+    property color bgTerminal: (initialThemeObj && initialThemeObj.bgTerminal) ? initialThemeObj.bgTerminal : "#242933"
+    property color bgSurface: (initialThemeObj && initialThemeObj.bgSurface) ? initialThemeObj.bgSurface : "#2e3440"
+    property color bgSurfaceHover: (initialThemeObj && initialThemeObj.bgSurfaceHover) ? initialThemeObj.bgSurfaceHover : "#3b4252"
+    property color bgSurfaceActive: (initialThemeObj && initialThemeObj.bgSurfaceActive) ? initialThemeObj.bgSurfaceActive : "#434c5e"
+    property color bgSelected: (initialThemeObj && initialThemeObj.bgSelected) ? initialThemeObj.bgSelected : "#434c5e"
+    property color bgInput: (initialThemeObj && initialThemeObj.bgInput) ? initialThemeObj.bgInput : "#2e3440"
+    property color bgPopup: (initialThemeObj && initialThemeObj.bgPopup) ? initialThemeObj.bgPopup : "#2e3440"
 
-    property color borderSubtle: "#282828"
-    property color borderNormal: "#333333"
-    property color borderFocus: "#0078d4"
+    property color borderSubtle: (initialThemeObj && initialThemeObj.borderSubtle) ? initialThemeObj.borderSubtle : "#3b4252"
+    property color borderNormal: (initialThemeObj && initialThemeObj.borderNormal) ? initialThemeObj.borderNormal : "#434c5e"
+    property color borderFocus: (initialThemeObj && initialThemeObj.borderFocus) ? initialThemeObj.borderFocus : "#88c0d0"
 
-    property color textPrimary: "#cccccc"
-    property color textSecondary: "#858585"
-    property color textMuted: "#656565"
-    property color textDisabled: "#4d4d4d"
-    property color textBright: "#ffffff"
+    property color textPrimary: (initialThemeObj && initialThemeObj.textPrimary) ? initialThemeObj.textPrimary : "#d8dee9"
+    property color textSecondary: (initialThemeObj && initialThemeObj.textSecondary) ? initialThemeObj.textSecondary : "#98a2b3"
+    property color textMuted: (initialThemeObj && initialThemeObj.textMuted) ? initialThemeObj.textMuted : "#717d91"
+    property color textDisabled: (initialThemeObj && initialThemeObj.textDisabled) ? initialThemeObj.textDisabled : "#4c566a"
+    property color textBright: (initialThemeObj && initialThemeObj.textBright) ? initialThemeObj.textBright : "#eceff4"
 
-    property color accent: "#0078d4"
-    property color accentHover: "#1f8ad2"
-    property color accentActive: "#0062a3"
-    property color accentMuted: "#200078d4"
-    property color terminalPrompt: "#a855f7"
+    property color accent: (initialThemeObj && initialThemeObj.accent) ? initialThemeObj.accent : "#88c0d0"
+    property color accentHover: (initialThemeObj && initialThemeObj.accentHover) ? initialThemeObj.accentHover : "#81a1c1"
+    property color accentActive: (initialThemeObj && initialThemeObj.accentActive) ? initialThemeObj.accentActive : "#5e81ac"
+    property color accentMuted: (initialThemeObj && initialThemeObj.accentMuted) ? initialThemeObj.accentMuted : "#2588c0d0"
+    property color terminalPrompt: (initialThemeObj && initialThemeObj.terminalPrompt) ? initialThemeObj.terminalPrompt : "#b48ead"
 
-    property color success: "#4ec9b0"
-    property color warning: "#cca700"
-    property color error: "#f14c4c"
-    property color info: "#3794ff"
+    property color success: (initialThemeObj && initialThemeObj.success) ? initialThemeObj.success : "#a3be8c"
+    property color warning: (initialThemeObj && initialThemeObj.warning) ? initialThemeObj.warning : "#ebcb8b"
+    property color error: (initialThemeObj && initialThemeObj.error) ? initialThemeObj.error : "#bf616a"
+    property color info: (initialThemeObj && initialThemeObj.info) ? initialThemeObj.info : "#81a1c1"
 
     // Syntax Highlighting Tokens
-    property color synKeyword: "#569cd6"
-    property color synFunction: "#dcdcaa"
-    property color synString: "#ce9178"
-    property color synNumber: "#b5cea8"
-    property color synComment: "#6a9955"
-    property color synType: "#4ec9b0"
-    property color synCurrentLine: "#282828"
-    property color synSelection: "#264f78"
+    property color synKeyword: (initialThemeObj && initialThemeObj.synKeyword) ? initialThemeObj.synKeyword : "#81a1c1"
+    property color synFunction: (initialThemeObj && initialThemeObj.synFunction) ? initialThemeObj.synFunction : "#88c0d0"
+    property color synString: (initialThemeObj && initialThemeObj.synString) ? initialThemeObj.synString : "#a3be8c"
+    property color synNumber: (initialThemeObj && initialThemeObj.synNumber) ? initialThemeObj.synNumber : "#b48ead"
+    property color synComment: (initialThemeObj && initialThemeObj.synComment) ? initialThemeObj.synComment : "#616e88"
+    property color synType: (initialThemeObj && initialThemeObj.synType) ? initialThemeObj.synType : "#8fbcbb"
+    property color synCurrentLine: (initialThemeObj && initialThemeObj.synCurrentLine) ? initialThemeObj.synCurrentLine : "#383f4d"
+    property color borderCurrentLine: (initialThemeObj && initialThemeObj.borderCurrentLine) ? initialThemeObj.borderCurrentLine : "#282828"
+    property color editorLineNumberForeground: (initialThemeObj && initialThemeObj.editorLineNumberForeground) ? initialThemeObj.editorLineNumberForeground : "#656565"
+    property color editorLineNumberActiveForeground: (initialThemeObj && initialThemeObj.editorLineNumberActiveForeground) ? initialThemeObj.editorLineNumberActiveForeground : "#ffffff"
+    property color editorIndentGuideBackground: (initialThemeObj && initialThemeObj.editorIndentGuideBackground) ? initialThemeObj.editorIndentGuideBackground : "#404040"
+    property color editorIndentGuideActiveBackground: (initialThemeObj && initialThemeObj.editorIndentGuideActiveBackground) ? initialThemeObj.editorIndentGuideActiveBackground : "#707070"
+    property color synSelection: (initialThemeObj && initialThemeObj.synSelection) ? initialThemeObj.synSelection : "#434c5e"
 
     // Spacing & Sizing Tokens (Minimal & Dense IDE spacing)
     readonly property int radiusXs: 2
@@ -245,6 +275,7 @@ QtObject {
 
     readonly property string fontFamilyUi: "Segoe UI"
     readonly property string fontFamilyMono: "Consolas"
+    readonly property alias fontFamily: root.fontFamilyUi
 
     function setTheme(name) {
         var themeName = (name || "obsidian").toLowerCase().trim();

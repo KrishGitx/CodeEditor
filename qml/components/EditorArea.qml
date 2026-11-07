@@ -8,6 +8,8 @@ import "."
 Item {
     id: root
 
+    property var theme: null
+
     // Tab and Document Model
     ListModel {
         id: tabModel
@@ -20,6 +22,11 @@ Item {
     readonly property var currentTab: {
         var _ = dirtyVersion;
         return (activeTabIndex >= 0 && tabModel.count > activeTabIndex) ? tabModel.get(activeTabIndex) : null;
+    }
+    onCurrentTabChanged: {
+        if (root.currentTab && root.currentTab.isExtensionDetails && typeof extensionDetailsView !== "undefined" && extensionDetailsView) {
+            extensionDetailsView.extensionData = root.currentTab.extensionData;
+        }
     }
     property string activeFilePath: currentTab ? (currentTab.path || "") : ""
     property string activeFileName: currentTab ? (currentTab.title || "") : ""
@@ -45,15 +52,13 @@ Item {
     }
 
     Shortcut {
-        sequence: "Ctrl+G"
-        onActivated: quickOpenPalette.openGotoLine(root.cursorLine)
+        sequence: "Ctrl+Shift+P"
+        onActivated: quickOpenPalette.openCommands()
     }
-    
 
     Shortcut {
-        sequence: "F2"
-        enabled: Boolean(codeTextArea && codeTextArea.activeFocus)
-        onActivated: root.triggerRenameSymbol()
+        sequence: "Ctrl+G"
+        onActivated: quickOpenPalette.openGotoLine(root.cursorLine)
     }
 
 
@@ -118,9 +123,13 @@ Item {
     property bool isFormatting: false
     property int formatRequestSeq: 0
     property string activeFormatReqId: ""
+    property int pendingCloseTabIndex: -1
 
     Connections {
         target: (typeof backend !== "undefined" && backend) ? backend : null
+        function onCompletionsReceived(items) {
+            root.showCompletions(items);
+        }
         function onFormattingCompleted(reqId, filePath, success, formattedCode, message, available, extensionId) {
             if (root.activeFormatReqId !== "" && reqId !== root.activeFormatReqId) {
                 return;
@@ -322,7 +331,7 @@ Item {
     property bool isFoldingOperation: false
     property bool isRestoringTab: false
     property bool isInitialTextLoading: false
-    readonly property real editorLineHeight: fontMetrics.lineSpacing > 0 ? fontMetrics.lineSpacing : (fontMetrics.height > 0 ? fontMetrics.height : 18)
+    readonly property real editorLineHeight: Math.max(fontMetrics.height, fontMetrics.lineSpacing) > 0 ? Math.max(fontMetrics.height, fontMetrics.lineSpacing) : 18.0
     readonly property real charWidth: fontMetrics.advanceWidth(" ") > 0 ? fontMetrics.advanceWidth(" ") : (fontMetrics.width(" ") > 0 ? fontMetrics.width(" ") : 8.0)
     readonly property var cachedIndentLevelWidths: {
         var _dep = (fontMetrics.font.pixelSize || 13) + (fontMetrics.height || 0) + (typeof theme !== "undefined" && theme ? (theme.editorFontSize || 13) : 0);
@@ -578,7 +587,11 @@ Item {
                 } else if (nextValidIndent === -1) {
                     effectiveIndents[l] = 0;
                 } else if (prevValidIndent === nextValidIndent) {
-                    effectiveIndents[l] = prevValidIndent;
+                    if (lineHasOpeningBrace[prevValidLine] || lineEndsWithColon[prevValidLine]) {
+                        effectiveIndents[l] = prevValidIndent + 1;
+                    } else {
+                        effectiveIndents[l] = prevValidIndent;
+                    }
                 } else if (nextValidIndent > prevValidIndent) {
                     if (lineHasOpeningBrace[prevValidLine] || lineEndsWithColon[prevValidLine]) {
                         effectiveIndents[l] = nextValidIndent;
@@ -673,6 +686,8 @@ Item {
             }
         }
 
+        segments.lineIndents = lineIndents;
+        segments.effectiveIndents = effectiveIndents;
         return segments;
     }
 
@@ -706,6 +721,9 @@ Item {
     signal requestOpenFile()
     signal requestOpenFolder()
     signal requestRunFile()
+    signal toggleMaximizeEditorRequested()
+
+    property bool isEditorMaximized: false
 
     signal askAi(string code, int selectionStart, int selectionEnd, string languageId)
     signal sendAiPrompt(string prompt)
@@ -766,6 +784,13 @@ Item {
         onNewFileRequested: root.createNewFile()
         onOpenFileRequested: root.requestOpenFile()
         onOpenFolderRequested: root.requestOpenFolder()
+        onOpenRecentRequested: function(folderPath) {
+            if (typeof mainWindow !== "undefined" && mainWindow && mainWindow.openWorkspaceFolder) {
+                mainWindow.openWorkspaceFolder(folderPath);
+            } else {
+                root.requestOpenFolder();
+            }
+        }
     }
 
     // 2. Main Editor Workspace (Visible when at least 1 tab is open)
@@ -781,6 +806,8 @@ Item {
             tabModel: tabModel
             activeIndex: root.activeTabIndex
             isSplit: root.isSplitEditor
+            isMaximized: root.isEditorMaximized
+            onToggleMaximizeRequested: root.toggleMaximizeEditorRequested()
 
             onTabSelected: function(index) {
                 root.switchToTab(index);
@@ -846,7 +873,7 @@ Item {
                     Item {
                         id: codeEditorContainer
                         anchors.fill: parent
-                        visible: !root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && root.currentTab.languageId !== "webpreview" && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab)
+                        visible: !root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && root.currentTab.languageId !== "webpreview" && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab && !root.currentTab.isExtensionDetails)
 
                         Rectangle {
                             anchors.fill: parent
@@ -1165,15 +1192,17 @@ Item {
 
                                                         var fontPx = tabPane.paneFontSize > 0 ? tabPane.paneFontSize : 13;
                                                         var activeLine = (tabPane.index === root.activeTabIndex) ? root.cursorLine : -1;
-                                                        var mutedColor = (theme && theme.textMuted) ? theme.textMuted : "#656565";
-                                                        var brightColor = (theme && theme.textBright) ? theme.textBright : "#ffffff";
+                                                        var lineNumColor = (theme && theme.editorLineNumberForeground) ? theme.editorLineNumberForeground : ((theme && theme.textMuted) ? theme.textMuted : "#656565");
+                                                        var activeLineNumColor = (theme && theme.editorLineNumberActiveForeground) ? theme.editorLineNumberActiveForeground : ((theme && theme.textBright) ? theme.textBright : "#ffffff");
                                                         var accentColor = (theme && theme.accent) ? theme.accent : "#0078d4";
+                                                        var mutedColor = (theme && theme.textMuted) ? theme.textMuted : "#656565";
 
                                                         ctx.font = fontPx + "px Consolas, monospace";
                                                         ctx.textBaseline = "middle";
 
                                                         var topPad = codeTextArea.topPadding;
                                                         var gutterW = width;
+                                                        var isGutterHovered = (gutterMouseArea && gutterMouseArea.containsMouse);
 
                                                         for (var i = startLineIdx; i <= endLineIdx; i++) {
                                                             var lineNum = i + 1;
@@ -1183,14 +1212,16 @@ Item {
 
                                                             // Fold chevron if foldable
                                                             if (root.isFoldableLine(lineNum)) {
-                                                                var chev = root.getFoldChevron(lineNum);
                                                                 var isFolded = root.isLineFolded(lineNum);
-                                                                ctx.fillStyle = isFolded ? accentColor : mutedColor;
-                                                                ctx.fillText(chev, 6, yPos);
+                                                                if (isFolded || isGutterHovered) {
+                                                                    var chev = root.getFoldChevron(lineNum);
+                                                                    ctx.fillStyle = isFolded ? accentColor : mutedColor;
+                                                                    ctx.fillText(chev, 6, yPos);
+                                                                }
                                                             }
 
                                                             // Line number
-                                                            ctx.fillStyle = (lineNum === activeLine) ? brightColor : mutedColor;
+                                                            ctx.fillStyle = (lineNum === activeLine) ? activeLineNumColor : lineNumColor;
                                                             var numStr = lineNum.toString();
                                                             var numWidth = ctx.measureText(numStr).width;
                                                             ctx.fillText(numStr, gutterW - numWidth - 10, yPos);
@@ -1198,6 +1229,7 @@ Item {
                                                     }
 
                                                     MouseArea {
+                                                        id: gutterMouseArea
                                                         anchors.fill: parent
                                                         hoverEnabled: true
                                                         cursorShape: Qt.PointingHandCursor
@@ -1309,8 +1341,11 @@ Item {
                                                         var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
 
                                                         ctx.lineWidth = 1;
-                                                        ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d";
+                                                        ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.editorIndentGuideBackground) ? theme.editorIndentGuideBackground : ((theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d");
                                                         ctx.globalAlpha = 0.35;
+
+                                                        var lineIndents = segments.lineIndents;
+                                                        var effectiveIndents = segments.effectiveIndents;
 
                                                         for (var i = 0; i < segments.length; i++) {
                                                             var seg = segments[i];
@@ -1326,16 +1361,74 @@ Item {
 
                                                             if (drawX < -20 || drawX > width + 20) continue;
 
-                                                            var yStart = topPadding + (globalStart * lineH) - viewTop;
-                                                            var yEnd = seg.hasClosingBrace ? (topPadding + (globalEnd * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((globalEnd + 1) * lineH) - viewTop);
+                                                            if (!lineIndents || !effectiveIndents) {
+                                                                var yStart = topPadding + (globalStart * lineH) - viewTop;
+                                                                var yEnd = seg.hasClosingBrace ? (topPadding + (globalEnd * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((globalEnd + 1) * lineH) - viewTop);
 
-                                                            ctx.beginPath();
-                                                            ctx.moveTo(drawX, yStart);
-                                                            ctx.lineTo(drawX, yEnd);
-                                                            if (seg.hasClosingBrace) {
-                                                                ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
+                                                                ctx.beginPath();
+                                                                ctx.moveTo(drawX, yStart);
+                                                                ctx.lineTo(drawX, yEnd);
+                                                                if (seg.hasClosingBrace) {
+                                                                    ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
+                                                                }
+                                                                ctx.stroke();
+                                                                continue;
                                                             }
-                                                            ctx.stroke();
+
+                                                            var drawStart = -1;
+                                                            for (var L = globalStart; L <= globalEnd; L++) {
+                                                                var sliceLine = tabPane.isVirtualized ? (L - tabPane.windowStartLine) : L;
+                                                                var raw = (sliceLine >= 0 && sliceLine < lineIndents.length) ? lineIndents[sliceLine] : -1;
+                                                                var eff = (sliceLine >= 0 && sliceLine < effectiveIndents.length) ? effectiveIndents[sliceLine] : 0;
+
+                                                                var isClosingBraceLine = seg.hasClosingBrace && (L === globalEnd);
+                                                                var canDraw = (raw >= 0) ? (raw > lvl) : (eff > lvl);
+
+                                                                if (canDraw) {
+                                                                    if (drawStart === -1) {
+                                                                        drawStart = L;
+                                                                    }
+                                                                } else {
+                                                                    if (drawStart !== -1) {
+                                                                        var y1 = topPadding + (drawStart * lineH) - viewTop;
+                                                                        var y2 = isClosingBraceLine ? (topPadding + (L * lineH) + (lineH * 0.5) - viewTop) : (topPadding + (L * lineH) - viewTop);
+                                                                        ctx.beginPath();
+                                                                        ctx.moveTo(drawX, y1);
+                                                                        ctx.lineTo(drawX, y2);
+                                                                        if (isClosingBraceLine) {
+                                                                            ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                                        }
+                                                                        ctx.stroke();
+                                                                        drawStart = -1;
+                                                                    } else if (isClosingBraceLine && L > globalStart) {
+                                                                        var prevSlice = tabPane.isVirtualized ? (L - 1 - tabPane.windowStartLine) : (L - 1);
+                                                                        var prevRaw = (prevSlice >= 0 && prevSlice < lineIndents.length) ? lineIndents[prevSlice] : -1;
+                                                                        var prevEff = (prevSlice >= 0 && prevSlice < effectiveIndents.length) ? effectiveIndents[prevSlice] : 0;
+                                                                        var prevCanDraw = (prevRaw >= 0) ? (prevRaw > lvl) : (prevEff > lvl);
+                                                                        if (prevCanDraw) {
+                                                                            var y1 = topPadding + (L * lineH) - viewTop;
+                                                                            var y2 = topPadding + (L * lineH) + (lineH * 0.5) - viewTop;
+                                                                            ctx.beginPath();
+                                                                            ctx.moveTo(drawX, y1);
+                                                                            ctx.lineTo(drawX, y2);
+                                                                            ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                                            ctx.stroke();
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            if (drawStart !== -1) {
+                                                                var y1 = topPadding + (drawStart * lineH) - viewTop;
+                                                                var y2 = seg.hasClosingBrace ? (topPadding + (globalEnd * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((globalEnd + 1) * lineH) - viewTop);
+                                                                ctx.beginPath();
+                                                                ctx.moveTo(drawX, y1);
+                                                                ctx.lineTo(drawX, y2);
+                                                                if (seg.hasClosingBrace) {
+                                                                    ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                                }
+                                                                ctx.stroke();
+                                                            }
                                                         }
                                                         ctx.globalAlpha = 1.0;
                                                     }
@@ -1524,12 +1617,14 @@ Item {
                                                     // Current Line Highlight Band
                                                     Rectangle {
                                                         id: currentLineHighlight
+                                                        objectName: "currentLineHighlight"
                                                         x: 0
-                                                        y: (root.cursorLine - 1) * tabPane.paneLineHeight + codeTextArea.topPadding
+                                                        y: (codeTextArea && codeTextArea.cursorRectangle.height > 0) ? (materializedEditorContainer.y + codeTextArea.cursorRectangle.y) : ((root.cursorLine - 1) * tabPane.paneLineHeight + codeTextArea.topPadding)
                                                         width: Math.max(editorFlickable.contentWidth, editorFlickable.width)
-                                                        height: tabPane.paneLineHeight
-                                                        color: (theme && theme.synCurrentLine) ? theme.synCurrentLine : "#282828"
-                                                        opacity: 0.35
+                                                        height: (codeTextArea && codeTextArea.cursorRectangle.height > 0) ? codeTextArea.cursorRectangle.height : tabPane.paneLineHeight
+                                                        color: (theme && theme.synCurrentLine) ? theme.synCurrentLine : "transparent"
+                                                        border.color: (theme && theme.borderCurrentLine) ? theme.borderCurrentLine : ((theme && theme.borderSubtle) ? theme.borderSubtle : "#282828")
+                                                        border.width: (border.color && border.color !== "transparent") ? 1 : 0
                                                         z: 0
                                                         visible: codeTextArea.cursorRectangle.height > 0 && tabPane.index === root.activeTabIndex
                                                     }
@@ -1630,6 +1725,72 @@ Item {
                                                                     codeTextArea.cursorVisible = true;
                                                                     activeCaretRect.opacity = 1.0;
                                                                     caretBlinkTimer.restart();
+                                                                    if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip) {
+                                                                        functionHoverTooltip.hide();
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            HoverHandler {
+                                                                id: editorHoverHandler
+                                                                onHoveredChanged: {
+                                                                    if (!hovered) {
+                                                                        hoverDebounceTimer.stop();
+                                                                        if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip) {
+                                                                            functionHoverTooltip.hide();
+                                                                        }
+                                                                    }
+                                                                }
+                                                                onPointChanged: {
+                                                                    if (hovered && tabPane.index === root.activeTabIndex) {
+                                                                        hoverDebounceTimer.restart();
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            Timer {
+                                                                id: hoverDebounceTimer
+                                                                interval: 320
+                                                                repeat: false
+                                                                onTriggered: {
+                                                                    if (!editorHoverHandler.hovered || tabPane.index !== root.activeTabIndex || !codeTextArea) return;
+                                                                    var hx = editorHoverHandler.point.position.x;
+                                                                    var hy = editorHoverHandler.point.position.y;
+                                                                    var charPos = codeTextArea.positionAt(hx, hy);
+                                                                    if (charPos < 0 || charPos >= codeTextArea.text.length) return;
+
+                                                                    var text = codeTextArea.text;
+                                                                    var ch = text.charAt(charPos);
+                                                                    if (!/[a-zA-Z0-9_]/.test(ch)) return;
+
+                                                                    var line = 1, col = 0;
+                                                                    for (var i = 0; i < charPos; i++) {
+                                                                        if (text.charAt(i) === '\n') {
+                                                                            line++;
+                                                                            col = 0;
+                                                                        } else {
+                                                                            col++;
+                                                                        }
+                                                                    }
+                                                                    if (tabPane.isVirtualized) {
+                                                                        line += tabPane.windowStartLine;
+                                                                    }
+
+                                                                    var filePath = (model && model.path) ? model.path : "";
+                                                                    if (typeof backend !== "undefined" && backend && backend.get_hover_info) {
+                                                                        var res = backend.get_hover_info(filePath, line, col, text);
+                                                                        if (res && res.found) {
+                                                                            var r = codeTextArea.positionToRectangle(charPos);
+                                                                            var pt = codeTextArea.mapToItem(textAreaContainer, r.x, r.y);
+                                                                            if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip) {
+                                                                                functionHoverTooltip.showAt(pt.x, pt.y, res.symbol, res.title, res.doc, res.kind, textAreaContainer.width, textAreaContainer.height, r.height);
+                                                                            }
+                                                                        } else {
+                                                                            if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip) {
+                                                                                functionHoverTooltip.hide();
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
 
@@ -1646,7 +1807,14 @@ Item {
                                                                             tabPane.checkAndShiftWindow(true);
                                                                         }
                                                                         if (canvasDebounceTimer) {
-                                                                            canvasDebounceTimer.restart();
+                                                                            if (theme && theme.enableAutocomplete) {
+                                                                var curP = codeTextArea.cursorPosition;
+                                                                if (curP > 0 && codeTextArea.text.charAt(curP - 1) === ".") {
+                                                                    autocompleteTimer.interval = 10;
+                                                                    autocompleteTimer.restart();
+                                                                }
+                                                            }
+                                                            canvasDebounceTimer.restart();
                                                                         }
                                                                     }
                                                                 });
@@ -1840,6 +2008,9 @@ Item {
                                                         }
 
                                                         onCursorPositionChanged: {
+                                                            if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip && functionHoverTooltip.isOpen) {
+                                                                functionHoverTooltip.hide();
+                                                            }
                                                             if (tabPane.index === root.activeTabIndex) {
                                                                 root.updateCursorPosition();
                                                                 root.ensureCursorVisible();
@@ -1880,6 +2051,9 @@ Item {
                                                         }
 
                                                         onTextChanged: {
+                                                            if (typeof functionHoverTooltip !== "undefined" && functionHoverTooltip && functionHoverTooltip.isOpen) {
+                                                                functionHoverTooltip.hide();
+                                                            }
                                                             if (root.isInitialTextLoading || root.isRestoringTab || root.isFoldingOperation) return;
                                                             if (index >= 0 && index < tabModel.count) {
                                                                 var curTab = tabModel.get(index);
@@ -1895,6 +2069,21 @@ Item {
                                                                             }
                                                                         }
                                                                     }
+                                                                }
+                                                            }
+                                                            if (root.isSplitEditor && root.secondaryTabIndex === index && typeof secCodeTextArea !== "undefined" && secCodeTextArea && secCodeTextArea.text !== codeTextArea.text) {
+                                                                root.isSyncingSecondary = true;
+                                                                try {
+                                                                    secCodeTextArea.text = codeTextArea.text;
+                                                                } finally {
+                                                                    root.isSyncingSecondary = false;
+                                                                }
+                                                            }
+                                                            if (theme && theme.enableAutocomplete) {
+                                                                var curP = codeTextArea.cursorPosition;
+                                                                if (curP > 0 && codeTextArea.text.charAt(curP - 1) === ".") {
+                                                                    autocompleteTimer.interval = 10;
+                                                                    autocompleteTimer.restart();
                                                                 }
                                                             }
                                                             canvasDebounceTimer.restart();
@@ -1971,9 +2160,11 @@ Item {
                                                                 }
                                                             }
 
-                                                            // F2 Rename Symbol shortcut
+                                                            // F2 Rename File shortcut
                                                             if (event.key === Qt.Key_F2) {
-                                                                root.triggerRenameSymbol();
+                                                                if (typeof mainWindow !== "undefined" && mainWindow && mainWindow.renameActiveOrSelectedFile) {
+                                                                    mainWindow.renameActiveOrSelectedFile();
+                                                                }
                                                                 event.accepted = true;
                                                                 return;
                                                             }
@@ -2549,9 +2740,14 @@ Item {
                                                                 return;
                                                             }
 
-                                                            // 6. Trigger Autocomplete on typing word characters or backspacing
+                                                            // 6. Trigger Autocomplete on typing word characters, backspacing, or dot
                                                             if (theme && theme.enableAutocomplete) {
                                                                 if (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete || (event.text && event.text.length === 1 && /[a-zA-Z0-9_\.]/.test(event.text))) {
+                                                                    if (event.text === ".") {
+                                                                        autocompleteTimer.interval = 40;
+                                                                    } else {
+                                                                        autocompleteTimer.interval = 200;
+                                                                    }
                                                                     autocompleteTimer.restart();
                                                                 }
                                                             }
@@ -2574,7 +2770,7 @@ Item {
                                 id: codeMinimap
                                 objectName: "codeMinimap"
                                 Layout.fillHeight: true
-                                visible: (theme ? theme.enableMinimap : true) && (!root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab))
+                                visible: (theme ? theme.enableMinimap : true) && (!root.currentTab || (!root.currentTab.isWhiteboard && !root.currentTab.isWebPreview && !root.currentTab.isSettings && root.currentTab.languageId !== "settings" && !root.currentTab.isCustomExtensionTab && !root.currentTab.isExtensionDetails))
                                 documentText: ""
                                 totalLineCount: root.activeEditorPane ? root.activeEditorPane.paneTotalLineCount : 1
                                 visibleRatio: root.editorFlickable ? (root.editorFlickable.height / Math.max(1, root.editorFlickable.contentHeight)) : 1.0
@@ -2715,7 +2911,7 @@ Item {
                             z: 115
 
                             background: Rectangle {
-                                implicitWidth: 180
+                                implicitWidth: 240
                                 color: theme ? theme.bgPopup : "#252526"
                                 border.color: theme ? theme.borderNormal : "#333333"
                                 radius: theme ? theme.radiusSm : 3
@@ -2766,16 +2962,192 @@ Item {
                             delegate: MenuItem {
                                 id: stdItm
                                 implicitHeight: 26
-                                contentItem: Text {
-                                    text: stdItm.text
-                                    color: stdItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
-                                    font.pixelSize: 12
-                                    verticalAlignment: Text.AlignVCenter
-                                    leftPadding: 8
-                                    rightPadding: 8
+                                implicitWidth: 240
+                                contentItem: RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
+                                    spacing: 12
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: stdItm.text.split("\t")[0]
+                                        color: stdItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textPrimary : "#cccccc")
+                                        font.pixelSize: 12
+                                        font.family: (typeof theme !== "undefined" && theme) ? theme.fontFamilyUi : "sans-serif"
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    Text {
+                                        text: stdItm.text.indexOf("\t") !== -1 ? stdItm.text.split("\t")[1] : ""
+                                        color: stdItm.highlighted ? (theme ? theme.textBright : "#ffffff") : (theme ? theme.textMuted : "#858585")
+                                        font.pixelSize: 11
+                                        font.family: (typeof theme !== "undefined" && theme) ? theme.fontFamilyUi : "sans-serif"
+                                        verticalAlignment: Text.AlignVCenter
+                                        visible: text.length > 0
+                                    }
                                 }
                                 background: Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 1
+                                    radius: 2
                                     color: stdItm.highlighted ? (theme ? theme.bgSelected : "#04395e") : "transparent"
+                                }
+                            }
+                        }
+
+                        // Unsaved Changes Confirmation Dialog
+                        Dialog {
+                            id: unsavedChangesDialog
+                            modal: true
+                            focus: true
+                            anchors.centerIn: parent
+                            width: 420
+                            standardButtons: Dialog.NoButton
+                            closePolicy: Popup.CloseOnEscape
+
+                            readonly property string tabTitle: (root.pendingCloseTabIndex >= 0 && root.pendingCloseTabIndex < tabModel.count) ? (tabModel.get(root.pendingCloseTabIndex).title || "Untitled") : ""
+
+                            background: Rectangle {
+                                color: theme ? theme.bgPopup : "#252526"
+                                border.color: theme ? theme.borderNormal : "#3c3c3c"
+                                border.width: 1
+                                radius: theme ? theme.radiusSm : 4
+                            }
+
+                            header: Item {
+                                height: 36
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: theme ? theme.bgHeader : "#1e1e1e"
+                                    radius: theme ? theme.radiusSm : 4
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        height: 1
+                                        color: theme ? theme.borderSubtle : "#333333"
+                                    }
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 16
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "Pod Studio"
+                                        font.bold: true
+                                        font.pixelSize: 12
+                                        color: theme ? theme.textBright : "#ffffff"
+                                    }
+                                }
+                            }
+
+                            contentItem: ColumnLayout {
+                                spacing: 12
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: "Do you want to save the changes you made to " + unsavedChangesDialog.tabTitle + "?"
+                                    color: theme ? theme.textBright : "#ffffff"
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+
+                                Text {
+                                    text: "Your changes will be lost if you don't save them."
+                                    color: theme ? theme.textSecondary : "#999999"
+                                    font.pixelSize: 11
+                                    wrapMode: Text.WordWrap
+                                    Layout.fillWidth: true
+                                }
+
+                                Item { Layout.preferredHeight: 4 }
+
+                                RowLayout {
+                                    Layout.alignment: Qt.AlignRight
+                                    spacing: 8
+
+                                    // Save button
+                                    Rectangle {
+                                        width: 76
+                                        height: 28
+                                        radius: 3
+                                        color: saveMa.containsMouse ? (theme ? theme.accentHover : "#106ebe") : (theme ? theme.accent : "#0078d4")
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Save"
+                                            color: "#ffffff"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+                                        MouseArea {
+                                            id: saveMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                var idx = root.pendingCloseTabIndex;
+                                                unsavedChangesDialog.close();
+                                                if (idx >= 0 && idx < tabModel.count) {
+                                                    root.saveFile();
+                                                    root.closeTab(idx, true);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Don't Save button
+                                    Rectangle {
+                                        width: 86
+                                        height: 28
+                                        radius: 3
+                                        color: dontSaveMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#37373d") : (theme ? theme.bgSurface : "#2a2d2e")
+                                        border.color: theme ? theme.borderNormal : "#3c3c3c"
+                                        border.width: 1
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Don't Save"
+                                            color: theme ? theme.textBright : "#ffffff"
+                                            font.pixelSize: 11
+                                        }
+                                        MouseArea {
+                                            id: dontSaveMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                var idx = root.pendingCloseTabIndex;
+                                                unsavedChangesDialog.close();
+                                                if (idx >= 0 && idx < tabModel.count) {
+                                                    root.closeTab(idx, true);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Cancel button
+                                    Rectangle {
+                                        width: 70
+                                        height: 28
+                                        radius: 3
+                                        color: cancelMa.containsMouse ? (theme ? theme.bgSurfaceHover : "#37373d") : (theme ? theme.bgSurface : "#2a2d2e")
+                                        border.color: theme ? theme.borderNormal : "#3c3c3c"
+                                        border.width: 1
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Cancel"
+                                            color: theme ? theme.textPrimary : "#cccccc"
+                                            font.pixelSize: 11
+                                        }
+                                        MouseArea {
+                                            id: cancelMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                root.pendingCloseTabIndex = -1;
+                                                unsavedChangesDialog.close();
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2783,6 +3155,7 @@ Item {
                         // Autocomplete Popup Menu (Positioned exactly below typing cursor)
                         Rectangle {
                             id: autocompletePopup
+                            objectName: "autocompletePopup"
                             width: 220
                             height: Math.min(180, suggestionModel.count * 24 + 8)
                             visible: suggestionModel.count > 0
@@ -2803,7 +3176,7 @@ Item {
                             x: Math.min(codeEditorContainer.width - width - 10, Math.max(10, cursorPt.x))
                             y: (cursorPt.y + height > codeEditorContainer.height - 10) ? Math.max(10, cursorPt.y - height - (root.codeTextArea ? root.codeTextArea.cursorRectangle.height : 18) - 4) : Math.max(10, cursorPt.y)
 
-                            ListModel { id: suggestionModel }
+                            ListModel { id: suggestionModel; objectName: "suggestionModel" }
 
                             ListView {
                                 id: suggestionListView
@@ -2900,6 +3273,13 @@ Item {
                             }
                         }
 
+                        // Function & Symbol Hover Tooltip (VS Code style argument inspection)
+                        FunctionHoverTooltip {
+                            id: functionHoverTooltip
+                            objectName: "functionHoverTooltip"
+                            z: 130
+                        }
+
                         // Pure-Python Extension Floating Mascot / Screen Widgets
                         DynamicFloatingHost {
                             id: dynamicFloatingHost
@@ -2968,6 +3348,19 @@ Item {
                         anchors.fill: parent
                         tabData: root.currentTab ? root.currentTab.extensionTabData : null
                         visible: Boolean(root.currentTab && root.currentTab.isCustomExtensionTab)
+                        onCloseRequested: {
+                            if (root.activeTabIndex >= 0) {
+                                root.closeTab(root.activeTabIndex);
+                            }
+                        }
+                    }
+
+                    // 1.6 Extension Details Page
+                    ExtensionDetailsView {
+                        id: extensionDetailsView
+                        anchors.fill: parent
+                        extensionData: root.currentTab ? root.currentTab.extensionData : null
+                        visible: Boolean(root.currentTab && root.currentTab.isExtensionDetails)
                         onCloseRequested: {
                             if (root.activeTabIndex >= 0) {
                                 root.closeTab(root.activeTabIndex);
@@ -3104,7 +3497,11 @@ Item {
                                                             hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
                                                             onClicked: {
-                                                                root.closeTab(index);
+                                                                if (root.secondaryTabIndex === root.activeTabIndex && index === root.secondaryTabIndex) {
+                                                                    root.isSplitEditor = false;
+                                                                } else {
+                                                                    root.closeTab(index);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -3313,6 +3710,11 @@ Item {
                                                 var visibleStartLine = Math.max(0, Math.floor(viewTop / lineH) - 1);
                                                 var visibleEndLine = visibleStartLine + Math.ceil(height / lineH) + 4;
                                                 ctx.lineWidth = 1;
+                                                ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.editorIndentGuideBackground) ? theme.editorIndentGuideBackground : ((theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d");
+                                                ctx.globalAlpha = 0.35;
+
+                                                var lineIndents = segments.lineIndents;
+                                                var effectiveIndents = segments.effectiveIndents;
 
                                                 for (var i = 0; i < segments.length; i++) {
                                                     var seg = segments[i];
@@ -3325,19 +3727,75 @@ Item {
 
                                                     if (drawX < -20 || drawX > width + 20) continue;
 
-                                                    var yStart = topPadding + (seg.startLine * lineH) - viewTop;
-                                                    var yEnd = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
-
                                                     ctx.strokeStyle = (typeof theme !== "undefined" && theme && theme.borderSubtle) ? theme.borderSubtle : "#35383d";
                                                     ctx.globalAlpha = 0.35;
 
-                                                    ctx.beginPath();
-                                                    ctx.moveTo(drawX, yStart);
-                                                    ctx.lineTo(drawX, yEnd);
-                                                    if (seg.hasClosingBrace) {
-                                                        ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
+                                                    if (!lineIndents || !effectiveIndents) {
+                                                        var yStart = topPadding + (seg.startLine * lineH) - viewTop;
+                                                        var yEnd = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
+
+                                                        ctx.beginPath();
+                                                        ctx.moveTo(drawX, yStart);
+                                                        ctx.lineTo(drawX, yEnd);
+                                                        if (seg.hasClosingBrace) {
+                                                            ctx.lineTo(drawX + Math.round(charW * 0.45), yEnd);
+                                                        }
+                                                        ctx.stroke();
+                                                        continue;
                                                     }
-                                                    ctx.stroke();
+
+                                                    var drawStart = -1;
+                                                    for (var L = seg.startLine; L <= seg.endLine; L++) {
+                                                        var raw = (L >= 0 && L < lineIndents.length) ? lineIndents[L] : -1;
+                                                        var eff = (L >= 0 && L < effectiveIndents.length) ? effectiveIndents[L] : 0;
+
+                                                        var isClosingBraceLine = seg.hasClosingBrace && (L === seg.endLine);
+                                                        var canDraw = (raw >= 0) ? (raw > lvl) : (eff > lvl);
+
+                                                        if (canDraw) {
+                                                            if (drawStart === -1) {
+                                                                 drawStart = L;
+                                                            }
+                                                        } else {
+                                                            if (drawStart !== -1) {
+                                                                var y1 = topPadding + (drawStart * lineH) - viewTop;
+                                                                var y2 = isClosingBraceLine ? (topPadding + (L * lineH) + (lineH * 0.5) - viewTop) : (topPadding + (L * lineH) - viewTop);
+                                                                ctx.beginPath();
+                                                                ctx.moveTo(drawX, y1);
+                                                                ctx.lineTo(drawX, y2);
+                                                                if (isClosingBraceLine) {
+                                                                    ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                                }
+                                                                ctx.stroke();
+                                                                drawStart = -1;
+                                                            } else if (isClosingBraceLine && L > seg.startLine) {
+                                                                var prevRaw = (L - 1 >= 0 && L - 1 < lineIndents.length) ? lineIndents[L - 1] : -1;
+                                                                var prevEff = (L - 1 >= 0 && L - 1 < effectiveIndents.length) ? effectiveIndents[L - 1] : 0;
+                                                                var prevCanDraw = (prevRaw >= 0) ? (prevRaw > lvl) : (prevEff > lvl);
+                                                                if (prevCanDraw) {
+                                                                    var y1 = topPadding + (L * lineH) - viewTop;
+                                                                    var y2 = topPadding + (L * lineH) + (lineH * 0.5) - viewTop;
+                                                                    ctx.beginPath();
+                                                                    ctx.moveTo(drawX, y1);
+                                                                    ctx.lineTo(drawX, y2);
+                                                                    ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                                    ctx.stroke();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (drawStart !== -1) {
+                                                        var y1 = topPadding + (drawStart * lineH) - viewTop;
+                                                        var y2 = seg.hasClosingBrace ? (topPadding + (seg.endLine * lineH) + (lineH * 0.5) - viewTop) : (topPadding + ((seg.endLine + 1) * lineH) - viewTop);
+                                                        ctx.beginPath();
+                                                        ctx.moveTo(drawX, y1);
+                                                        ctx.lineTo(drawX, y2);
+                                                        if (seg.hasClosingBrace) {
+                                                            ctx.lineTo(drawX + Math.round(charW * 0.45), y2);
+                                                        }
+                                                        ctx.stroke();
+                                                    }
                                                 }
                                                 ctx.globalAlpha = 1.0;
                                             }
@@ -4372,6 +4830,44 @@ Item {
         switchToTab(newIdx);
     }
 
+    function openExtensionDetailsTab(extData) {
+        if (!extData) return;
+        var extId = extData.id || extData.name || "ext";
+        for (var i = 0; i < tabModel.count; i++) {
+            var cur = tabModel.get(i);
+            if (cur && cur.fileId === ("ext_details_" + extId)) {
+                tabModel.setProperty(i, "extensionData", extData);
+                switchToTab(i);
+                if (typeof extensionDetailsView !== "undefined" && extensionDetailsView) {
+                    extensionDetailsView.extensionData = extData;
+                }
+                return;
+            }
+        }
+        var newIdx = tabModel.count;
+        tabModel.append({
+            title: "Extension: " + (extData.name || extId),
+            fileName: extData.name || extId,
+            path: "",
+            fileId: "ext_details_" + extId,
+            content: "",
+            isDirty: false,
+            languageName: "Extension",
+            languageId: "extension",
+            isWhiteboard: false,
+            isWebPreview: false,
+            isSettings: false,
+            isCustomExtensionTab: false,
+            isExtensionDetails: true,
+            extensionData: extData,
+            cursorPos: 0
+        });
+        switchToTab(newIdx);
+        if (typeof extensionDetailsView !== "undefined" && extensionDetailsView) {
+            extensionDetailsView.extensionData = extData;
+        }
+    }
+
     Connections {
         target: (typeof extensionManager !== "undefined" && extensionManager) ? extensionManager : null
         function onCustomTabsChanged() {
@@ -4590,8 +5086,8 @@ Item {
     }
 
     function getFoldChevron(lineNum) {
-        if (isLineFolded(lineNum)) return "▶";
-        if (isFoldableLine(lineNum)) return "▼";
+        if (isLineFolded(lineNum)) return "›";
+        if (isFoldableLine(lineNum)) return "⌄";
         return "";
     }
 
@@ -4722,6 +5218,10 @@ Item {
         var newTab = tabModel.get(index);
         if (!newTab) return;
 
+        if (newTab.isExtensionDetails && typeof extensionDetailsView !== "undefined" && extensionDetailsView) {
+            extensionDetailsView.extensionData = newTab.extensionData;
+        }
+
         root.currentLanguage = newTab.languageName || "Plain Text";
         root.currentLanguageId = newTab.languageId || "text";
 
@@ -4791,8 +5291,15 @@ Item {
         }
     }
 
-    function closeTab(index) {
+    function closeTab(index, force) {
         if (index < 0 || index >= tabModel.count) return;
+
+        var tab = tabModel.get(index);
+        if (tab && tab.isDirty && force !== true) {
+            root.pendingCloseTabIndex = index;
+            unsavedChangesDialog.open();
+            return;
+        }
 
         var wasActive = (index === root.activeTabIndex);
         var wasSecondary = (index === root.secondaryTabIndex);
@@ -4828,6 +5335,18 @@ Item {
             // Adjust activeTabIndex for primary pane
             if (wasActive) {
                 var newActive = Math.min(index, tabModel.count - 1);
+                // In split mode, prefer picking an active tab that doesn't collapse to secondaryTabIndex if another tab is available
+                if (root.isSplitEditor && tabModel.count > 1) {
+                    var secAfter = wasSecondary ? Math.min(index, tabModel.count - 1) : (root.secondaryTabIndex > index ? root.secondaryTabIndex - 1 : root.secondaryTabIndex);
+                    if (newActive === secAfter) {
+                        for (var c1 = 0; c1 < tabModel.count; c1++) {
+                            if (c1 !== secAfter) {
+                                newActive = c1;
+                                break;
+                            }
+                        }
+                    }
+                }
                 switchToTab(newActive);
             } else if (root.activeTabIndex > index) {
                 root.activeTabIndex--;
@@ -4836,7 +5355,16 @@ Item {
             // Adjust secondaryTabIndex for secondary split pane
             if (root.isSplitEditor) {
                 if (wasSecondary) {
-                    root.secondaryTabIndex = Math.min(index, tabModel.count - 1);
+                    var newSec = Math.min(index, tabModel.count - 1);
+                    if (tabModel.count > 1 && newSec === root.activeTabIndex) {
+                        for (var c2 = 0; c2 < tabModel.count; c2++) {
+                            if (c2 !== root.activeTabIndex) {
+                                newSec = c2;
+                                break;
+                            }
+                        }
+                    }
+                    root.secondaryTabIndex = newSec;
                     syncSecondaryEditor();
                 } else if (root.secondaryTabIndex > index) {
                     root.secondaryTabIndex--;
@@ -5385,10 +5913,13 @@ Item {
 
         // Fast O(1) local substring extraction
         var chunk = codeTextArea.getText(Math.max(0, pos - 50), pos);
+        var dotMatch = chunk.match(/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z0-9_]*)$/);
         var match = chunk.match(/[a-zA-Z0-9_]+$/);
-        var prefix = match ? match[0] : "";
+        var prefix = dotMatch ? dotMatch[2] : (match ? match[0] : "");
+        var targetObj = dotMatch ? dotMatch[1] : "";
 
-        if (!prefix || prefix.length < 1) {
+        // If not after a dot, require at least 1 character typed
+        if (!dotMatch && (!prefix || prefix.length < 1)) {
             suggestionModel.clear();
             return;
         }
@@ -5397,35 +5928,62 @@ Item {
         var matches = [];
         var seen = {};
 
-        // 0. Match Snippets for active programming language
-        var snippets = SnippetManager.getSnippetsForLanguage(root.currentLanguageId) || [];
-        for (var s = 0; s < snippets.length; s++) {
-            var snip = snippets[s];
-            if (snip.label.toLowerCase().startsWith(prefixLower) && snip.label !== prefix) {
-                matches.push({ label: snip.label, insertText: snip.insertText, kind: "snippet", priority: 25 });
-                seen[snip.label] = true;
+        // 0. Match Snippets for active programming language (only when not doing member dot-access)
+        if (!dotMatch) {
+            var snippets = SnippetManager.getSnippetsForLanguage(root.currentLanguageId) || [];
+            for (var s = 0; s < snippets.length; s++) {
+                var snip = snippets[s];
+                if (snip.label.toLowerCase().startsWith(prefixLower) && snip.label !== prefix) {
+                    matches.push({ label: snip.label, insertText: snip.insertText, kind: "snippet", priority: 25 });
+                    seen[snip.label] = true;
+                }
             }
-        }
 
-        // 1. Match Keywords for active programming language
-        var langKeywords = LanguageRegistry.getKeywords(root.currentLanguageId);
-        for (var k = 0; k < langKeywords.length; k++) {
-            var kw = langKeywords[k];
-            var kwLower = kw.toLowerCase();
-            if (kwLower.startsWith(prefixLower) && kw !== prefix && !seen[kw]) {
-                matches.push({ label: kw, insertText: kw, kind: "keyword", priority: 10 });
-                seen[kw] = true;
+            // 1. Match Keywords for active programming language
+            var langKeywords = LanguageRegistry.getKeywords(root.currentLanguageId);
+            for (var k = 0; k < langKeywords.length; k++) {
+                var kw = langKeywords[k];
+                var kwLower = kw.toLowerCase();
+                if (kwLower.startsWith(prefixLower) && kw !== prefix && !seen[kw]) {
+                    matches.push({ label: kw, insertText: kw, kind: "keyword", priority: 10 });
+                    seen[kw] = true;
+                }
             }
-        }
 
-        // 2. Fast local neighborhood symbol extraction (+/- 1000 chars)
-        var nearbyText = codeTextArea.getText(Math.max(0, pos - 1000), Math.min(codeTextArea.length, pos + 1000));
-        var docWords = nearbyText.match(/[a-zA-Z_][a-zA-Z0-9_]{2,}/g) || [];
-        for (var w = 0; w < docWords.length; w++) {
-            var word = docWords[w];
-            if (!seen[word] && word.toLowerCase().startsWith(prefixLower) && word !== prefix) {
-                matches.push({ label: word, insertText: word, kind: "identifier", priority: 5 });
-                seen[word] = true;
+            // 2. Fast local neighborhood symbol extraction (+/- 1000 chars)
+            var nearbyText = codeTextArea.getText(Math.max(0, pos - 1000), Math.min(codeTextArea.length, pos + 1000));
+            var docWords = nearbyText.match(/[a-zA-Z_][a-zA-Z0-9_]{2,}/g) || [];
+            for (var w = 0; w < docWords.length; w++) {
+                var word = docWords[w];
+                if (!seen[word] && word.toLowerCase().startsWith(prefixLower) && word !== prefix) {
+                    matches.push({ label: word, insertText: word, kind: "identifier", priority: 5 });
+                    seen[word] = true;
+                }
+            }
+        } else {
+            // Instant built-in member completion on typing dot (zero-latency)
+            var sdkMembers = {
+                "ctx": ["notifications", "shortcuts", "audio", "ui", "theme", "editor", "system", "terminal", "dialogs", "settings", "clipboard", "timers", "particles"],
+                "_ctx": ["notifications", "shortcuts", "audio", "ui", "theme", "editor", "system", "terminal", "dialogs", "settings", "clipboard", "timers", "particles"],
+                "audio": ["set_music_volume", "get_music_volume", "volume_up", "volume_down", "play_sound", "beep"],
+                "shortcuts": ["register"],
+                "notifications": ["show"],
+                "theme": ["get_color", "get_theme_name", "is_dark"],
+                "editor": ["get_active_text", "set_active_text", "get_cursor_position", "insert_text"],
+                "system": ["get_platform", "get_hostname", "get_memory_usage", "get_cpu_usage"],
+                "terminal": ["execute", "clear", "write"],
+                "clipboard": ["get_text", "set_text"],
+                "console": ["log", "warn", "error", "info", "debug", "trace"],
+                "math": ["abs", "ceil", "floor", "round", "max", "min", "pow", "sqrt", "random"]
+            };
+            var targetLower = targetObj.toLowerCase();
+            var members = sdkMembers[targetLower] || sdkMembers[targetObj] || [];
+            for (var mIdx = 0; mIdx < members.length; mIdx++) {
+                var mem = members[mIdx];
+                if (!seen[mem] && (prefixLower === "" || mem.toLowerCase().startsWith(prefixLower)) && mem !== prefix) {
+                    matches.push({ label: mem, insertText: mem, kind: "property", priority: 80 });
+                    seen[mem] = true;
+                }
             }
         }
 
@@ -5442,9 +6000,9 @@ Item {
         }
         autocompletePopup.selectedSuggestionIndex = 0;
 
-        // Query Backend LSP asynchronously if method is implemented
+        // Query Backend LSP & Symbol Engine asynchronously with targetObj and prefix
         if (typeof backend !== "undefined" && backend && typeof backend.request_completion === "function") {
-            backend.request_completion(root.activeFilePath || "untitled.txt", root.cursorLine - 1, root.cursorColumn - 1, root.getCanonicalText());
+            backend.request_completion(root.activeFilePath || "untitled.txt", root.cursorLine - 1, root.cursorColumn - 1, root.getCanonicalText(), targetObj, prefix, root.currentLanguageId);
         }
     }
 
@@ -5454,9 +6012,11 @@ Item {
         if (pos <= 0) return;
 
         var chunk = codeTextArea.getText(Math.max(0, pos - 50), pos);
+        var dotMatch = chunk.match(/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z0-9_]*)$/);
         var match = chunk.match(/[a-zA-Z0-9_]+$/);
-        var prefix = match ? match[0] : "";
-        if (!prefix || prefix.length < 1) return;
+        var prefix = dotMatch ? dotMatch[2] : (match ? match[0] : "");
+
+        if (!dotMatch && (!prefix || prefix.length < 1)) return;
         var prefixLower = prefix.toLowerCase();
 
         // O(1) seen set for fast duplicate filtering
@@ -5466,20 +6026,26 @@ Item {
         }
 
         var toAppend = [];
-        for (var i = 0; i < suggestions.length && (suggestionModel.count + toAppend.length) < 14; i++) {
+        for (var i = 0; i < suggestions.length && (suggestionModel.count + toAppend.length) < 20; i++) {
             var item = suggestions[i];
             var label = item.label || item;
             var ins = item.insertText || label;
 
-            if (!seen[label] && label.toLowerCase().startsWith(prefixLower) && label !== prefix) {
+            // In dot-access mode with empty prefix (right after '.'), accept all members!
+            if (!seen[label] && (prefixLower === "" || label.toLowerCase().startsWith(prefixLower)) && label !== prefix) {
                 seen[label] = true;
-                toAppend.push({ label: label, insertText: ins, kind: item.type || "lsp" });
+                toAppend.push({ label: label, insertText: ins, kind: item.type || item.kind || "property" });
             }
+        }
+
+        if (dotMatch && prefix === "") {
+            suggestionModel.clear();
         }
 
         for (var a = 0; a < toAppend.length; a++) {
             suggestionModel.append(toAppend[a]);
         }
+        autocompletePopup.selectedSuggestionIndex = 0;
     }
 
     function applySuggestion(word, kind) {
@@ -5724,6 +6290,37 @@ Item {
         onLineSelected: function(lineNum) {
             root.jumpToLine(lineNum);
         }
+        onReloadWindowRequested: {
+            if (typeof mainWindow !== "undefined" && mainWindow && mainWindow.reloadWindow) {
+                mainWindow.reloadWindow();
+            }
+        }
+        onCreateCustomExtensionRequested: {
+            if (typeof extensionManager !== "undefined" && extensionManager && extensionManager.create_custom_extension) {
+                var newPy = extensionManager.create_custom_extension("");
+                if (newPy) {
+                    if (typeof backend !== "undefined" && backend && backend.open_file) {
+                        backend.open_file(newPy);
+                    }
+                    if (typeof mainWindow !== "undefined" && mainWindow && mainWindow.showNotification) {
+                        mainWindow.showNotification("Scaffolded new custom extension at " + newPy, "info", "Extensions");
+                    }
+                }
+            }
+        }
+        onCommandSelected: function(cmdId) {
+            if (cmdId === "workbench.action.terminal.toggleTerminal") {
+                if (typeof terminalPanel !== "undefined" && terminalPanel) {
+                    terminalPanel.isPanelOpen = !terminalPanel.isPanelOpen;
+                }
+            } else if (cmdId === "workbench.action.files.save") {
+                root.saveCurrentFile();
+            } else if (cmdId === "workbench.action.files.openFolder") {
+                if (typeof openFolderDialog !== "undefined" && openFolderDialog) {
+                    openFolderDialog.open();
+                }
+            }
+        }
     }
 
     AIQuickPromptPopup {
@@ -5877,12 +6474,14 @@ Item {
         root.selectionOccurrences = occs;
     }
 
+    property string currentWorkspacePath: ""
+
     function saveWorkspaceSession() {
-        if (typeof settingsBackend === "undefined" || !settingsBackend || !settingsBackend.save_session_state) return;
+        if (typeof settingsBackend === "undefined" || !settingsBackend) return;
         var tabsData = [];
         for (var i = 0; i < tabModel.count; i++) {
             var t = tabModel.get(i);
-            if (t && t.path && !t.isWhiteboard && !t.isWebPreview) {
+            if (t && t.path && !t.isWhiteboard && !t.isWebPreview && !t.isSettings && !t.isExtensionDetails) {
                 var pane = (tabEditorRepeater && i < tabEditorRepeater.count) ? tabEditorRepeater.itemAt(i) : null;
                 var cursorPos = (pane && pane.codeTextArea) ? pane.codeTextArea.cursorPosition : 0;
                 var scrollY = (pane && pane.editorFlickable) ? pane.editorFlickable.contentY : 0;
@@ -5897,26 +6496,45 @@ Item {
             }
         }
         var sessionObj = {
+            projectPath: root.currentWorkspacePath,
             activeTabIndex: root.activeTabIndex,
             isSplitEditor: root.isSplitEditor,
             splitRatio: root.splitRatio,
             secondaryTabIndex: root.secondaryTabIndex,
             tabs: tabsData
         };
-        settingsBackend.save_session_state(JSON.stringify(sessionObj));
+        var sJson = JSON.stringify(sessionObj);
+        if (settingsBackend.save_session_state) {
+            settingsBackend.save_session_state(sJson);
+        }
+        if (root.currentWorkspacePath && settingsBackend.save_project_session) {
+            settingsBackend.save_project_session(root.currentWorkspacePath, sJson);
+        }
     }
 
-    function restoreWorkspaceSession() {
-        if (typeof settingsBackend === "undefined" || !settingsBackend || !settingsBackend.get_session_state) return;
-        var stateJson = settingsBackend.get_session_state();
+    function restoreWorkspaceSession(forProjectPath) {
+        if (typeof settingsBackend === "undefined" || !settingsBackend) return;
+        var stateJson = "";
+        var reqPath = forProjectPath || root.currentWorkspacePath;
+        if (reqPath && settingsBackend.get_project_session) {
+            stateJson = settingsBackend.get_project_session(reqPath);
+        }
+        if (!stateJson || stateJson === "{}" || stateJson === "null") {
+            if (settingsBackend.get_session_state) {
+                stateJson = settingsBackend.get_session_state();
+            }
+        }
         if (!stateJson || stateJson === "{}") return;
         try {
             var session = JSON.parse(stateJson);
             if (session && session.tabs && Array.isArray(session.tabs)) {
+                if (reqPath) {
+                    root.currentWorkspacePath = reqPath;
+                }
                 for (var i = 0; i < session.tabs.length; i++) {
                     var tabInfo = session.tabs[i];
                     if (tabInfo && tabInfo.path) {
-                        var cleanPath = tabInfo.path.replace("file:///", "");
+                        var cleanPath = tabInfo.path.replace(/^file:\/\/\//, "");
                         if (typeof backend !== "undefined" && backend && backend.open_file) {
                             backend.open_file(cleanPath);
                         }

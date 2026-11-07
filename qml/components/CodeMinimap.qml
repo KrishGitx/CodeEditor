@@ -9,6 +9,8 @@ Rectangle {
     property real scrollRatio: 0.0
 
     signal scrollRequested(real ratio)
+    signal scrollFinished()
+    property bool isDragging: false
 
     width: 90
     color: (typeof theme !== "undefined" && theme && theme.bgSidebar) ? theme.bgSidebar : "#18181b"
@@ -260,13 +262,26 @@ Rectangle {
         cursorShape: Qt.PointingHandCursor
 
         onPressed: function(mouse) {
+            root.isDragging = true;
             updateScroll(mouse.y);
         }
 
         onPositionChanged: function(mouse) {
             if (pressed) {
+                root.isDragging = true;
                 updateScroll(mouse.y);
             }
+        }
+
+        onReleased: function(mouse) {
+            root.isDragging = false;
+            updateScroll(mouse.y);
+            root.scrollFinished();
+        }
+
+        onCanceled: function() {
+            root.isDragging = false;
+            root.scrollFinished();
         }
 
         function updateScroll(mouseY) {
